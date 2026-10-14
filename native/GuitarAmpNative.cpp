@@ -3184,6 +3184,15 @@ struct RingBuffer {
     std::vector<float> data;
     std::atomic<size_t> w{0}, r{0};
     void resize(size_t n) { data.assign(n, 0.0f); w = r = 0; }
+    // Reservar capacidad sin tocar la ventana logica. Se usa donde el redimensionar
+    // puede coincidir con otro hilo leyendo o escribiendo: assign() puede liberar
+    // el vector anterior, y quien este dentro se queda escribiendo memoria liberada.
+    // ensure() SOLO crece, y quien lo llama tiene que garantizar que no hace falta.
+    void ensure(size_t n) { if (n > data.size()) data.assign(n, 0.0f); }
+    // Reiniciar los indices sin reasignar. w y r son atomicos, asi que esto es
+    // seguro aunque otro hilo este empujando o sacando: lo que puede truncarse es
+    // alguna muestra del borde, no la memoria.
+    void clear() { w = r = 0; }
     void push(const float* p, size_t n) {
         if (data.empty() || n == 0) return;
         size_t ww = w.load(std::memory_order_relaxed);
@@ -3778,7 +3787,7 @@ static bool recStart() {
     memcpy(hdr + 28, &br, 4);
     fwrite(hdr, 1, 44, f);
     g_recFile = f;
-    g_recRing.resize((size_t)rate * 4);   // 2 s de estereo
+    g_recRing.clear();   // la capacidad ya estaba reservada al abrir el dispositivo
     g_recStopReq.store(false);
     g_recThread = std::thread(recWriterProc);
     g_recTickStart = GetTickCount();
@@ -4203,6 +4212,14 @@ static DWORD WINAPI AudioThread(LPVOID) {
     std::vector<float> procBuf(maxFrames);
     std::vector<float> outBuf(maxFrames * 8);
     g_ring.resize((size_t)(fs * 0.25f));
+    // El anillo de grabacion reserva aqui su capacidad y NO vuelve a crecer.
+    // recStart() corre en el hilo de UI y el de audio puede estar empujando en
+    // este mismo instante: un resize() ahi reasignaria el vector mientras se
+    // escribe, y el que empuja se quedaria sobre memoria liberada. Se reserva
+    // con margen (fs*4 = 2 s de estereo, +4096 para el caso de que la frecuencia
+    // nominal y la del dispositivo difieran en modo exclusivo); si aun asi
+    // quedara corto, push() descarta lo mas antiguo, que es lo de siempre.
+    g_recRing.ensure((size_t)(fs * 4.0f) + 4096);
     // Afinador + visualizador: preparar por sesion
     tunerPrepare(fs);
     g_scopeRing.resize((size_t)(fs * 0.06f) + 1024);
@@ -11459,10 +11476,36 @@ static void hPrepareRebuild(int fs) {
     hCheck(dOut <= dab, "P1 prepare(false) no empeora la recuperacion: mismo motor", d);
 }
 
+// R1: el anillo de grabacion se reserva con el dispositivo abierto y a partir de
+// ahi solo se limpian los indices. ensure() NO puede encoger: si lo hiciera,
+// reasignaria el vector y el hilo de audio --que esta empujando-- se quedaria
+// escribiendo sobre el buffer anterior. clear() solo pone los indices a cero.
+static void hRingContract() {
+    RingBuffer b;
+    b.ensure(1000);
+    const bool grew = (b.data.size() == 1000);
+    b.ensure(500);                                  // pedir menos NO encoge
+    const bool noShrink = (b.data.size() == 1000);
+    std::vector<float> v(1000, 1.0f);
+    b.push(v.data(), v.size());
+    b.clear();
+    float out[1000];
+    const size_t got = b.pop(out, 1000);            // tras limpiar, esta vacio
+    b.push(v.data(), 800);
+    const size_t got2 = b.pop(out, 1000);           // y sigue admitiendo empujar
+    char d[220];
+    sprintf_s(d, "reserva 1000=%d | ensure(500) no encoge=%d (sigue %d) | "
+                 "pop tras clear=%d | push+pop=%d",
+              (int)grew, (int)noShrink, (int)b.data.size(), (int)got, (int)got2);
+    hCheck(grew && noShrink && got == 0 && got2 == 800,
+           "R1 el anillo reserva capacidad y clear() no reasigna", d);
+}
+
 static void hSelftest(int fs) {
     printf("\n== autotest de correcciones ==\n");
     hNamRejects();
     hPrepareRebuild(fs);
+    hRingContract();
     hTestTuner(fs);
     hTestStaticIR(fs);
     hTestPaste();
