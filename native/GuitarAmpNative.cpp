@@ -5465,7 +5465,15 @@ static void fitSpacedFont(G::Graphics& g, const WCHAR* s, G::FontStyle style,
                           G::REAL spacing, G::REAL maxW, G::REAL ptBase, G::REAL ptMin,
                           G::REAL& ptOut, G::REAL& spOut) {
     ptOut = ptBase; spOut = spacing;
-    for (int i = 0; i < 8; ++i) {
+    // El bucle tiene que llegar hasta ptMin. Con un numero fijo de vueltas
+    // (8, o sea 4 pt de margen) los textos que nacen muy por encima del suelo
+    // -el nombre del perfil, que usa sh*0.22 = ~23 pt contra un suelo de 9-
+    // se quedaban a medio encoger y no cabian nunca: ni al tamano de diseno
+    // con un nombre largo, y menos aun con la ventana en su minimo. El texto
+    // que ya cabe sale en la primera vuelta, asi que esto solo cambia el
+    // resultado de los que antes se recortaban sin haber probado a encogerse.
+    const int steps = (int)((ptBase - ptMin) / 0.5f) + 1;
+    for (int i = 0; i < steps; ++i) {
         G::Font f(L"Segoe UI", ptOut, style);
         if (measureSpaced(g, s, f, spOut) <= maxW || ptOut <= ptMin) return;
         ptOut -= 0.5f;
@@ -7252,11 +7260,16 @@ static void buildStaticScene(int W, int H) {
                     const G::REAL srGap = suW*0.04f;      // aire obligatorio entre ambos
                     const G::REAL txtW  = suW - srBox - srGap;
                     const G::REAL txtCx = sx + txtW*0.5f;
+                    // El ptMin escala con la ventana: a resoluciones pequenas el
+                    // vidrio entero se encoge, y un suelo fijo de 9 pt hacia que
+                    // los nombres largos se cortasen con "…" antes de poderse
+                    // reducir. Con el suelo escalado cabe el nombre en el minimo.
+                    const G::REAL pm1 = 9.0f * g_uiS, pm2 = 8.0f * g_uiS;
                     drawSpacedFitC(g, wn.c_str(), G::FontStyleBold, G::Color(0xe6, 0x82, 0x7d, 0x76),
-                                   txtCx, sy + sh*0.30f, 2.0f, txtW, fs1, 9.0f);
+                                   txtCx, sy + sh*0.30f, 2.0f, txtW, fs1, pm1);
                     if (!sub.empty())
                         drawSpacedFitC(g, sub.c_str(), G::FontStyleRegular, G::Color(0xbe, 0x82, 0x7d, 0x76),
-                                       txtCx, sy + sh*0.66f, 1.0f, txtW, fs2, 8.0f);
+                                       txtCx, sy + sh*0.66f, 1.0f, txtW, fs2, pm2);
                 } else {
                     drawSpacedFitC(g, L"SIN PERFIL", G::FontStyleBold, G::Color(0xc8, 0x82, 0x7d, 0x76),
                                    suCx, sy + sh*0.40f, 2.0f, suW*0.92f, fs1, 9.0f);
@@ -11125,7 +11138,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     if (wantH > prefH) wantH = prefH;
     if (wantW < WIN_MIN_W && WIN_MIN_W < waW) wantW = WIN_MIN_W;
     if (wantH < WIN_MIN_H && WIN_MIN_H < waH) wantH = WIN_MIN_H;
-    HWND hwnd = CreateWindowExA(0, wc.lpszClassName, "GuitarAmp - Amplificador de Guitarra",
+    HWND hwnd = CreateWindowExA(0, wc.lpszClassName, "GUITAR ONE",
                                 style | WS_VISIBLE,
                                 CW_USEDEFAULT, CW_USEDEFAULT,
                                 wantW + frameW, wantH + frameH,
