@@ -376,6 +376,7 @@ static std::string          g_t3kClientId;   // cliente que obtuvo la sesion en 
 static std::string          g_t3kUserCode, g_t3kVerifyUri;
 static int                  g_t3kExpMin = 0;             // lo que declara el servidor
 static bool                 g_t3kFromInstalled = false;  // credencial prestada por la app instalada
+static bool                 g_t3kConsentInstalled = false; // el usuario ya vio y acepto el aviso de TONE3000 instalado
 static std::mutex           g_t3kMutex;
 // Cola de trabajos terminados. Un solo hueco perdia resultados: si una descarga
 // terminaba mientras habia una busqueda en curso, la descarga se descartaba y
@@ -906,6 +907,26 @@ static void t3kWorkInstalledFirst() {
 // t3kWorkInstalledFirst). Pegando algo, se prueba como token/clave.
 static void t3kDoConnect(std::string ks) {
     if (ks.empty()) {
+        // La app va a leer el auth.json del TONE3000 instalado para reusar
+        // la sesion que el usuario ya tiene concedida. Eso es leer una
+        // credencial de otra aplicacion, asi que se pide consentimiento la
+        // primera vez que se hace (y se recuerda mientras corre la app).
+        if (!g_t3kConsentInstalled) {
+            const int r = MessageBoxW(g_hwnd,
+                L"Voy a leer la sesion de tu TONE3000 instalado\n"
+                L"(%APPDATA%\\TONE3000\\auth.json, token corta) para conectarme\n"
+                L"sin pedirte codigo. Esa lectura no la guardo en disco.\n\n"
+                L"Pulsa Si para permitirlo, o No para ir al flujo de codigo.",
+                L"GUITAR ONE - CONSENTIMIENTO", MB_YESNO | MB_ICONQUESTION);
+            if (r != IDYES) {
+                t3kStatusW(L"CONECTANDO CON CODIGO: SIGUE LOS PASOS EN TONE3000.COM");
+                g_t3kExpMin = 0;
+                std::thread(t3kWorkConnect,
+                            std::string(kT3kPubKey)).detach();
+                return;
+            }
+            g_t3kConsentInstalled = true;
+        }
         g_t3kExpMin = 0;
         t3kStatusW(L"BUSCANDO TU SESION DE TONE3000...");
         std::thread(t3kWorkInstalledFirst).detach();
