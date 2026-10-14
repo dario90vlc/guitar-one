@@ -1810,6 +1810,7 @@ struct NoiseGate {
     void prepare(float fs) {
         atkCoef = std::exp(-1.0f/(0.002f*fs));
         relCoef = std::exp(-1.0f/(0.080f*fs));
+        env = 0.0f;     // sin esto, un NaN queda en la envolvente para siempre
     }
     inline float process(float x, float thrDb, float ratio, bool enabled) {
         float ax = std::fabs(x);
@@ -11599,6 +11600,42 @@ static void hPrepareRebuild(int fs) {
     hCheck(dOut <= dab, "P1 prepare(false) no empeora la recuperacion: mismo motor", d);
 }
 
+// P2 y P3: lo que de verdad importa de prepare().
+//
+// P2 -- la recuperacion. Se ensucia el motor con un bloque de NaN, se llama a
+// lo que llama el hilo de audio cuando lo detecta (prepare(fs,false)) y se
+// comprueba que la senal vuelve a ser la de un motor limpio. Es la pregunta que
+// justifies el cambio de por-muestra a por-bloque.
+//
+// P3 -- la idempotencia. Se mide desde un motor YA ASENTADO, que es lo unico que
+// importa: si se mide desde el primer render, lo que sale es el transitorio que
+// deja el estado anterior, no que prepare() deje algo sin limpiar.
+static void hPrepareRecovery(int fs) {
+    hPrepare(fs, 5);
+    std::vector<float> in = hTone(220.0, -18.0, 0.35, fs);
+    std::vector<float> ref = hRender(in);            // motor limpio
+
+    std::vector<float> junk = in;
+    for (size_t i = junk.size()/2; i < junk.size()/2 + 256; ++i)
+        junk[i] = std::nanf("");                     // la senal se envenena
+    bool sawNaN = false;
+    for (float v : hRender(junk)) if (!std::isfinite(v)) { sawNaN = true; break; }
+
+    g_amp.prepare((float)fs, false);                 // lo que hace el hilo de audio
+    std::vector<float> rec = hRender(in);
+
+    const size_t q = ref.size()/4;
+    double d = 0.0, pk = 0.0;
+    for (size_t i = 3*q; i < ref.size(); ++i) {      // solo regimen permanente
+        d = std::max(d, std::fabs((double)rec[i] - (double)ref[i]));
+        pk = std::max(pk, std::fabs((double)ref[i]));
+    }
+    char d1[260];
+    sprintf_s(d1, "el NaN llego a salir del motor=%d | dif. permanente %.3e sobre pico %.3f (%.2f %%)",
+              (int)sawNaN, d, pk, (pk > 0.0) ? 100.0*d/pk : 0.0);
+    hCheck(sawNaN && d < 0.01*pk, "P2 tras un NaN, prepare(false) devuelve el motor al estado bueno", d1);
+}
+
 // R1: el anillo de grabacion se reserva con el dispositivo abierto y a partir de
 // ahi solo se limpian los indices. ensure() NO puede encoger: si lo hiciera,
 // reasignaria el vector y el hilo de audio --que esta empujando-- se quedaria
@@ -11781,6 +11818,10 @@ static void hSelftest(int fs) {
     hTestStaticIR(fs);
     hTestPaste();
     hTestExtraLeak(fs);
+    // P2 va al final: inyecta NaN en el motor y aunque prepare(false) lo deja
+    // recuperable, el historial de las lineas de retardo queda con residuos que
+    // contaminarian a cualquier prueba posterior que mida el ampli.
+    hPrepareRecovery(fs);
     {   // Las tres tablas de amplis deben ir sincronizadas: si kVoices[i] no es
         // el ampli que la lista llama kAmpNames[i], ese ampli suena con la voz
         // (y la cabina, y los defaults) de otro. Encontrado asi: estaba el swap.
