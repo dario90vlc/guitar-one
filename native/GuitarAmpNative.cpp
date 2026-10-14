@@ -184,6 +184,17 @@ static inline G::Color accA(int a) {
 static std::wstring wstr(const std::string& s) { return std::wstring(s.begin(), s.end()); }
 static const std::wstring& wstr(const std::wstring& s) { return s; }
 
+// Estrecha una cadena ancha a ASCII. Se usa solo para el payload de DPAPI, que
+// es base64 y por construccion no tiene nada fuera de A-Z a-z 0-9 + / =. No es
+// un cast (MSVC lo marca C4244 porque truncar un wchar_t puede comerse el byte
+// siguiente): lo que no sea ASCII se degrada a '?', que es justo lo que
+// devolverna las funciones W de la API de perfiles al escribir.
+static std::string asciiOf(const wchar_t* w) {
+    std::string s;
+    for (const wchar_t* p = w; p && *p; ++p) s.push_back((*p < 128) ? (char)*p : '?');
+    return s;
+}
+
 // ---------------------------------------------------------------------------
 //  Perfiles NAM (.nam): cadena de capturas del cabezal PERFIL
 // ---------------------------------------------------------------------------
@@ -3239,6 +3250,92 @@ static void iniBuildPath() {
     g_iniPath = exeDirW() + L"\\GuitarAmp.ini";
 }
 
+// --- Codificacion del .ini ---------------------------------------------------
+// La API de perfiles escribe en la pagina de codigos del sistema, no en Unicode,
+// salvo que el fichero lleve BOM UTF-16. Con la config de este equipo eso
+// funciona: ACP=1252 y el nombre del microfono se guarda como un unico byte 0xF3
+// y vuelve intacto. Los dos fallos aparecen en el borde:
+//   - Al mover el .ini a otra maquina, el byte se relee con SU pagina de
+//     codigos. Lo que era un microfono vuelve como caracteres raros, y el
+//     guardado siguiente los fija para siempre.
+//   - Un caracter que la pagina no tiene (japones, cirilico, emoji) no se
+//     guarda: sale '?'. En una RUTA eso es perdida de datos silenciosa --el
+//     .nam deja de existir para la app y no hay forma de saber cual era--.
+// Con BOM UTF-16LE las dos funciones W trabajan en Unicode puro y no hay
+// conversion en ningun sentido. El fichero son 4 KB: duplicarlo no cuesta nada.
+// Esta rutina migra el ANSI que hubiera, una sola vez.
+static void iniEnsureUtf16() {
+    HANDLE h = CreateFileW(g_iniPath.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    std::wstring uni;
+    if (h != INVALID_HANDLE_VALUE) {
+        LARGE_INTEGER sz; sz.QuadPart = 0;
+        GetFileSizeEx(h, &sz);
+        if (sz.QuadPart > 0 && sz.QuadPart <= (LONGLONG)(1 << 20)) {
+            std::vector<unsigned char> raw((size_t)sz.QuadPart);
+            DWORD got = 0;
+            ReadFile(h, raw.data(), (DWORD)raw.size(), &got, nullptr);
+            raw.resize(got);
+            CloseHandle(h);
+            h = INVALID_HANDLE_VALUE;
+            // Ya es UTF-16: no hay nada que hacer.
+            if (got >= 2 && raw[0] == 0xFF && raw[1] == 0xFE) return;
+            // UTF-8 con BOM si alguien lo exporto asi; si no, la pagina del
+            // sistema, que es justo lo que hacia la API al leerlo.
+            const bool utf8 = (got >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF);
+            std::string bytes((const char*)raw.data(), got);
+            const int n = MultiByteToWideChar(utf8 ? CP_UTF8 : CP_ACP, 0,
+                                              bytes.c_str(), (int)bytes.size(),
+                                              nullptr, 0);
+            if (n > 0) {
+                uni.resize((size_t)n);
+                MultiByteToWideChar(utf8 ? CP_UTF8 : CP_ACP, 0,
+                                    bytes.c_str(), (int)bytes.size(), &uni[0], n);
+            }
+        } else {
+            CloseHandle(h);
+            h = INVALID_HANDLE_VALUE;
+        }
+    }
+    std::vector<unsigned char> out;
+    out.reserve(2 + uni.size() * 2);
+    out.push_back(0xFF); out.push_back(0xFE);          // BOM UTF-16LE
+    for (size_t i = 0; i < uni.size(); ++i) {
+        out.push_back((unsigned char)( uni[i]        & 0xFF));
+        out.push_back((unsigned char)((uni[i] >> 8)  & 0xFF));
+    }
+    // Se abre para escribir siempre, tambien cuando no habia fichero: asi la
+    // primera clave que escriba la API de perfiles sale ya en Unicode.
+    HANDLE c = CreateFileW(g_iniPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (c == INVALID_HANDLE_VALUE) return;
+    DWORD wr = 0;
+    WriteFile(c, out.data(), (DWORD)out.size(), &wr, nullptr);
+    CloseHandle(c);
+}
+
+// --- Rutas portables --------------------------------------------------------
+// En el .ini las rutas se guardan RELATIVAS a la carpeta del ejecutable cuando
+// el fichero esta dentro de ella: asi el estado sobrevive a que la app se mueva
+// de carpeta o de equipo. Las de fuera --un .nam bajadode Descargas, una IR de
+// otra unidad-- se guardan absolutas, porque alli una ruta relativa no
+// significaria nada.
+static std::wstring iniPathStore(const std::wstring& abs) {
+    const std::wstring base = exeDirW() + L"\\";
+    if (abs.size() > base.size() && _wcsnicmp(abs.c_str(), base.c_str(), base.size()) == 0)
+        return abs.substr(base.size());
+    return abs;
+}
+static std::wstring iniPathLoad(const std::wstring& stored) {
+    // Absoluta ya (X:\..., \..., \\servidor, /...) -> tal cual. El .ini
+    // anterior guardaba todo asi, asi que esto tambien es la ruta de Upgrade.
+    if (stored.empty() || stored[0] == L'\\' || stored[0] == L'/' ||
+        (stored.size() > 1 && stored[1] == L':'))
+        return stored;
+    return exeDirW() + L"\\" + stored;
+}
+
 static void iniGetFlt(const wchar_t* sec, const wchar_t* key, float* out, int n) {
     wchar_t b[256]; GetPrivateProfileStringW(sec, key, L"", b, 256, g_iniPath.c_str());
     if (!b[0]) return;
@@ -3260,6 +3357,7 @@ static int iniGetInt(const wchar_t* sec, const wchar_t* key, int def) {
 
 static void saveIni() {
     iniBuildPath();
+    iniEnsureUtf16();   // antes de la primera escritura: de aqui en adelante la API ve Unicode
     AudioSettings st;
     { std::lock_guard<std::mutex> lk(g_settingsMutex); st = g_appliedSet; }
     wchar_t buf[512];
@@ -3290,6 +3388,7 @@ static void saveIni() {
     if (!g_t3kRefresh.empty()) WritePrivateProfileStringW(L"state", L"t3kRefresh", wstr(t3kProtect(g_t3kRefresh)).c_str(), g_iniPath.c_str());
     // Cadena de capturas del cabezal PERFIL: orden, ruta, encendido y nivel
     {
+        const int oldCount = iniGetInt(L"chain", L"count", 0);   // antes de sobrescribirlo
         NamChain snap;
         { std::lock_guard<std::mutex> lk(g_namMutex); snap = g_namUi; }
         WCHAR buf2[64];
@@ -3297,17 +3396,31 @@ static void saveIni() {
         WritePrivateProfileStringW(L"chain", L"count", buf2, g_iniPath.c_str());
         for (size_t i = 0; i < snap.size(); ++i) {
             WCHAR key[32], val[64];
+            const std::wstring rel = iniPathStore(snap[i]->path);
             swprintf_s(key, L"p%d", (int)i);
-            WritePrivateProfileStringW(L"chain", key, snap[i]->path.c_str(), g_iniPath.c_str());
+            WritePrivateProfileStringW(L"chain", key, rel.c_str(), g_iniPath.c_str());
             swprintf_s(key, L"on%d", (int)i);
             WritePrivateProfileStringW(L"chain", key, snap[i]->on.load() ? L"1" : L"0", g_iniPath.c_str());
             swprintf_s(key, L"lv%d", (int)i);
             swprintf_s(val, L"%.2f", (double)snap[i]->level.load());
             WritePrivateProfileStringW(L"chain", key, val, g_iniPath.c_str());
         }
+        // Las claves de los bloques que se han quedado fuera NO se reescriben:
+        // la API solo pisa las que se le pasan. Se acumulan para siempre y el
+        // .ini acaba guardando rutas de sesiones antiguas (medido en el estado
+        // anterior: count=1 con p0, p1 y p2 de tres montajes distintos).
+        // Para borrar una clave la API quiere el valor a NULL, no vacio: "" deja
+        // la linea puesta y sin contenido.
+        for (int i = (int)snap.size(); i < oldCount && i < 64; ++i) {
+            for (int f = 0; f < 3; ++f) {
+                WCHAR key[32];
+                swprintf_s(key, (f == 0) ? L"p%d" : (f == 1) ? L"on%d" : L"lv%d", i);
+                WritePrivateProfileStringW(L"chain", key, nullptr, g_iniPath.c_str());
+            }
+        }
     }
     swprintf_s(buf, L"%.4f", (double)g_params.mixCab.load()); WritePrivateProfileStringW(L"state", L"mixCab", buf, g_iniPath.c_str());
-    WritePrivateProfileStringW(L"cab", L"irPath", g_cabIRPath.c_str(), g_iniPath.c_str());
+    WritePrivateProfileStringW(L"cab", L"irPath", iniPathStore(g_cabIRPath).c_str(), g_iniPath.c_str());
     swprintf_s(buf, L"%08X", (unsigned)g_favMask);     WritePrivateProfileStringW(L"state", L"favMask", buf, g_iniPath.c_str());
     swprintf_s(buf, L"%d", g_fav ? 1 : 0);              WritePrivateProfileStringW(L"state", L"fav", buf, g_iniPath.c_str());
     swprintf_s(buf, L"%d", g_presetIdx);                WritePrivateProfileStringW(L"state", L"preset", buf, g_iniPath.c_str());
@@ -3394,6 +3507,7 @@ static void saveIni() {
 static void loadIni() {
     iniBuildPath();
     if (GetFileAttributesW(g_iniPath.c_str()) == INVALID_FILE_ATTRIBUTES) return; // sin ini: presets de fabrica
+    iniEnsureUtf16();   // migra el ANSI de las versiones anteriores antes de leerlo
     AudioSettings st;
     { std::lock_guard<std::mutex> lk(g_settingsMutex); st = g_appliedSet; }
     st.system = iniGetInt(L"audio", L"system", st.system);
@@ -3450,7 +3564,11 @@ static void loadIni() {
     {
         wchar_t irp[MAX_PATH] = L"";
         GetPrivateProfileStringW(L"cab", L"irPath", L"", irp, MAX_PATH, g_iniPath.c_str());
-        if (irp[0]) { g_cabIRPath = irp; (void)loadIRFromWav(irp); }   // silencioso si el WAV no sirve
+        if (irp[0]) {   // el .ini guarda rutas relativas cuando el WAV vive junto al exe
+            const std::wstring abs = iniPathLoad(irp);
+            g_cabIRPath = abs;
+            (void)loadIRFromWav(abs.c_str());   // silencioso si el WAV no sirve
+        }
     }
     {
         wchar_t fm[16] = L"";
@@ -3601,8 +3719,8 @@ static void loadIni() {
         GetPrivateProfileStringW(L"state", L"t3kToken", L"", tk, 1024, g_iniPath.c_str());
         GetPrivateProfileStringW(L"state", L"t3kRefresh", L"", rf, 1024, g_iniPath.c_str());
         if (tk[0]) {
-            g_t3kToken = t3kUnprotect(std::string(tk, tk + wcslen(tk)));
-            if (rf[0]) g_t3kRefresh = t3kUnprotect(std::string(rf, rf + wcslen(rf)));
+            g_t3kToken = t3kUnprotect(asciiOf(tk));
+            if (rf[0]) g_t3kRefresh = t3kUnprotect(asciiOf(rf));
             // Si el token guardado no se puede descifrar (otro usuario o otra
             // maquina), NO se marca conectado: pediria el token en cada intento y
             // el usuario no entenderia por que falla todo.
@@ -3617,9 +3735,14 @@ static void loadIni() {
             wchar_t key[32], np[MAX_PATH] = L"";
             swprintf_s(key, L"p%d", i);
             GetPrivateProfileStringW(L"chain", key, L"", np, MAX_PATH, g_iniPath.c_str());
-            if (!np[0] || GetFileAttributesW(np) == INVALID_FILE_ATTRIBUTES) continue;
+            if (!np[0]) continue;
+            // El .ini guarda la ruta relativa a la carpeta del exe cuando el
+            // .nam vive ahi dentro; lo que hubiera de antes venia absoluto y
+            // iniPathLoad lo devuelve tal cual.
+            const std::wstring abs = iniPathLoad(np);
+            if (GetFileAttributesW(abs.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
             std::wstring msg;
-            const int idx = namChainAdd(np, msg);
+            const int idx = namChainAdd(abs.c_str(), msg);
             if (idx < 0) continue;
             NamChain snap;
             { std::lock_guard<std::mutex> lk(g_namMutex); snap = g_namUi; }
@@ -11501,11 +11624,159 @@ static void hRingContract() {
            "R1 el anillo reserva capacidad y clear() no reasigna", d);
 }
 
+// I1..I5: el contrato del .ini (codificacion, rutas portables, claves muertas).
+// Todo corre contra un temporal: g_iniPath se desvia y se restaura al final, de
+// modo que el GuitarAmp.ini real del usuario no se abre ni se toca.
+static void hIniContract() {
+    // El temporal va dentro de _dsp_out/ (la carpeta que el harness ya crea y que
+// esta en el .gitignore), no a %TEMP%: el binario puede correr con el acceso al
+// disco restringido y ahi no hay forma de saber si el fallo es mio.
+    const std::wstring tmpDir = exeDirW() + L"\\_dsp_out";
+    CreateDirectoryW(tmpDir.c_str(), nullptr);
+    const std::wstring tmp = tmpDir + L"\\ini_contract.txt";
+    const std::wstring realPath = g_iniPath;
+    const std::wstring realIR   = g_cabIRPath;
+    DeleteFileW(tmp.c_str());
+
+    const std::wstring kAcento = L"Micr\xf3" L"fono omnidireccional (GTRS)";
+    const std::wstring kCJK    = L"\u65e5\u672c \u00e9\u00fc\u20ac";  // fuera de CP1252
+
+    auto rd = [&tmp](const wchar_t* sec, const wchar_t* key, int n) -> std::wstring {
+        wchar_t b[MAX_PATH]; b[0] = L'\0';
+        GetPrivateProfileStringW(sec, key, L"", b, n, tmp.c_str());
+        return std::wstring(b);
+    };
+    auto wr = [&tmp](const wchar_t* sec, const wchar_t* key, const wchar_t* val) {
+        WritePrivateProfileStringW(sec, key, val, tmp.c_str());
+    };
+    auto bom = [&tmp]() {
+        unsigned char b[2] = { 0, 0 };
+        HANDLE r = CreateFileW(tmp.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (r == INVALID_HANDLE_VALUE) return (int)0;
+        DWORD got = 0;
+        ReadFile(r, b, 2, &got, nullptr);
+        CloseHandle(r);
+        return (b[0] == 0xFF && b[1] == 0xFE) ? 1 : 0;
+    };
+
+    // I1: un .ini ANSI sin BOM se migra a UTF-16 sin perder el acento.
+    {
+        // El fichero viejo se construye desde kAcento pasando por CP_ACP, que
+        // es lo que hizo la app al guardarlo: "o" sale un solo byte 0xF3. Asi
+        // el esperado y lo escrito no pueden separarse nunca mas.
+        char ansi[512];
+        const int na = WideCharToMultiByte(CP_ACP, 0, kAcento.c_str(), -1, ansi, 512, nullptr, nullptr);
+        std::string doc = "[audio]\r\ninName=";
+        doc.append(ansi, (na > 0 ? na - 1 : 0));
+        doc.append("\r\n");
+        HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        DWORD wrc = 0;
+        WriteFile(f, doc.data(), (DWORD)doc.size(), &wrc, nullptr);
+        CloseHandle(f);
+
+        g_iniPath = tmp;
+        iniEnsureUtf16();
+        const int hasBom = bom();
+        const std::wstring nm = rd(L"audio", L"inName", 256);
+        char d[220];
+        sprintf_s(d, "BOM=%d | acento leido intacto=%d (%d car.)", hasBom,
+                  (int)(nm == kAcento), (int)nm.size());
+        hCheck(hasBom == 1 && nm == kAcento,
+               "I1 ANSI sin BOM migra a UTF-16 y conserva el acento", d);
+    }
+
+    // I2: lo que CP1252 no puede representar tiene que sobrevivir la escritura.
+    //     Antes salia '?' y se perdia para siempre.
+    {
+        iniEnsureUtf16();
+        wr(L"audio", L"outName", kCJK.c_str());
+        const std::wstring nm = rd(L"audio", L"outName", 256);
+        char d[220];
+        sprintf_s(d, "valor=%d car. | leido=%d (%d car., el '?' de antes era 1 car. de mas)",
+                  (int)kCJK.size(), (int)(nm == kCJK), (int)nm.size());
+        hCheck(nm == kCJK, "I2 un caracter fuera de CP1252 no se pierde al guardar", d);
+    }
+
+    // I3: dentro de la carpeta del exe la ruta se guarda relativa; fuera, absoluta.
+    {
+        const std::wstring inside  = exeDirW() + L"\\perfiles\\x.nam";
+        const std::wstring outside = L"C:\\Descargas\\y.nam";
+        const std::wstring sIn  = iniPathStore(inside);
+        const std::wstring sOut = iniPathStore(outside);
+        const bool rel      = (sIn == L"perfiles\\x.nam");
+        const bool absKept  = (sOut == outside);
+        const bool rebuilt  = (iniPathLoad(sIn) == inside);
+        const bool oldAbs   = (iniPathLoad(sOut) == outside);   // upgrade del .ini viejo
+        char d[300];
+        std::string rel8;
+        for (wchar_t ch : sIn) rel8.push_back((ch < 128) ? (char)ch : '?');
+        sprintf_s(d, "guardada como \"%s\" | fuera sigue absoluta=%d | "
+                     "se reconstruye=%d | absoluta antigua intacta=%d", rel8.c_str(),
+                  (int)absKept, (int)rebuilt, (int)oldAbs);
+        hCheck(rel && absKept && rebuilt && oldAbs,
+               "I3 las rutas de dentro son relativas y las de fuera absolutas", d);
+    }
+
+    // I4 + I5: vuelta completa por la API real. Se siembran tres bloques y se
+    //      guarda con la cadena vacia: count baja a 0 y las claves muertas se
+    //      borran (antes se acumulaban para siempre).
+    {
+        wr(L"chain", L"count", L"3");
+        for (int i = 0; i < 3; ++i) {
+            wchar_t k[16]; swprintf_s(k, L"p%d", i);
+            wr(L"chain", k, (exeDirW() + L"\\perfiles\\z.nam").c_str());
+            swprintf_s(k, L"on%d", i); wr(L"chain", k, L"1");
+            swprintf_s(k, L"lv%d", i); wr(L"chain", k, L"1.00");
+        }
+        { NamChain vacia; { std::lock_guard<std::mutex> lk(g_namMutex); g_namUi = vacia; } }
+        saveIni();
+
+        const int cnt = iniGetInt(L"chain", L"count", -1);
+        const std::wstring p0 = rd(L"chain", L"p0", 64);
+        const std::wstring lv2 = rd(L"chain", L"lv2", 64);
+        char d[260];
+        sprintf_s(d, "count 3->%d | p0 borrada=%d | lv2 borrada=%d", cnt,
+                  (int)p0.empty(), (int)lv2.empty());
+        hCheck(cnt == 0 && p0.empty() && lv2.empty(),
+               "I4 al encoger la cadena se borran las claves que sobran", d);
+
+        // I5: una ruta relativa escrita por la API vuelve a su forma absoluta.
+        wr(L"chain", L"count", L"1");
+        wr(L"chain", L"p0", L"perfiles\\z.nam");
+        const std::wstring back = iniPathLoad(rd(L"chain", L"p0", MAX_PATH));
+        const bool okBack = (back == exeDirW() + L"\\perfiles\\z.nam");
+        const int b2 = bom();
+        sprintf_s(d, "vuelta a absoluta=%d | sigue en UTF-16=%d", (int)okBack, b2);
+        hCheck(okBack && b2 == 1, "I5 la ruta relativa guardada se resuelve al arrancar", d);
+    }
+
+    // Un .ini inexistente tambien nace con BOM: si no, la primera clave que
+    // escribiera la API de perfiles saldria en la pagina del sistema.
+    {
+        DeleteFileW(tmp.c_str());
+        g_iniPath = tmp;
+        iniEnsureUtf16();
+        const int b0 = bom();
+        wr(L"audio", L"inName", kAcento.c_str());
+        const bool ida = (rd(L"audio", L"inName", 256) == kAcento);
+        char d[200];
+        sprintf_s(d, "recien creado con BOM=%d | primer guardado sin perdida=%d", b0, (int)ida);
+        hCheck(b0 == 1 && ida, "I6 un .ini nuevo nace en UTF-16", d);
+    }
+
+    g_iniPath = realPath;
+    g_cabIRPath = realIR;
+    DeleteFileW(tmp.c_str());
+}
+
 static void hSelftest(int fs) {
     printf("\n== autotest de correcciones ==\n");
     hNamRejects();
     hPrepareRebuild(fs);
     hRingContract();
+    hIniContract();
     hTestTuner(fs);
     hTestStaticIR(fs);
     hTestPaste();
