@@ -7172,6 +7172,11 @@ static void buildStaticScene(int W, int H) {
                 }
                 const G::REAL fs1 = sh*0.22f;      // tamano del nombre (cabe en el display)
                 const G::REAL fs2 = sh*0.165f;     // tamano de la linea de datos
+                // ANCHO UTIL de la pantalla: el video acaba en x=600 del arte y el
+                // pote 3D de GAIN se monta justo ahi, con radio mayor que el pote
+                // impreso (34 vs 27px). A partir del 62% del ancho lo pisa.
+                const G::REAL suW = sw*0.62f;
+                const G::REAL suCx = sx + suW*0.5f;   // centro del hueco libre
                 if (nm) {
                     std::wstring wn(nm->name.begin(), nm->name.end());
                     std::wstring sub;
@@ -7216,22 +7221,27 @@ static void buildStaticScene(int W, int H) {
                         char buf[96];
                         std::snprintf(buf, sizeof buf, "%.0f kHz", nm->sampleRate/1000.0);
                         WCHAR wb[96]; MultiByteToWideChar(CP_ACP, 0, buf, -1, wb, 96);
+                        // La frecuencia va a la DERECHA de la linea de datos, no en
+                        // la fila de chips: ahi tenia caja propia de sw*0.38 desde el
+                        // borde derecho y los chips llegaban a sw*0.62, asi que se
+                        // pisaban en el medio.
                         drawSpacedFitC(g, wb, G::FontStyleRegular, srBad ? kHot : kTxtLo,
-                                       sx + sw - 8.0f, sy + 3.0f, 0.4f, sw*0.38f, 9.5f, 7.5f);
+                                       sx + suW - 4.0f, sy + sh*0.66f, 0.4f, suW*0.26f,
+                                       9.5f, 7.5f);
                     }
                     drawSpacedFitC(g, wn.c_str(), G::FontStyleBold, G::Color(0xe6, 0x82, 0x7d, 0x76),
-                                   sx + sw*0.5f, sy + sh*0.30f, 2.0f, sw*0.90f, fs1, 9.0f);
+                                   suCx, sy + sh*0.30f, 2.0f, suW*0.94f, fs1, 9.0f);
                     if (!sub.empty())
                         drawSpacedFitC(g, sub.c_str(), G::FontStyleRegular, G::Color(0xbe, 0x82, 0x7d, 0x76),
-                                       sx + sw*0.5f, sy + sh*0.66f, 1.0f, sw*0.90f, fs2, 8.0f);
+                                       suCx, sy + sh*0.66f, 1.0f, suW*0.74f, fs2, 8.0f);
                 } else {
                     drawSpacedFitC(g, L"SIN PERFIL", G::FontStyleBold, G::Color(0xc8, 0x82, 0x7d, 0x76),
-                                   sx + sw*0.5f, sy + sh*0.40f, 2.0f, sw*0.90f, fs1, 9.0f);
+                                   suCx, sy + sh*0.40f, 2.0f, suW*0.94f, fs1, 9.0f);
                     WCHAR nlib[64];
                     swprintf_s(nlib, L"PULSA CARGAR PERFIL (.NAM) \xB7 %d EN TU LIBRERIA", g_t3kLibCount);
                     drawSpacedFitC(g, nlib, G::FontStyleRegular,
                                    G::Color(0x96, 0x6e, 0x69, 0x63),
-                                   sx + sw*0.5f, sy + sh*0.74f, 0.8f, sw*0.94f, fs2, 7.5f);
+                                   suCx, sy + sh*0.74f, 0.8f, suW*0.94f, fs2, 7.5f);
                 }
                 // boton: hover y pulsacion (el rotulo es del arte). La caja sale
                 // de namBtnBox, la MISMA que mira el clic.
