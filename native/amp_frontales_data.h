@@ -17,5 +17,5 @@ static const AmpArtInfo kAmpArt[13] = {
   { L"fondos\\10_recto_cali_fondo.png", L"filmstrips\\10_recto_cali_filmstrip@2x.png", 7, { 200.0f,333.3f,466.7f,600.0f,733.3f,866.7f,1000.0f,0.0f,0.0f,0.0f }, { 164.0f,164.0f,164.0f,164.0f,164.0f,164.0f,164.0f,0.0f,0.0f,0.0f }, { 0,1,2,3,5,4 } },   // DUO RECTO
   { L"fondos\\11_german_v4_fondo.png", L"filmstrips\\11_german_v4_filmstrip@2x.png", 8, { 200.0f,314.3f,428.6f,542.9f,657.1f,771.4f,885.7f,1000.0f,0.0f,0.0f }, { 164.0f,164.0f,164.0f,164.0f,164.0f,164.0f,164.0f,164.0f,0.0f,0.0f }, { 0,1,2,3,6,4 } },   // KRAFT V4
   { L"fondos\\12_stage_crush_fondo.png", L"filmstrips\\12_stage_crush_filmstrip@2x.png", 7, { 200.0f,333.3f,466.7f,600.0f,733.3f,866.7f,1000.0f,0.0f,0.0f,0.0f }, { 164.0f,164.0f,164.0f,164.0f,164.0f,164.0f,164.0f,0.0f,0.0f,0.0f }, { 0,2,3,4,1,5 } },   // HAVOC 100
-  { L"fondos\\13_profile_fondo.png", L"filmstrips\\13_profile_filmstrip@2x.png", 5, { 600.0f,690.0f,780.0f,870.0f,960.0f,0.0f,0.0f,0.0f,0.0f,0.0f }, { 164.0f,164.0f,164.0f,164.0f,164.0f,0.0f,0.0f,0.0f,0.0f,0.0f }, { 0,1,2,3,4,-1 } },   // PERFIL
+  { L"fondos\\13_profile_fondo.png", L"filmstrips\\13_profile_filmstrip@2x.png", 5, { 672.0f,748.0f,824.0f,900.0f,976.0f,0.0f,0.0f,0.0f,0.0f,0.0f }, { 164.0f,164.0f,164.0f,164.0f,164.0f,0.0f,0.0f,0.0f,0.0f,0.0f }, { 0,1,2,3,4,-1 } },   // PERFIL
 };

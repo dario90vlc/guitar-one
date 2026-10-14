@@ -98,7 +98,7 @@ AMPS = [
   font=dict(fam="'Archivo Black', 'Anton', sans-serif", fs=40, ls=5, fw=400, wf=0.72, font2=COND),
   body="#0a0c0e", dots="#242a30", panel=("#1b2026", "#0b0e11"), brushed=True, ptext="#cfe4f0",
   cap=("#2e343b", "#0d1013"), ring=("#525c66", "#14181c"), ptr="#39e0c0", tick="#8fb6c4", knob="chunky",
-  ctrl=["GAIN", "BASS", "MIDDLE", "TREBLE", "VOLUME"], ctrl_x=(600, 960),
+  ctrl=["GAIN", "BASS", "MIDDLE", "TREBLE", "VOLUME"], ctrl_x=(672, 976),
   screen=(170, 96, 430, 104), button=(170, 212, 240, 32, "CARGAR PERFIL"),
   stripe="#39e0c0",
   grille="mesh", g=("#0b1013", "#232e35", "#0b1013"), pipe="#8aa2b0", plate=("#0a0e11", "#0a0e11"), pt="#7ef0d0", jewel="#39e0c0"),

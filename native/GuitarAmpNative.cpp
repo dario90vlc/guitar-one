@@ -7172,11 +7172,12 @@ static void buildStaticScene(int W, int H) {
                 }
                 const G::REAL fs1 = sh*0.22f;      // tamano del nombre (cabe en el display)
                 const G::REAL fs2 = sh*0.165f;     // tamano de la linea de datos
-                // ANCHO UTIL de la pantalla: el video acaba en x=600 del arte y el
-                // pote 3D de GAIN se monta justo ahi, con radio mayor que el pote
-                // impreso (34 vs 27px). A partir del 62% del ancho lo pisa.
-                const G::REAL suW = sw*0.62f;
-                const G::REAL suCx = sx + suW*0.5f;   // centro del hueco libre
+                // El arte YA NO monta potes sobre el vidrio: se movieron a x>=680
+                // del arte (amp_frontales_data.h), asi que la pantalla puede usar
+                // su ancho completo. Antes el pote de GAIN caia justo en el borde
+                // del video (x=600) y lo tapaba.
+                const G::REAL suW = sw;
+                const G::REAL suCx = sx + suW*0.5f;   // centro del vidrio
                 if (nm) {
                     std::wstring wn(nm->name.begin(), nm->name.end());
                     std::wstring sub;
@@ -7229,14 +7230,16 @@ static void buildStaticScene(int W, int H) {
                                        sx + suW - 4.0f, sy + sh*0.66f, 0.4f, suW*0.26f,
                                        9.5f, 7.5f);
                     }
+                    // 0.86: deja margen a los dos bordes del vidrio (con 0.92 el
+                    // texto llegaba a tocar el canto derecho)
                     drawSpacedFitC(g, wn.c_str(), G::FontStyleBold, G::Color(0xe6, 0x82, 0x7d, 0x76),
-                                   suCx, sy + sh*0.30f, 2.0f, suW*0.94f, fs1, 9.0f);
+                                   suCx, sy + sh*0.30f, 2.0f, suW*0.86f, fs1, 9.0f);
                     if (!sub.empty())
                         drawSpacedFitC(g, sub.c_str(), G::FontStyleRegular, G::Color(0xbe, 0x82, 0x7d, 0x76),
                                        suCx, sy + sh*0.66f, 1.0f, suW*0.74f, fs2, 8.0f);
                 } else {
                     drawSpacedFitC(g, L"SIN PERFIL", G::FontStyleBold, G::Color(0xc8, 0x82, 0x7d, 0x76),
-                                   suCx, sy + sh*0.40f, 2.0f, suW*0.94f, fs1, 9.0f);
+                                   suCx, sy + sh*0.40f, 2.0f, suW*0.92f, fs1, 9.0f);
                     WCHAR nlib[64];
                     swprintf_s(nlib, L"PULSA CARGAR PERFIL (.NAM) \xB7 %d EN TU LIBRERIA", g_t3kLibCount);
                     drawSpacedFitC(g, nlib, G::FontStyleRegular,
