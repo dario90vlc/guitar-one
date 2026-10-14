@@ -3864,6 +3864,11 @@ static bool  g_renameOpen = false;
 static int   g_renameIdx  = -1;          // preset de usuario que se renombra
 static WCHAR g_renameBuf[64] = L"";
 static int   g_delArm     = -1;          // preset armado para borrar (0 clics = -1)
+// Pedal armado para quitar: mismo patron de dos clics que los presets, con
+// estado propio porque el indice no es el mismo (fila*100 + posicion, ya que
+// el slot 0 de ANTES y el slot 0 de DESPUES son pedales distintos).
+static int   g_pedDelArm  = -1;
+static DWORD g_pedDelArmAt = 0;          // GetTickCount del armado: caduca
 
 // ============================================================================
 //  Grabadora WAV de la salida procesada (hilo de escritura propio)
@@ -5268,6 +5273,7 @@ static void modalCloseAll() {
     g_renameOpen   = false;
     g_renameIdx    = -1;
     g_delArm       = -1;
+    g_pedDelArm    = -1;   // un pedal armado tambien se desarma al abrir un modal
     g_t3kConnOpen  = false;
     g_t3kFocus     = 0;
     g_sceneDirty.store(true);       // el fondo se vuelve a ver entero
@@ -9060,7 +9066,14 @@ static void paintWindow(HWND hwnd) {
             // montaba sobre el final de la pista (y el clic de la pista caia aqui).
             {
                 const G::REAL cx = sx + PED_RM_DX, cy = sy + PED_RM_DY;
-                const bool hx = mouseIn((int)(cx - 10), (int)(cy - 10), (int)(cx + 10), (int)(cy + 10));
+                // El aspa se pone roja cuando el pedal esta armado: es el mismo
+                // feedback que el aspa de los presets. Sin esto, el segundo clic
+                // borra y el usuario no sabia que el primero habia hecho algo.
+                const int pedKey = row*100 + (int)i;
+                const bool armed = (g_pedDelArm == pedKey) &&
+                                   (GetTickCount() - g_pedDelArmAt) < 4000;
+                const bool hx = armed || mouseIn((int)(cx - 14), (int)(cy - 14),
+                                                 (int)(cx + 14), (int)(cy + 14));
                 G::SolidBrush xb(hx ? G::Color(0xff, 0x27, 0x25, 0x27) : G::Color(0xff, 0x1c, 0x1b, 0x1d));
                 g.FillEllipse(&xb, cx - 8, cy - 8, 16.0f, 16.0f);
                 G::Pen xr(hx ? G::Color(0x96, 0x6e, 0x69, 0x63) : G::Color(70, 0x9c, 0x98, 0x90), 1.0f);
@@ -10310,7 +10323,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (!loadIRFromWav(file)) {
                     MessageBoxW(hwnd, L"No se pudo cargar el WAV como respuesta de impulso.\n"
                                       L"Formatos admitidos: PCM 8/16/24/32 bits o float 32/64.",
-                                L"GuitarAmp", MB_OK | MB_ICONWARNING);
+                                L"GUITAR ONE", MB_OK | MB_ICONWARNING);
                 }
             }
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -10594,15 +10607,28 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 const int sx = (int)pedSlotX((int)i), sy = PED_ROW_Y[row];
                 if (!mouseIn(sx, sy, sx + PED_SLOT_W, sy + PED_SLOT_H)) continue;
                 const int t = ch[i];
-                // quitar: lee los MISMOS offsets que el dibujo (PED_RM_DX/DY +/- 10)
-                RECT xr = { sx + PED_RM_DX - 10, sy + PED_RM_DY - 10,
-                            sx + PED_RM_DX + 10, sy + PED_RM_DY + 10 };
+                // Quitar pide DOS CLICS, como borrar un preset (g_delArm): el
+                // primero arma y pone el aspa en rojo, el segundo borra. La diana
+                // ademas se ensancha a +/-14 (el hueco limpio de la chapa llega a
+                // 104, y el borde derecho del slot es 112): con +/-10 media 20px,
+                // un tercio del minimo manejable, y borraba de un roce.
+                const int pedKey = row*100 + (int)i;
+                const bool pedFresh = (GetTickCount() - g_pedDelArmAt) < 4000;
+                if (g_pedDelArm != pedKey || !pedFresh) g_pedDelArm = -1;
+                RECT xr = { (LONG)(sx + PED_RM_DX - 14), (LONG)(sy + PED_RM_DY - 14),
+                            (LONG)(sx + PED_RM_DX + 14), (LONG)(sy + PED_RM_DY + 14) };
                 if (PtInRect(&xr, pt)) {
-                    std::vector<int>& v = (row == 0) ? g_chainPre : g_chainPost;
-                    v.erase(v.begin() + i);
-                    publishChain(g_chainPre, g_chainPost);
-                    rebuildKnobs();
-                    g_sceneDirty.store(true);   // las bahias se pintan en la escena
+                    if (g_pedDelArm == pedKey) {
+                        std::vector<int>& v = (row == 0) ? g_chainPre : g_chainPost;
+                        v.erase(v.begin() + i);
+                        publishChain(g_chainPre, g_chainPost);
+                        rebuildKnobs();
+                        g_sceneDirty.store(true);   // las bahias se pintan en la escena
+                        g_pedDelArm = -1;
+                    } else {
+                        g_pedDelArm    = pedKey;
+                        g_pedDelArmAt = GetTickCount();
+                    }
                     InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -10626,6 +10652,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
+            // Un clic en cualquier otro punto de la chapa desarma el borrado:
+            // es lo que hace el patron de los presets (g_delArm = -1 al final).
+            if (g_pedDelArm != -1) { g_pedDelArm = -1; InvalidateRect(hwnd, nullptr, FALSE); }
         }
 
         // Slots fantasma "+ ANADIR" (una por fila)
