@@ -61,6 +61,10 @@ native/_nmaref/*.exe
 !native/_build_dsp.ps1
 
 # --- Datos de usuario, no producto ----------------------------------------
+# Estado local de la app: es de una maquina (nombres de dispositivo, rutas
+# absolutas) y lleva dentro la sesion de TONE3000 cifrada con DPAPI. Nada de
+# eso es producto y no va al repo. La app lo crea al arrancar.
+native/GuitarAmp.ini
 # Grabaciones del usuario: personales y no regenerables.
 native/Grabaciones/
 # Miniaturas de tonos cacheadas: se vuelven a bajar de TONE3000.
