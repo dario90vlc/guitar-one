@@ -56,6 +56,12 @@ native/_dsp_out/
 native/__pycache__/
 *.prepolish
 native/_svgrender/node_modules/
+# Las fuentes y los scripts de _svgrender SI son producto: rasterizan los SVG
+# que la app compila. Si se ignoran, no se puede regenerar el arte.
+!native/_svgrender/*.js
+!native/_svgrender/package.json
+!native/_svgrender/package-lock.json
+!native/_svgrender/fonts/*.ttf
 native/_nmaref/*.exe
 # ...salvo el script que compila el banco offline del DSP
 !native/_build_dsp.ps1
