@@ -11341,8 +11341,70 @@ static void hTestPaste() {
            "G pegar del portapapeles (token sin espacios ni saltos)", d);
 }
 
+// E: un .nam manipulado tiene que RECHAZARSE, no ejecutarse. Una captura llega
+// de fuera (el .nam que baja el usuario o TONE3000), asi que sus numeros no son
+// de fiar: si una dimension o una dilatacion llegan en negativo o disparatadas,
+// el motor reservaba de mas o el anillo leia fuera del vector --en el hilo de
+// audio--. Se carga el modelo de referencia tal cual (linea base: tiene que
+// seguir entrando, si no el resto de la prueba no probaria nada) y luego el
+// mismo texto con un campo envenenado: tiene que salir con mensaje.
+static bool hNamRead(const char* path, std::string& out) {
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "rb") != 0 || !f) return false;
+    char buf[4096]; size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) out.append(buf, n);
+    fclose(f);
+    return !out.empty();
+}
+static bool hNamSubst(const std::string& src, const char* from, const char* to, std::string& out) {
+    const size_t p = src.find(from);
+    if (p == std::string::npos) return false;
+    out = src.substr(0, p) + to + src.substr(p + strlen(from));
+    return true;
+}
+static void hNamRejects() {
+    const char* ref = "_nmaref/m_wavenet.nam";
+    std::string base;
+    if (!hNamRead(ref, base)) {
+        hCheck(false, "E0 se puede leer el modelo de referencia", ref);
+        return;
+    }
+    char d[300];
+    // Linea base: el fichero intacto tiene que cargar. Si este check falla, los
+    // de abajo no harian falta: estarian rechazando por cualquier otra cosa.
+    {
+        nam::Model m;
+        const bool ok = m.loadText(base);
+        sprintf_s(d, "%s -> %s", ref, ok ? "carga" : m.err.c_str());
+        hCheck(ok, "E0 el modelo de referencia carga (linea base)", d);
+    }
+    struct Case { const char* what; const char* from; const char* to; };
+    static const Case cases[] = {
+        { "E1 dilatacion negativa",  "\"dilations\": [1, 2]", "\"dilations\": [-1000]" },
+        { "E2 dilatacion disparatada", "\"dilations\": [8]",   "\"dilations\": [99999999]" },
+        { "E3 dimension negativa",   "\"channels\": 3",        "\"channels\": -1" },
+        { "E4 dimension disparatada","\"channels\": 3",        "\"channels\": 99999999" },
+    };
+    for (const Case& c : cases) {
+        std::string bad;
+        if (!hNamSubst(base, c.from, c.to, bad)) {
+            sprintf_s(d, "no se encontro \"%s\" en el modelo de referencia", c.from);
+            hCheck(false, c.what, d);
+            continue;
+        }
+        nam::Model m;
+        const bool ok = m.loadText(bad);
+        // Ademas de rechazar, tiene que decir POR QUE: el criterio del motor es
+        // "nunca se adivina ni se deja sonar mal", y el mensaje va a pantalla.
+        sprintf_s(d, "%s -> %s", ok ? "CARGADO (fallo: deberia rechazar)" : m.err.c_str(),
+                  m.err.empty() && !ok ? "PERO SIN MENSAJE" : "");
+        hCheck(!ok && !m.err.empty(), c.what, d);
+    }
+}
+
 static void hSelftest(int fs) {
     printf("\n== autotest de correcciones ==\n");
+    hNamRejects();
     hTestTuner(fs);
     hTestStaticIR(fs);
     hTestPaste();

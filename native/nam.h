@@ -287,6 +287,13 @@ inline void filmApply(const Film& f, const float* w, const float* in, const floa
 // ---------------------------------------------------------------------------
 //  Modelo
 // ---------------------------------------------------------------------------
+// Techo de las dimensiones de un .nam. Es muy holgado para cualquier captura
+// real --las de TONE3000 llegan a dilataciones de 512 y campos receptores de
+// ~1e3 muestras-- pero evita que un fichero manipulado pida gigas de memoria
+// al reservar los anillos, o millones de muestras de precalentamiento al
+// cargar. El parseo rechaza, nunca recorta.
+static const int kDimMax = 1 << 20;
+
 class Model
 {
 public:
@@ -336,6 +343,12 @@ private:
         {
             int i = pos - delay;
             if (i < 0) i += len;
+            // El parseo ya rechaza toda dimension y toda dilatacion <= 0, asi que
+            // delay cae siempre en [0, len-1] y esta rama no llega a tomarse.
+            // Se deja como cinturon: si algun dia cambia el calculo del anillo y
+            // alguien se olvida de actualizar la validacion, esto degrada a una
+            // lectura recortada en lugar de salirse del vector en el hilo de audio.
+            else if (i >= len) i -= len;
             return &b[(size_t)i * ch];
         }
     };
@@ -641,6 +654,22 @@ inline bool Model::_parseWaveNet(const std::string& s)
             a.headBias = js::boolean(s, b, e, "head_bias", false);
         }
 
+        // Toda dimension del config acaba indexando un buffer. Si el fichero trae
+        // un valor <= 0 --un .nam manipulado, no uno del core-- el motor leeria
+        // fuera del heap en el hilo de audio. Se rechaza con mensaje, igual que
+        // el gating: lo que no se sabe evaluar, se dice; nunca se recorta callado.
+        if (a.inSize < 1 || a.condSize < 1 || a.ch < 1 || a.bnl < 1 || k < 1)
+        { err = "WaveNet con dimension <= 0"; return false; }
+        if (a.inSize > kDimMax || a.condSize > kDimMax || a.ch > kDimMax ||
+            a.bnl > kDimMax || k > kDimMax)
+        { err = "WaveNet con dimension fuera de rango"; return false; }
+        if (a.headSize < 1 || a.headK < 1 || a.headD < 1)
+        { err = "WaveNet con cabeza invalida"; return false; }
+        if (a.headSize > kDimMax || a.headK > kDimMax || a.headD > kDimMax)
+        { err = "WaveNet con cabeza fuera de rango"; return false; }
+        if (h1active && (h1out < 1 || h1groups < 1))
+        { err = "WaveNet con head1x1 invalido"; return false; }
+
         // rechannel: input_size -> channels, sin bias
         a.oRe = consumed;
         if (!expect((size_t)a.inSize * a.ch, "rechannel")) return false;
@@ -648,6 +677,14 @@ inline bool Model::_parseWaveNet(const std::string& s)
 
         const std::vector<int> dil = js::ints(s, b, e, "dilations");
         if (dil.empty()) { err = "WaveNet sin dilations"; return false; }
+        // La dilatacion fija el retardo de cada capa: con d <= 0 el indice del
+        // anillo se sale por arriba y el lazo lee fuera del vector. El rango
+        // util es [0, d*(k-1)] con d >= 1, asi que ahi se queda validado.
+        for (size_t li = 0; li < dil.size(); li++)
+        {
+            if (dil[li] < 1)     { err = "WaveNet con dilatacion <= 0"; return false; }
+            if (dil[li] > kDimMax) { err = "WaveNet con dilatacion fuera de rango"; return false; }
+        }
 
         for (size_t li = 0; li < dil.size(); li++)
         {
@@ -819,7 +856,11 @@ inline bool Model::_parseWaveNet(const std::string& s)
     consumed++;
 
     // precalentamiento: 1 (o el del dsp de condicion) + campo receptivo de cada array
-    prewarmSamples = _condDsp ? _condDsp->prewarmSamples : 1;
+    // Se acumula en long y se acota al final: con muchas capas y dilataciones
+    // el campo receptivo no cabe en un int, y el cast desbordaria (UB) antes de
+    // que se acotara. El precalentamiento corre en la carga, en el hilo que
+    // llama a load(): sin tope, un fichero manipulado lo deja colgado.
+    long acc = _condDsp ? _condDsp->prewarmSamples : 1;
     for (size_t i = 0; i < _arrays.size(); i++)
     {
         const WnArray& a = _arrays[i];
@@ -827,17 +868,18 @@ inline bool Model::_parseWaveNet(const std::string& s)
         for (size_t j = 0; j < a.layers.size(); j++)
             rf += (long)a.layers[j].d * (a.layers[j].k - 1);
         rf += (long)a.headD * (a.headK - 1);
-        prewarmSamples += (int)rf;
+        acc += rf;
         if (i > 0 && a.ch != _arrays[i - 1].headSize)
         { err = "WaveNet: canales del array no coinciden con el head_size del anterior"; return false; }
     }
     if (_hasHead)
     {
-        int rf = 0;
+        long rf = 0;
         for (size_t i = 0; i < _headKs.size(); i++) rf += _headKs[i] - 1;
-        prewarmSamples += rf;
+        acc += rf;
     }
-    if (prewarmSamples < 1) prewarmSamples = 1;
+    if (acc < 1) prewarmSamples = 1;
+    else prewarmSamples = (acc > kDimMax) ? kDimMax : (int)acc;
     inChannels = 1;
     outChannels = _hasHead ? _headOut : _arrays.back().headSize;
     return true;
@@ -857,6 +899,8 @@ inline bool Model::_parseLstm(const std::string& s)
     const int numLayers  = js::integer(s, cp, ce, "num_layers", 1);
     if (hiddenSize <= 0 || numLayers <= 0 || numLayers > 16)
     { err = "LSTM con dimensiones invalidas"; return false; }
+    if (inputSize < 1 || inputSize > kDimMax || hiddenSize > kDimMax)
+    { err = "LSTM con dimensiones fuera de rango"; return false; }
 
     size_t consumed = 0;
     _cells.clear();
@@ -881,7 +925,12 @@ inline bool Model::_parseLstm(const std::string& s)
     _oLstmHead = consumed;
     _lstmOut.assign(1, 0.0f);
     _gates.assign((size_t)4 * hiddenSize, 0.0f);
-    prewarmSamples = (int)(0.5 * sampleRate);
+    // La frecuencia la declara el fichero: se acota antes de convertirla a int,
+    // o un sample_rate enorme desborda el cast y el precalentamiento se va.
+    if (!(sampleRate >= 8000.0 && sampleRate <= 768000.0))
+    { err = "LSTM con sample_rate fuera de rango"; return false; }
+    const double pw = 0.5 * sampleRate;
+    prewarmSamples = (pw > (double)kDimMax) ? kDimMax : (int)pw;
     if (prewarmSamples < 1) prewarmSamples = 1;
     inChannels = 1;
     outChannels = 1;
@@ -903,6 +952,14 @@ inline bool Model::_parseConvNet(const std::string& s)
     const Act act = actFromJson(s, cp, ce, "activation");
     if (act.kind == ACT_UNKNOWN) { err = "activacion no soportada en ConvNet"; return false; }
     if (dil.empty()) { err = "ConvNet sin dilations"; return false; }
+    // Misma regla que en WaveNet: toda dimension y toda dilatacion tienen que
+    // ser >= 1 o el bloque lee fuera de su vector en el hilo de audio.
+    if (chans < 1 || chans > kDimMax) { err = "ConvNet con dimension fuera de rango"; return false; }
+    for (size_t li = 0; li < dil.size(); li++)
+    {
+        if (dil[li] < 1)     { err = "ConvNet con dilatacion <= 0"; return false; }
+        if (dil[li] > kDimMax) { err = "ConvNet con dilatacion fuera de rango"; return false; }
+    }
 
     size_t consumed = 0;
     _blocks.clear();
@@ -933,8 +990,11 @@ inline bool Model::_parseConvNet(const std::string& s)
     { err = "ConvNet: el numero de pesos no cuadra con la config"; return false; }
     _oCvHead = consumed;
     _cvBuf.assign(chans, 0.0f);
-    prewarmSamples = 1;
-    for (size_t i = 0; i < dil.size(); i++) prewarmSamples += dil[i];
+    // Igual que en WaveNet: se acumula en long y se acota, para que una
+    // captura con muchisimas capas no desborde el int ni cuelgue la carga.
+    long pw = 1;
+    for (size_t i = 0; i < dil.size(); i++) pw += dil[i];
+    prewarmSamples = (pw > (long)kDimMax) ? kDimMax : (int)pw;
     inChannels = 1;
     outChannels = 1;
     return true;
