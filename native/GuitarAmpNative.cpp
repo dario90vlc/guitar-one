@@ -6934,8 +6934,10 @@ static void buildStaticScene(int W, int H) {
                 // es el unico tramo vivo del recorrido (regla del unico vivo)
                 G::SolidBrush pd(i == 1 ? ac : kTxtLo);
                 g.FillEllipse(&pd, (G::REAL)(RACK_X + 15), by2, 7.0f, 7.0f);
+                // +2px: con el -2 anterior el ascenso de Segoe UI Bold recortaba
+                // la parte alta de "CABEZAL" contra el borde de la banda
                 drawSpacedFit(g, bandT[i], G::FontStyleBold, kTxtHi,
-                              (G::REAL)(RACK_X + 30), by2 - 2.0f, 0.9f, 330.0f, 10.5f, 8.5f);
+                              (G::REAL)(RACK_X + 30), by2, 0.9f, 330.0f, 10.5f, 8.5f);
             }
         }
 
@@ -6969,8 +6971,11 @@ static void buildStaticScene(int W, int H) {
             // panel de mandos, no las 324 del arte completo (media rejilla vacia
             // con la placa flotando). Todo el chrome de la cara sigue esta altura.
             const G::REAL fh = (m == 12) ? (G::REAL)NAM_FACE_H : bh;
-            {   // cara superior: el grosor del mueble visto de frente
-                const G::REAL dy = 12.0f, ins = 5.0f;
+            {   // cara superior: el grosor del mueble visto de frente.
+                // Antes subia 15px sobre el arte (dy=12) e invadia la banda del
+                // titulo: el canto pasaba por encima de "CABEZAL". Ahora el canto
+                // vive dentro del hueco de 8px entre banda y arte (dy=4).
+                const G::REAL dy = 4.0f, ins = 5.0f;
                 G::PointF tp[4] = {
                     G::PointF(bx - 3.0f, by - 3.0f),
                     G::PointF(bx + bw + 3.0f, by - 3.0f),
