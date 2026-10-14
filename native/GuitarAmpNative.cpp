@@ -2630,7 +2630,7 @@ struct AmpChain {
     Biquad bsHp, bsTone;             float bsLastTn = -1.0f;               // 16 BOOST
     float wahEnv = 0.0f, wahLastFc = -1.0f; Biquad wahBp;                  // 17 AUTO-WAH
 
-    void prepare(float sampleRate) {
+    void prepare(float sampleRate, bool rebuildCabs = true) {
         fs = sampleRate;
         os.prepare(fs); os.reset();
         for (int i = 0; i < 4; ++i) u4[i] = 0.0f;
@@ -2672,8 +2672,15 @@ struct AmpChain {
         tapeBuf.clear(); tapeW = 0; tapeP1 = tapeP2 = tapeLp = 0.0f;
         sprReady = -1; sprDamp = 0.0f;
         wahEnv = 0.0f; wahLastFc = -1.0f;
-        genProcCabs(fs);                       // 6 cabes procedurales (una vez por fs)
-        genProcCabsV2(fs);                     // 54 IRs fisicas cab x mic x distancia
+        // Las 6 cabes procedurales y las 54 IRs fisicas solo cambian con la frecuencia
+        // de muestreo. La recuperacion por NaN (que la pide el hilo de audio) las
+        // reutiliza en vez de rehacerlas: generarlas son 54 convoluciones con FFT
+        // de 1024 puntos y en el hilo de tiempo real son decenas de ms. Los
+        // coeficientes ya estan a fs; lo que hace falta es limpiar el estado.
+        if (rebuildCabs) {
+            genProcCabs(fs);                       // 6 cabes procedurales (una vez por fs)
+            genProcCabsV2(fs);                     // 54 IRs fisicas cab x mic x distancia
+        }
         selectCabEx(g_params.cabModel.load(), g_params.cabMic.load(), g_params.cabDist.load());
         if (!g_cabIRPtr.load() && g_params.cabModel.load() == 6) {  // USER IR no disponible -> procedural
             g_params.cabModel.store(0);
@@ -4249,6 +4256,7 @@ static DWORD WINAPI AudioThread(LPVOID) {
                 if (SUCCEEDED(capCap->GetBuffer(&capData, &frames, &flags, nullptr, nullptr))) {
                     if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT) && frames > 0) {
                         size_t outCount = 0;
+                        bool huboNaN = false;
                         for (UINT32 i = 0; i < frames && outCount < maxFrames; ++i) {
                             float s = 0.0f;
                             if (capFloat) {
@@ -4300,13 +4308,24 @@ static DWORD WINAPI AudioThread(LPVOID) {
                                 // biquad o de un buffer realimentado (delay, reverb, tanque) se
                                 // queda ahi y envenena el filtro hasta reiniciar el motor. Se
                                 // limpia la cadena.
+                                //
+                                // La muestra sale a cero y la limpieza se pide UNA VEZ por bloque
+                                // (huboNaN), no por muestra: esto corre en el hilo de tiempo real,
+                                // y prepare() es trabajo pesado. Si la causa persiste, antes esta
+                                // linea regeneraba las 54 IR del gabinete para cada muestra
+                                // contaminada: decenas de ms por muestra, con el hilo a
+                                // THREAD_PRIORITY_TIME_CRITICAL y el resto del sistema ceder paso.
                                 y = 0.0f;
-                                g_amp.prepare(fs);
+                                huboNaN = true;
                             }
                             float pko = std::fabs(y);
                             if (pko > pkOut) pkOut = pko;
                             procBuf[outCount++] = y;
                         }
+                        // Recuperacion del motor, una vez por bloque. false = no rehacer
+                        // las IR del gabinete: solo se limpia el estado envenenado.
+                        // Las muestras del bloque ya salen limpias (y = 0.0f arriba).
+                        if (huboNaN) g_amp.prepare(fs, false);
                         g_ring.push(procBuf.data(), outCount);
                         // Visualizador: historial de la senal procesada (el hilo UI lo drena)
                         if (outCount > 0) {
@@ -11402,9 +11421,48 @@ static void hNamRejects() {
     }
 }
 
+// P1: la recuperacion por NaN llama prepare(fs, false). genProcCabs y
+// genProcCabsV2 ya se auto-protegen (si la frecuencia no cambio, no regeneran),
+// asi que la bandera no ahorra trabajo HOY: deja explicito que esta llamada no
+// puede reconstruir las IR, en vez de depender de un invariante que vive en otra
+// funcion. Lo que se comprueba es que no la empeora: prepare(false) tiene que
+// comportarse como prepare(true), dentro del ruido de prepare().
+//
+// Dato de paso: prepare() NO es idempotente (dos llamadas completas dan
+// señales distintas, dab de arriba). Viene de antes de este cambio y es la
+// razon por la que dab no puede usarse como referencia. Lo que prepare() hace
+// al RESETEAR g_cabConv.irCur es forzar ensureFor() a tirar el historial de la
+// overlap-save y reasignar seis vectores: por eso llamarlo por muestra era lo
+// que de verdad rompia el sonido, no el coste.
+static void hPrepareRebuild(int fs) {
+    hPrepare(fs, 5);                                   // estado limpio, knobs de fabrica
+    std::vector<float> in = hTone(220.0, -18.0, 0.35, fs);
+    std::vector<float> a  = hRender(in);               // con las IR regeneradas
+    g_amp.prepare((float)fs);                          // prepare completo otra vez
+    std::vector<float> b  = hRender(in);
+    g_amp.prepare((float)fs, false);                   // lo que hace la recuperacion
+    std::vector<float> c  = hRender(in);
+    double dab = 0.0, dIn = 0.0, dOut = 0.0, pk = 0.0;
+    const size_t q = a.size()/4;
+    for (size_t i = 0; i < a.size(); ++i) {
+        dab = std::max(dab, std::fabs((double)a[i] - (double)b[i]));
+        const double d = std::fabs((double)b[i] - (double)c[i]);
+        if      (i < q)        dIn  = std::max(dIn,  d);   // transitorio
+        else if (i >= 3*q)      dOut = std::max(dOut, d);   // regimen permanente
+        pk  = std::max(pk,  std::fabs((double)a[i]));
+    }
+    // Saltarse la reconstruccion no puede empeorar la recuperacion: tiene que
+    // estar dentro del ruido que ya introduce prepare() de por si.
+    char d[300];
+    sprintf_s(d, "sin-rehacer vs completo = %.3e (arranque %.3e) | dos completos entre si = %.3e | pico %.3f",
+              dOut, dIn, dab, pk);
+    hCheck(dOut <= dab, "P1 prepare(false) no empeora la recuperacion: mismo motor", d);
+}
+
 static void hSelftest(int fs) {
     printf("\n== autotest de correcciones ==\n");
     hNamRejects();
+    hPrepareRebuild(fs);
     hTestTuner(fs);
     hTestStaticIR(fs);
     hTestPaste();
