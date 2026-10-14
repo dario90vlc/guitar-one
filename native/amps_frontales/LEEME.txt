@@ -1,0 +1,20 @@
+FRONTALES DE AMPLIFICADOR - ASSETS SEPARADOS
+
+REGENERAR TRAS CAMBIAR generador_frontales.py:
+ 1) python generador_frontales.py      -> escribe todos los SVG en out/ (sin dependencias)
+ 2) cd ..\_svgrender && node render.js -> renderiza out/**/*.png con resvg (antes cairosvg)
+ 3) copiar out/fondos, out/perillas, out/preview, out/filmstrips sobre estas carpetas.
+ Las posiciones de perilla (ax/ay de amp_frontales_data.h) NO deben cambiarse.
+
+preview/      Frontal completo (solo para ver como queda).
+fondos/       Fondo SIN perillas (1200x540, @2x y SVG). Incluye la escala de marcas, etiquetas, piloto, rejilla y chapa.
+              *_posiciones.json -> centro (x,y) de cada perilla en coordenadas del fondo 1200x540 (el @2x es el doble).
+perillas/     Perilla suelta 112x112 (@2x 224x224), puntero hacia ARRIBA = angulo 0. Gira de -135 a +135 grados.
+filmstrips/   Tira vertical de 101 fotogramas (112x112 cada uno; @2x 224x224) con la perilla girando de -135 a +135.
+              Formato listo para juce::Slider / filmstrip: fotograma = round(valor_normalizado * 100).
+
+Uso en JUCE:
+ - Opcion A (rotacion en codigo): dibuja la perilla .png rotada con AffineTransform::rotation entre -135 y +135 grados
+   (en radianes: +-2.3562) alrededor del centro de la perilla.
+ - Opcion B (filmstrip): recorta el fotograma segun el valor del parametro.
+La sombra va dentro de la imagen de la perilla; si rotas la imagen la sombra rota con ella (usa el filmstrip si te molesta).

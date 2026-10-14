@@ -1,0 +1,46 @@
+{
+ "amp": "CHIME 30",
+ "fondo_size": [
+  1200,
+  540
+ ],
+ "perilla_size": [
+  112,
+  112
+ ],
+ "filmstrip_frames": 101,
+ "angulo_min": -135,
+ "angulo_max": 135,
+ "perillas": [
+  {
+   "label": "VOLUME",
+   "x": 200.0,
+   "y": 164
+  },
+  {
+   "label": "TREBLE",
+   "x": 360.0,
+   "y": 164
+  },
+  {
+   "label": "BASS",
+   "x": 520.0,
+   "y": 164
+  },
+  {
+   "label": "CUT",
+   "x": 680.0,
+   "y": 164
+  },
+  {
+   "label": "TONE",
+   "x": 840.0,
+   "y": 164
+  },
+  {
+   "label": "MASTER",
+   "x": 1000.0,
+   "y": 164
+  }
+ ]
+}

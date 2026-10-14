@@ -1,0 +1,31 @@
+{
+ "amp": "AMBER TWEED",
+ "fondo_size": [
+  1200,
+  540
+ ],
+ "perilla_size": [
+  112,
+  112
+ ],
+ "filmstrip_frames": 101,
+ "angulo_min": -135,
+ "angulo_max": 135,
+ "perillas": [
+  {
+   "label": "MIC VOLUME",
+   "x": 380.0,
+   "y": 164
+  },
+  {
+   "label": "INST VOLUME",
+   "x": 600.0,
+   "y": 164
+  },
+  {
+   "label": "TONE",
+   "x": 820.0,
+   "y": 164
+  }
+ ]
+}

@@ -1,0 +1,56 @@
+{
+ "amp": "CHORUS 120",
+ "fondo_size": [
+  1200,
+  540
+ ],
+ "perilla_size": [
+  112,
+  112
+ ],
+ "filmstrip_frames": 101,
+ "angulo_min": -135,
+ "angulo_max": 135,
+ "perillas": [
+  {
+   "label": "VOLUME",
+   "x": 200.0,
+   "y": 164
+  },
+  {
+   "label": "BASS",
+   "x": 314.3,
+   "y": 164
+  },
+  {
+   "label": "MIDDLE",
+   "x": 428.6,
+   "y": 164
+  },
+  {
+   "label": "TREBLE",
+   "x": 542.9,
+   "y": 164
+  },
+  {
+   "label": "DISTORTION",
+   "x": 657.1,
+   "y": 164
+  },
+  {
+   "label": "REVERB",
+   "x": 771.4,
+   "y": 164
+  },
+  {
+   "label": "RATE",
+   "x": 885.7,
+   "y": 164
+  },
+  {
+   "label": "DEPTH",
+   "x": 1000.0,
+   "y": 164
+  }
+ ]
+}

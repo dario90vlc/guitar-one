@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GuitarAmp - Amplificador de Guitarra VST3</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 20px;
+        }
+
+        .amp-container {
+            background: linear-gradient(145deg, #2d2d2d 0%, #1a1a1a 100%);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            max-width: 900px;
+            width: 100%;
+            border: 2px solid #333;
+        }
+
+        .amp-header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #444;
+        }
+
+        .amp-title {
+            font-size: 42px;
+            font-weight: bold;
+            background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            letter-spacing: 2px;
+        }
+
+        .amp-subtitle {
+            color: #888;
+            font-size: 14px;
+            margin-top: 5px;
+            letter-spacing: 1px;
+        }
+
+        .power-section {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .power-label {
+            color: #aaa;
+            font-size: 12px;
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+
+        .power-led {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #00ff00;
+            box-shadow: 0 0 10px #00ff00, 0 0 20px #00ff00;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .controls-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .knob-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .knob {
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            background: linear-gradient(145deg, #3a3a3a 0%, #2a2a2a 100%);
+            border: 3px solid #555;
+            position: relative;
+            cursor: pointer;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+
+        .knob::before {
+            content: '';
+            position: absolute;
+            top: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 4px;
+            height: 20px;
+            background: #ffd700;
+            border-radius: 2px;
+            box-shadow: 0 0 5px #ffd700;
+        }
+
+        .knob::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: linear-gradient(145deg, #4a4a4a 0%, #3a3a3a 100%);
+            border: 2px solid #666;
+        }
+
+        .knob-label {
+            color: #aaa;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .amp-selector {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .amp-btn {
+            padding: 12px 30px;
+            border: 2px solid #555;
+            border-radius: 8px;
+            background: linear-gradient(145deg, #3a3a3a 0%, #2a2a2a 100%);
+            color: #aaa;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .amp-btn:hover {
+            border-color: #ffd700;
+            color: #ffd700;
+        }
+
+        .amp-btn.active {
+            background: linear-gradient(145deg, #ffd700 0%, #ff8c00 100%);
+            color: #1a1a1a;
+            border-color: #ffd700;
+            box-shadow: 0 0 15px rgba(255, 215, 0, 0.3);
+        }
+
+        .gate-section {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .gate-title {
+            color: #ffd700;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .gate-controls {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+        }
+
+        .gate-control {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .gate-knob {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: linear-gradient(145deg, #3a3a3a 0%, #2a2a2a 100%);
+            border: 2px solid #555;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .gate-knob::before {
+            content: '';
+            position: absolute;
+            top: 6px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 3px;
+            height: 15px;
+            background: #00ff00;
+            border-radius: 2px;
+        }
+
+        .gate-label {
+            color: #888;
+            font-size: 10px;
+            text-transform: uppercase;
+        }
+
+        .output-section {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+        }
+
+        .output-label {
+            color: #ffd700;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .output-knob {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: linear-gradient(145deg, #3a3a3a 0%, #2a2a2a 100%);
+            border: 3px solid #ffd700;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .output-knob::before {
+            content: '';
+            position: absolute;
+            top: 7px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 4px;
+            height: 18px;
+            background: #ffd700;
+            border-radius: 2px;
+            box-shadow: 0 0 8px #ffd700;
+        }
+
+        .info {
+            text-align: center;
+            color: #666;
+            font-size: 11px;
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #333;
+        }
+    </style>
+</head>
+<body>
+    <div class="amp-container">
+        <div class="amp-header">
+            <h1 class="amp-title">GuitarAmp</h1>
+            <p class="amp-subtitle">Amplificador de Guitarra VST3</p>
+        </div>
+
+        <div class="power-section">
+            <span class="power-label">POWER</span>
+            <div class="power-led"></div>
+        </div>
+
+        <div class="amp-selector">
+            <button class="amp-btn active" onclick="selectAmp(0)">Clean</button>
+            <button class="amp-btn" onclick="selectAmp(1)">Crunch</button>
+            <button class="amp-btn" onclick="selectAmp(2)">Distortion</button>
+        </div>
+
+        <div class="controls-grid">
+            <div class="knob-container">
+                <div class="knob"></div>
+                <span class="knob-label">Gain</span>
+            </div>
+            <div class="knob-container">
+                <div class="knob"></div>
+                <span class="knob-label">Bass</span>
+            </div>
+            <div class="knob-container">
+                <div class="knob"></div>
+                <span class="knob-label">Mid</span>
+            </div>
+            <div class="knob-container">
+                <div class="knob"></div>
+                <span class="knob-label">Treble</span>
+            </div>
+            <div class="knob-container">
+                <div class="knob"></div>
+                <span class="knob-label">Presence</span>
+            </div>
+            <div class="knob-container">
+                <div class="knob"></div>
+                <span class="knob-label">Volume</span>
+            </div>
+        </div>
+
+        <div class="gate-section">
+            <div class="gate-title">Noise Gate</div>
+            <div class="gate-controls">
+                <div class="gate-control">
+                    <div class="gate-knob"></div>
+                    <span class="gate-label">Threshold</span>
+                </div>
+                <div class="gate-control">
+                    <div class="gate-knob"></div>
+                    <span class="gate-label">Ratio</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="output-section">
+            <span class="output-label">Output Level</span>
+            <div class="output-knob"></div>
+        </div>
+
+        <div class="info">
+            GuitarAmp v1.0.0 • Open Source VST3 Plugin • JUCE Framework
+        </div>
+    </div>
+
+    <script>
+        function selectAmp(index) {
+            const buttons = document.querySelectorAll('.amp-btn');
+            buttons.forEach((btn, i) => {
+                if (i === index) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+        }
+
+        // Simular rotación de knobs
+        document.querySelectorAll('.knob, .gate-knob, .output-knob').forEach(knob => {
+            let rotation = 0;
+            knob.addEventListener('mousedown', (e) => {
+                const startY = e.clientY;
+                const startRotation = rotation;
+
+                function onMouseMove(e) {
+                    const deltaY = startY - e.clientY;
+                    rotation = startRotation + deltaY * 2;
+                    knob.style.transform = `rotate(${rotation}deg)`;
+                }
+
+                function onMouseUp() {
+                    document.removeEventListener('mousemove', onMouseMove);
+                    document.removeEventListener('mouseup', onMouseUp);
+                }
+
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+            });
+        });
+    </script>
+</body>
+</html>

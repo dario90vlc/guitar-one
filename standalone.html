@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GuitarAmp - Amplificador de Guitarra</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 20px;
+        }
+
+        .amp-container {
+            background: linear-gradient(145deg, #2d2d2d 0%, #1a1a1a 100%);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            max-width: 900px;
+            width: 100%;
+            border: 2px solid #333;
+        }
+
+        .amp-header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #444;
+        }
+
+        .amp-title {
+            font-size: 42px;
+            font-weight: bold;
+            background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            letter-spacing: 2px;
+        }
+
+        .amp-subtitle {
+            color: #888;
+            font-size: 14px;
+            margin-top: 5px;
+            letter-spacing: 1px;
+        }
+
+        .power-section {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .power-label {
+            color: #aaa;
+            font-size: 12px;
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+
+        .power-led {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #00ff00;
+            box-shadow: 0 0 10px #00ff00, 0 0 20px #00ff00;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .controls-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .knob-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .knob {
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            background: linear-gradient(145deg, #3a3a3a 0%, #2a2a2a 100%);
+            border: 3px solid #555;
+            position: relative;
+            cursor: pointer;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            transition: transform 0.1s ease;
+        }
+
+        .knob::before {
+            content: '';
+            position: absolute;
+            top: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 4px;
+            height: 20px;
+            background: #ffd700;
+            border-radius: 2px;
+            box-shadow: 0 0 5px #ffd700;
+        }
+
+        .knob::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: linear-gradient(145deg, #4a4a4a 0%, #3a3a3a 100%);
+            border: 2px solid #666;
+        }
+
+        .knob-label {
+            color: #aaa;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .knob-value {
+            color: #ffd700;
+            font-size: 10px;
+            font-family: monospace;
+        }
+
+        .amp-selector {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .amp-btn {
+            padding: 12px 30px;
+            border: 2px solid #555;
+            border-radius: 8px;
+            background: linear-gradient(145deg, #3a3a3a 0%, #2a2a2a 100%);
+            color: #aaa;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .amp-btn:hover {
+            border-color: #ffd700;
+            color: #ffd700;
+        }
+
+        .amp-btn.active {
+            background: linear-gradient(145deg, #ffd700 0%, #ff8c00 100%);
+            color: #1a1a1a;
+            border-color: #ffd700;
+            box-shadow: 0 0 15px rgba(255, 215, 0, 0.3);
+        }
+
+        .gate-section {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .gate-title {
+            color: #ffd700;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .gate-controls {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+        }
+
+        .gate-control {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .gate-knob {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: linear-gradient(145deg, #3a3a3a 0%, #2a2a2a 100%);
+            border: 2px solid #555;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .gate-knob::before {
+            content: '';
+            position: absolute;
+            top: 6px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 3px;
+            height: 15px;
+            background: #00ff00;
+            border-radius: 2px;
+        }
+
+        .gate-label {
+            color: #888;
+            font-size: 10px;
+            text-transform: uppercase;
+        }
+
+        .output-section {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+        }
+
+        .output-label {
+            color: #ffd700;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .output-knob {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: linear-gradient(145deg, #3a3a3a 0%, #2a2a2a 100%);
+            border: 3px solid #ffd700;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .output-knob::before {
+            content: '';
+            position: absolute;
+            top: 7px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 4px;
+            height: 18px;
+            background: #ffd700;
+            border-radius: 2px;
+            box-shadow: 0 0 8px #ffd700;
+        }
+
+        .info {
+            text-align: center;
+            color: #666;
+            font-size: 11px;
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid #333;
+        }
+
+        .audio-status {
+            text-align: center;
+            color: #00ff00;
+            font-size: 12px;
+            margin-top: 10px;
+            padding: 8px;
+            background: rgba(0, 255, 0, 0.1);
+            border-radius: 5px;
+            display: none;
+        }
+
+        .audio-status.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="amp-container">
+        <div class="amp-header">
+            <h1 class="amp-title">GuitarAmp</h1>
+            <p class="amp-subtitle">Amplificador de Guitarra - Versión Standalone</p>
+        </div>
+
+        <div class="power-section">
+            <span class="power-label">POWER</span>
+            <div class="power-led"></div>
+        </div>
+
+        <div class="amp-selector">
+            <button class="amp-btn active" onclick="selectAmp(0)">Clean</button>
+            <button class="amp-btn" onclick="selectAmp(1)">Crunch</button>
+            <button class="amp-btn" onclick="selectAmp(2)">Distortion</button>
+        </div>
+
+        <div class="controls-grid">
+            <div class="knob-container">
+                <div class="knob" data-param="gain" data-value="50"></div>
+                <span class="knob-label">Gain</span>
+                <span class="knob-value" id="gain-value">50%</span>
+            </div>
+            <div class="knob-container">
+                <div class="knob" data-param="bass" data-value="50"></div>
+                <span class="knob-label">Bass</span>
+                <span class="knob-value" id="bass-value">50%</span>
+            </div>
+            <div class="knob-container">
+                <div class="knob" data-param="mid" data-value="50"></div>
+                <span class="knob-label">Mid</span>
+                <span class="knob-value" id="mid-value">50%</span>
+            </div>
+            <div class="knob-container">
+                <div class="knob" data-param="treble" data-value="50"></div>
+                <span class="knob-label">Treble</span>
+                <span class="knob-value" id="treble-value">50%</span>
+            </div>
+            <div class="knob-container">
+                <div class="knob" data-param="presence" data-value="50"></div>
+                <span class="knob-label">Presence</span>
+                <span class="knob-value" id="presence-value">50%</span>
+            </div>
+            <div class="knob-container">
+                <div class="knob" data-param="volume" data-value="70"></div>
+                <span class="knob-label">Volume</span>
+                <span class="knob-value" id="volume-value">70%</span>
+            </div>
+        </div>
+
+        <div class="gate-section">
+            <div class="gate-title">Noise Gate</div>
+            <div class="gate-controls">
+                <div class="gate-control">
+                    <div class="gate-knob" data-param="threshold" data-value="60"></div>
+                    <span class="gate-label">Threshold</span>
+                    <span class="knob-value" id="threshold-value">-60dB</span>
+                </div>
+                <div class="gate-control">
+                    <div class="gate-knob" data-param="ratio" data-value="25"></div>
+                    <span class="gate-label">Ratio</span>
+                    <span class="knob-value" id="ratio-value">4:1</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="output-section">
+            <span class="output-label">Output Level</span>
+            <div class="output-knob" data-param="output" data-value="80"></div>
+            <span class="knob-value" id="output-value">80%</span>
+        </div>
+
+        <div class="audio-status" id="audio-status">
+            🎸 Audio activo - Usa tu micrófono o instrumento
+        </div>
+
+        <div class="info">
+            GuitarAmp v1.0.0 • Standalone Web App • Procesamiento de audio en tiempo real
+        </div>
+    </div>
+
+    <script>
+        // Estado del amplificador
+        const state = {
+            ampModel: 0,
+            params: {
+                gain: 50,
+                bass: 50,
+                mid: 50,
+                treble: 50,
+                presence: 50,
+                volume: 70,
+                threshold: 60,
+                ratio: 25,
+                output: 80
+            }
+        };
+
+        // Audio Context para procesamiento de audio
+        let audioContext = null;
+        let audioSource = null;
+        let audioProcessor = null;
+
+        function initAudio() {
+            if (audioContext) return;
+
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+                // Obtener acceso al micrófono
+                navigator.mediaDevices.getUserMedia({ audio: true })
+                    .then(stream => {
+                        audioSource = audioContext.createMediaStreamSource(stream);
+
+                        // Crear procesador de audio
+                        audioProcessor = audioContext.createScriptProcessor(2048, 1, 1);
+
+                        audioProcessor.onaudioprocess = (e) => {
+                            processAudio(e);
+                        };
+
+                        audioSource.connect(audioProcessor);
+                        audioProcessor.connect(audioContext.destination);
+
+                        document.getElementById('audio-status').classList.add('active');
+                    })
+                    .catch(err => {
+                        console.error('Error accediendo al micrófono:', err);
+                        document.getElementById('audio-status').textContent = '⚠️ No se pudo acceder al micrófono';
+                        document.getElementById('audio-status').classList.add('active');
+                    });
+            } catch (err) {
+                console.error('Error inicializando audio:', err);
+            }
+        }
+
+        function processAudio(e) {
+            const inputData = e.inputBuffer.getChannelData(0);
+            const outputData = e.outputBuffer.getChannelData(0);
+
+            // Aplicar parámetros del amplificador
+            const gain = state.params.gain / 100;
+            const volume = state.params.volume / 100;
+            const output = state.params.output / 100;
+
+            // Ganancia simple
+            const totalGain = gain * volume * output * 2;
+
+            for (let i = 0; i < inputData.length; i++) {
+                let sample = inputData[i];
+
+                // Aplicar ganancia
+                sample *= totalGain;
+
+                // Saturación simple según el modelo
+                if (state.ampModel === 1) {
+                    // Crunch: saturación suave
+                    sample = Math.tanh(sample * 1.5);
+                } else if (state.ampModel === 2) {
+                    // Distortion: saturación agresiva
+                    sample = Math.tanh(sample * 3);
+                }
+
+                outputData[i] = sample;
+            }
+        }
+
+        function selectAmp(index) {
+            state.ampModel = index;
+            const buttons = document.querySelectorAll('.amp-btn');
+            buttons.forEach((btn, i) => {
+                if (i === index) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+        }
+
+        // Simular rotación de knobs
+        document.querySelectorAll('.knob, .gate-knob, .output-knob').forEach(knob => {
+            let isDragging = false;
+            let startY = 0;
+            let startValue = 0;
+
+            knob.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                startY = e.clientY;
+                startValue = parseInt(knob.dataset.value);
+                e.preventDefault();
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+
+                const deltaY = startY - e.clientY;
+                let newValue = Math.max(0, Math.min(100, startValue + deltaY));
+                knob.dataset.value = newValue;
+
+                // Actualizar rotación visual
+                const rotation = (newValue / 100) * 300 - 150;
+                knob.style.transform = `rotate(${rotation}deg)`;
+
+                // Actualizar valor mostrado
+                const param = knob.dataset.param;
+                state.params[param] = newValue;
+
+                // Actualizar etiqueta de valor
+                const valueDisplay = document.getElementById(`${param}-value`);
+                if (valueDisplay) {
+                    if (param === 'threshold') {
+                        const db = Math.round(-80 + (newValue / 100) * 60);
+                        valueDisplay.textContent = `${db}dB`;
+                    } else if (param === 'ratio') {
+                        const ratio = Math.round(1 + (newValue / 100) * 19);
+                        valueDisplay.textContent = `${ratio}:1`;
+                    } else {
+                        valueDisplay.textContent = `${Math.round(newValue)}%`;
+                    }
+                }
+            });
+
+            document.addEventListener('mouseup', () => {
+                isDragging = false;
+            });
+
+            // Inicializar rotación
+            const initialValue = parseInt(knob.dataset.value);
+            const initialRotation = (initialValue / 100) * 300 - 150;
+            knob.style.transform = `rotate(${initialRotation}deg)`;
+        });
+
+        // Inicializar audio al hacer clic en el documento
+        document.addEventListener('click', () => {
+            if (!audioContext) {
+                initAudio();
+            }
+        }, { once: true });
+    </script>
+</body>
+</html>

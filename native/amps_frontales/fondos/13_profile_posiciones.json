@@ -1,0 +1,41 @@
+{
+ "amp": "PERFIL",
+ "fondo_size": [
+  1200,
+  540
+ ],
+ "perilla_size": [
+  112,
+  112
+ ],
+ "filmstrip_frames": 101,
+ "angulo_min": -135,
+ "angulo_max": 135,
+ "perillas": [
+  {
+   "label": "GAIN",
+   "x": 600.0,
+   "y": 164
+  },
+  {
+   "label": "BASS",
+   "x": 690.0,
+   "y": 164
+  },
+  {
+   "label": "MIDDLE",
+   "x": 780.0,
+   "y": 164
+  },
+  {
+   "label": "TREBLE",
+   "x": 870.0,
+   "y": 164
+  },
+  {
+   "label": "VOLUME",
+   "x": 960.0,
+   "y": 164
+  }
+ ]
+}

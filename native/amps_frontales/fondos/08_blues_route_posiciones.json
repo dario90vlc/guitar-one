@@ -1,0 +1,51 @@
+{
+ "amp": "LONDON BLUES",
+ "fondo_size": [
+  1200,
+  540
+ ],
+ "perilla_size": [
+  112,
+  112
+ ],
+ "filmstrip_frames": 101,
+ "angulo_min": -135,
+ "angulo_max": 135,
+ "perillas": [
+  {
+   "label": "VOLUME",
+   "x": 200.0,
+   "y": 164
+  },
+  {
+   "label": "TREBLE",
+   "x": 333.3,
+   "y": 164
+  },
+  {
+   "label": "MIDDLE",
+   "x": 466.7,
+   "y": 164
+  },
+  {
+   "label": "BASS",
+   "x": 600.0,
+   "y": 164
+  },
+  {
+   "label": "REVERB",
+   "x": 733.3,
+   "y": 164
+  },
+  {
+   "label": "TREMOLO",
+   "x": 866.7,
+   "y": 164
+  },
+  {
+   "label": "COMP",
+   "x": 1000.0,
+   "y": 164
+  }
+ ]
+}

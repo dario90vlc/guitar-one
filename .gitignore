@@ -1,0 +1,90 @@
+# ============================================================================
+# GuitarAmp — .gitignore
+#
+# Regla de oro: al repo entra el PRODUCTO (lo que se compila y se ejecuta) y
+# las FUENTES del arte. No entran los derivados, que se regeneran:
+#   - binarios        -> .\_build.ps1  (cl /O2) y .\_build_dsp.ps1
+#   - arte raster     -> native\amps_frontales\generador_frontales.py + _svgrender
+#   - capturas        -> se vuelven a hacer con una captura de pantalla
+# ============================================================================
+
+# --- Compilados -------------------------------------------------------------
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.lib
+*.exp
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# --- Arte: el PNG es salida de resvg, el SVG es la fuente ------------------
+# En repo van los .svg y los *_posiciones.json; los .png (150 MB) se rasterizan
+# con _svgrender/ (npm i @resvg/resvg-js). Fuera los @2x que la app no carga.
+native/amps_frontales/*.png
+native/amps_frontales/**/*.png
+native/amps_frontales/out/
+native/amps_frontales/preview/
+native/amps_frontales/filmstrips/*.png
+
+# --- Andamiaje de desarrollo ----------------------------------------------
+# Capturas de pantalla de depuracion: hay varias decenas y suman ~16 MB.
+# El arte de verdad vive en native/amps_frontales/, no aqui.
+native/*.png
+_ga/
+
+# Todo lo demas que empieza por _ son sondas, backups y capturas de sesion.
+native/_*.png
+native/_*.ps1
+native/_*.py
+native/_*.bat
+native/_*.cpp
+native/_*.txt
+native/_*.json
+native/_*.out
+native/_*.bak
+native/_*.bin
+native/_*.f32
+native/_ga/
+native/_dsp_out/
+native/__pycache__/
+*.prepolish
+native/_svgrender/node_modules/
+native/_nmaref/*.exe
+# ...salvo el script que compila el banco offline del DSP
+!native/_build_dsp.ps1
+
+# --- Datos de usuario, no producto ----------------------------------------
+# Grabaciones del usuario: personales y no regenerables.
+native/Grabaciones/
+# Miniaturas de tonos cacheadas: se vuelven a bajar de TONE3000.
+native/perfiles/_img/
+# Capturas neuronales de terceros: la licencia es de su autor.
+native/perfiles/*Reissue*.nam
+native/perfiles/*JMP-50*.nam
+
+# --- Ruido general ---------------------------------------------------------
+*.log
+node_modules/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.user
+*.suo
+amp_frontales_v2.zip
+.freebuff/
+
+# --- Plugin JUCE abandonado (arbol src/) ------------------------------------
+# build.ps1 aborta si falta la carpeta JUCE/, asi que esto no compila.
+# Se conserva por si algun dia se resucita.
+*.vst3
+*.vst
+*.component
+*.aaxplugin

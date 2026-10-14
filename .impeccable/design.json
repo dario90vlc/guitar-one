@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-08T00:00:00Z",
+  "title": "Design System: GuitarAmp — RACK",
+  "extensions": {
+    "colorMeta": {
+      "filament": {
+        "role": "primary",
+        "displayName": "Filamento",
+        "canonical": "#ffa51f",
+        "tonalRamp": ["#3a2a0c", "#6b4a10", "#a8700f", "#ffa51f", "#ffc766", "#ffe0a0"]
+      },
+      "graphite": {
+        "role": "neutral",
+        "displayName": "Grafito",
+        "canonical": "#1f1f24",
+        "tonalRamp": ["#0a0a0c", "#111115", "#151519", "#1f1f24", "#2c2c33", "#393942"]
+      },
+      "ivory": {
+        "role": "neutral",
+        "displayName": "Marfil",
+        "canonical": "#f2f0ea",
+        "tonalRamp": ["#6e6a63", "#9c9890", "#c9c5bd", "#f2f0ea"]
+      },
+      "ceiling": {
+        "role": "error",
+        "displayName": "Techo (clip)",
+        "canonical": "#ff454f",
+        "tonalRamp": ["#3c1719", "#7a2429", "#ff454f"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Wordmark", "purpose": "Solo la marca GUITAR ONE en la cabecera; 21px, tracking +4px." },
+      "title": { "displayName": "Titulo", "purpose": "Nombre del amplificador activo en la banda del cabezal; 12.5px Bold." },
+      "label": { "displayName": "Serigrafia", "purpose": "Titulos de unidad, etiquetas de perilla, nombres de modulo; 7-9px Bold en versalitas con tracking." },
+      "numeric": { "displayName": "Instrumento", "purpose": "dB y porcentajes; cifras tabulares para que el valor no baile." }
+    },
+    "motion": {
+      "duration": { "fast": "120ms", "base": "180ms", "slow": "320ms" },
+      "easing": "ease-out exponencial",
+      "rules": [
+        "El repintado se limita a la region sucia (InvalidateRect por region), no hay animacion decorativa.",
+        "El hover de un control cambia color y filete, nunca la geometria.",
+        "El carrusel coverflow se retiro: su animacion no explicaba nada."
+      ]
+    },
+    "elevation": {
+      "contactPlate": { "value": "softShadow(r=7, alpha=90)", "use": "unidades, modulos, botones, modales" },
+      "contactObject": { "value": "softShadow(r=5, alpha=140)", "use": "frontal del ampli dentro de su unidad" },
+      "pressVeil": { "value": "negro 27%", "use": "control pulsado" }
+    },
+    "layoutMeta": {
+      "frame": "1440x956 fijo, sin scroll ni redimensionado",
+      "columns": "navegador 300 / torre 720 / cabina 340, margen 24, canal 16",
+      "tower": "ANTES 148 / cabezal 362 / DESPUES 148 / cadena 46, con 16 de aire",
+      "module": "112x104, paso 116, maximo 6 por estante",
+      "bridge": "846..916 (70px) + linea de estado hasta 956"
+    },
+    "components": {
+      "rackUnit": {
+        "css": "background:linear-gradient(180deg,#1f1f24,#151519);border:1px solid #2c2c33;border-radius:7px;box-shadow:0 2px 8px rgba(0,0,0,.55)",
+        "notes": "Banda de titulo de 26px en #111115, filete inferior, cuatro tornillos de 4px."
+      },
+      "pedalModule": {
+        "css": "background:linear-gradient(180deg,#1f1f24,#151519);border:1px solid #2c2c33;border-radius:6px",
+        "notes": "Cinta de tipo de 2px arriba, LED de 4.8px, dos perillas de 12px, pista de bypass de 52x14."
+      },
+      "meter": {
+        "css": "background:#070709;border:1px solid #222228;border-radius:1px;height:9px",
+        "notes": "Relleno continuo marfil -> ambar -> rojo con retencion de pico de 1px."
+      },
+      "scope": {
+        "css": "background:#070709;border:1px solid #222228;border-radius:7px",
+        "notes": "Graticula tenue, trazo ambar con glow, pico en dB en la cabecera."
+      }
+    },
+    "narrative": {
+      "northStar": "La torre de senal: el rack es la navegacion y el frontal del ampli es el hero.",
+      "rules": [
+        "La Regla del Unico Vivo: el ambar solo senala lo que suena o lo que se puede tocar.",
+        "La Regla del Color del Equipo: ningun color de interfaz identifica a un amplificador.",
+        "La Regla de la Etiqueta Impresa: un mando se llama como la chapa que tiene debajo.",
+        "La Regla de Plano por Defecto: dos tonos y un filete; si brilla, esta vivo."
+      ],
+      "do": [
+        "Montar cada unidad como chapa de rack.",
+        "Dar a cada parametro un control alcanzable.",
+        "Pintar un hueco sin parametro como mando aparcado.",
+        "Mantener el ambar por debajo del 10% de la pantalla."
+      ],
+      "dont": [
+        "Degradados de mas de dos paradas, halos, grano o vinetas.",
+        "Controles que no responden.",
+        "Etiquetas repetidas sobre la misma superficie.",
+        "Texto que se sale de su celda.",
+        "Un segundo acento de color."
+      ]
+    }
+  }
+}
