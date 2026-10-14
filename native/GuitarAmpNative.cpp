@@ -7222,21 +7222,35 @@ static void buildStaticScene(int W, int H) {
                         char buf[96];
                         std::snprintf(buf, sizeof buf, "%.0f kHz", nm->sampleRate/1000.0);
                         WCHAR wb[96]; MultiByteToWideChar(CP_ACP, 0, buf, -1, wb, 96);
-                        // La frecuencia va a la DERECHA de la linea de datos, no en
-                        // la fila de chips: ahi tenia caja propia de sw*0.38 desde el
-                        // borde derecho y los chips llegaban a sw*0.62, asi que se
-                        // pisaban en el medio.
+                        // La frecuencia vive en una caja al final del vidrio, no en
+                        // la fila de chips. OJO: drawSpacedFitC CENTRA en cx, asi que
+                        // hay que pasarle el centro de su caja (0.87), no el borde
+                        // derecho: con el borde como centro, la mitad del "48 kHz"
+                        // se salia del vidrio. maxW 0.24 <= ancho de esa caja.
                         drawSpacedFitC(g, wb, G::FontStyleRegular, srBad ? kHot : kTxtLo,
-                                       sx + suW - 4.0f, sy + sh*0.66f, 0.4f, suW*0.26f,
+                                       sx + suW*0.87f, sy + sh*0.66f, 0.4f, suW*0.24f,
                                        9.5f, 7.5f);
                     }
-                    // 0.86: deja margen a los dos bordes del vidrio (con 0.92 el
-                    // texto llegaba a tocar el canto derecho)
+                    // --- Caja de texto del vidrio ---------------------------------
+                    // El titulo y la linea de datos comparten fondo con el "48 kHz",
+                    // que va pegado al borde derecho. Antes cada uno se encajaba a un
+                    // % del ancho COMPLETO del vidrio (0.86 y 0.74): la linea de datos
+                    // se montaba sobre la frecuencia ("desmondstu… 48 kHz"). Con un %
+                    // no hay forma de cuadrar, porque el texto y la frecuencia no
+                    // crecen igual al cambiar de perfil.
+                    //
+                    // Ahora la frecuencia tiene hueco propio y fijo; lo que sobra a su
+                    // izquierda es la unica caja del texto, centrada ahi. Por mucho
+                    // que cambie el nombre, el texto nunca lo pisa.
+                    const G::REAL srBox = suW*0.24f;      // hueco del 48 kHz
+                    const G::REAL srGap = suW*0.04f;      // aire obligatorio entre ambos
+                    const G::REAL txtW  = suW - srBox - srGap;
+                    const G::REAL txtCx = sx + txtW*0.5f;
                     drawSpacedFitC(g, wn.c_str(), G::FontStyleBold, G::Color(0xe6, 0x82, 0x7d, 0x76),
-                                   suCx, sy + sh*0.30f, 2.0f, suW*0.86f, fs1, 9.0f);
+                                   txtCx, sy + sh*0.30f, 2.0f, txtW, fs1, 9.0f);
                     if (!sub.empty())
                         drawSpacedFitC(g, sub.c_str(), G::FontStyleRegular, G::Color(0xbe, 0x82, 0x7d, 0x76),
-                                       suCx, sy + sh*0.66f, 1.0f, suW*0.74f, fs2, 8.0f);
+                                       txtCx, sy + sh*0.66f, 1.0f, txtW, fs2, 8.0f);
                 } else {
                     drawSpacedFitC(g, L"SIN PERFIL", G::FontStyleBold, G::Color(0xc8, 0x82, 0x7d, 0x76),
                                    suCx, sy + sh*0.40f, 2.0f, suW*0.92f, fs1, 9.0f);
