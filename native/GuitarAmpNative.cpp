@@ -127,9 +127,6 @@ namespace G = Gdiplus;
 static const G::Color kBack   (255, 0x0a, 0x0a, 0x0c);   // lienzo
 static const G::Color kWellA  (255, 0x07, 0x07, 0x09);   // pozo: fondo
 static const G::Color kWellLn (255, 0x22, 0x22, 0x28);
-static const G::Color kTxtHi  (255, 0xf2, 0xf0, 0xea);   // marfil (no blanco puro)
-static const G::Color kTxtMd  (255, 0x9c, 0x98, 0x90);
-static const G::Color kTxtLo  (255, 0x8b, 0x87, 0x81);   // 4,6:1 sobre las placas
 static const G::Color kAcc    (255, 0xff, 0xa5, 0x1f);   // ambar de filamento
 static const G::Color kAccGlb (255, 0xff, 0xe0, 0xa0);   // ambar claro (especular)
 static const G::Color kHot    (255, 0xff, 0x45, 0x4f);   // solo techo/clip
@@ -146,9 +143,13 @@ static const G::Color kFSurf (255, 0x1f, 0x1f, 0x23);   // placa
 static const G::Color kFSurf2(255, 0x26, 0x26, 0x2b);   // control, pastilla, ranura
 static const G::Color kFSurf3(255, 0x2e, 0x2e, 0x34);   // superficie alta (hover/activo)
 static const G::Color kFLine (255, 0x2a, 0x2a, 0x30);   // filete de placa
-static const G::Color kFTxt  (255, 0xf2, 0xf1, 0xee);
-static const G::Color kFTxt2 (255, 0xa6, 0xa3, 0x9d);
-static const G::Color kFTxt3 (255, 0x6f, 0x6c, 0x67);
+// Tres niveles de texto, uno por cometido: TITULO, VALOR y ROTULO. Ademas
+// del tamano, que es lo que manda, cada nivel baja un escalon de tono; los
+// contrastes estan medidos sobre la placa (kFSurf), y el rotulo se queda justo
+// en el umbral AA porque es lo mas tenue que puede ser sin dejar de leerse.
+static const G::Color kFTxt  (255, 0xf2, 0xf0, 0xea);   // titulo: marfil (no blanco puro)
+static const G::Color kFTxt2 (255, 0xa6, 0xa3, 0x9d);   // valor:  14:1 / 6,6:1
+static const G::Color kFTxt3 (255, 0x8b, 0x87, 0x81);   // rotulo: 4,6:1
 static const G::Color kFHot  (255, 0xff, 0x5f, 0x57);
 
 // --- Radios y aire ----------------------------------------------------------
@@ -5011,7 +5012,7 @@ static G::Color colFx(int t) {
     case 2:  case 10: case 11: case 12: case 16:
         return kAcc;        // ganancia: los unicos que empujan el ampli
     default:
-        return kTxtMd;      // el resto es chrome neutro, no un segundo acento
+        return kFTxt2;      // el resto es chrome neutro, no un segundo acento
     }
 }
 
@@ -5901,7 +5902,7 @@ static void flatMeterTrack(G::Graphics& g, G::Font& fLbl, const WCHAR* label,
     // de canales (rotulos en UNA linea, controles debajo) en vez de etiquetas
     // sueltas a distinta altura. Tono medio: el rotulo no compite con el valor,
     // que es lo unico que se mueve.
-    G::SolidBrush lb(kFTxt2);
+    G::SolidBrush lb(kFTxt3);
     g.DrawString(label, -1, &fLbl, G::RectF(x, y - 29.0f, 140.0f, 14.0f), nullptr, &lb);
 }
 
@@ -6592,8 +6593,14 @@ static void buildSlotTemplates() {
         {
             WCHAR wname[64];
             MultiByteToWideChar(CP_ACP, 0, kFxNames[t], -1, wname, 64);
-            drawSpacedFit(g, wname, G::FontStyleBold, kTxtHi,
+            drawSpacedFit(g, wname, G::FontStyleBold, kFTxt,
                           x + 17.0f, y + 13.0f, 0.5f, w - 24.0f, 8.0f, 6.5f);
+        }
+        // filete entre lo que el pedal ES y lo que se le toca: la tarjeta tiene
+        // dos partes y el filete las separa sin meter un recuadro dentro
+        {
+            G::Pen hs(kFLine, 1.0f);
+            g.DrawLine(&hs, x + 14.0f, y + 33.0f, x + w - 14.0f, y + 33.0f);
         }
         // cuerpo de las dos perillas (puntero: capa viva)
         drawKnobBody(g, x + PED_KB1_X, y + PED_KB_Y, PED_KB_R);
@@ -6602,11 +6609,11 @@ static void buildSlotTemplates() {
         {
             WCHAR wl[16];
             MultiByteToWideChar(CP_ACP, 0, kFxShort[t][0], -1, wl, 16);
-            drawSpacedFitC(g, wl, G::FontStyleRegular, G::Color(0xb9, 0xb5, 0xad),
-                           x + PED_KB1_X, y + 76.0f, 0.3f, 34.0f, 6.8f, 6.0f);
+            drawSpacedFitC(g, wl, G::FontStyleRegular, kFTxt3,
+                           x + PED_KB1_X, y + 76.0f, 0.3f, 34.0f, 6.6f, 6.0f);
             MultiByteToWideChar(CP_ACP, 0, kFxShort[t][1], -1, wl, 16);
-            drawSpacedFitC(g, wl, G::FontStyleRegular, G::Color(0xb9, 0xb5, 0xad),
-                           x + PED_KB2_X, y + 76.0f, 0.3f, 34.0f, 6.8f, 6.0f);
+            drawSpacedFitC(g, wl, G::FontStyleRegular, kFTxt3,
+                           x + PED_KB2_X, y + 76.0f, 0.3f, 34.0f, 6.6f, 6.0f);
         }
         // pista del bypass: un interruptor de pedal, hundido en la chapa
         {
@@ -6716,9 +6723,9 @@ static void buildStaticScene(int W, int H) {
         // baja y se separa del wordmark (antes le tocaba la linea base).
         G::SolidBrush mk(kAcc);
         roundRect(g, 24.0f, 25.0f, 11.0f, 11.0f, 2.0f, nullptr, &mk);
-        G::SolidBrush mkb(kTxtHi);
+        G::SolidBrush mkb(kFTxt);
         drawSpacedB(g, L"GUITAR ONE", fLogo, &mkb, 44, 10, 4.0f);
-        G::SolidBrush eb(kTxtLo);
+        G::SolidBrush eb(kFTxt3);
         G::Font fEd(L"Segoe UI", 7.5f, G::FontStyleBold);
         g.DrawString(L"SIMULADOR DE AMPLIFICADORES", -1, &fEd,
                      G::RectF(45.0f, 47.0f, 320.0f, 11.0f), nullptr, &eb);
@@ -6759,7 +6766,7 @@ static void buildStaticScene(int W, int H) {
             }
             // El rotulo se mide y se ajusta: a 11,5 pt "AMPLIFICADORES" ya no cabe
             // en media columna y DrawString lo partia en dos lineas.
-            drawSpacedFitC(g, tabsL[i], G::FontStyleBold, act ? kTxtHi : kTxtMd,
+            drawSpacedFitC(g, tabsL[i], G::FontStyleBold, act ? kFTxt : kFTxt2,
                            (G::REAL)(tx + tw/2), (G::REAL)(TAB_Y + 3), 1.1f,
                            (G::REAL)(tw - 8), 11.5f, 9.0f);
         }
@@ -6776,7 +6783,7 @@ static void buildStaticScene(int W, int H) {
             // preset ..." sin saber que significaba cada flecha ni en que
             // orden mirarlos. Ahora cada uno nombra lo que hace.
             drawSpacedFitC(g, L"\x2190\x2192 presets · \x2191\x2193 lista · ESPACIO audio · ESC salir",
-                           G::FontStyleRegular, kTxtLo,
+                           G::FontStyleRegular, kFTxt3,
                            (G::REAL)(COL_L_X + COL_L_W/2), (G::REAL)HINT_Y, 0.3f,
                            (G::REAL)(COL_L_W - 24), 8.0f, 6.5f);
         }
@@ -6816,12 +6823,12 @@ static void buildStaticScene(int W, int H) {
                 const G::REAL by2 = (G::REAL)bandY[i] + 6.0f;
                 // piloto de la etapa: solo lleva color de ampli el cabezal, que
                 // es el unico tramo vivo del recorrido (regla del unico vivo)
-                G::SolidBrush pd(i == 1 ? ac : kTxtLo);
+                G::SolidBrush pd(i == 1 ? ac : kFTxt3);
                 g.FillEllipse(&pd, (G::REAL)(RACK_X + 15), by2 + 4.5f, 7.0f, 7.0f);
                 // El titulo manda: 11,5 pt frente a los 10,5 de antes, y la unidad
                 // viva va en marfil mientras las otras dos se quedan en el gris de
                 // cuerpo. La jerarquia la lleva el tamano y el valor, no un color.
-                drawSpacedFit(g, bandT[i], G::FontStyleBold, i == 1 ? kTxtHi : kTxtMd,
+                drawSpacedFit(g, bandT[i], G::FontStyleBold, i == 1 ? kFTxt : kFTxt2,
                               (G::REAL)(RACK_X + 30), by2, 1.2f, 330.0f, kPtUnit, kPtUnit*0.8f);
             }
         }
@@ -6909,9 +6916,9 @@ static void buildStaticScene(int W, int H) {
                         roundRect(g, ax, ry, aw, rh, kRPill, &ap, nullptr);
                     }
                     drawSpacedFitC(g, L"+ A\xD1" L"ADIR", G::FontStyleBold,
-                                   hova ? kTxtHi : kTxtMd,
+                                   hova ? kFTxt : kFTxt2,
                                    ax + aw*0.5f, ry + (G::REAL)NAMROW_H*0.30f, 1.2f, aw - 16.0f, 14.5f, 11.0f);
-                    drawSpacedFitC(g, L"perfil .nam", G::FontStyleRegular, kTxtLo,
+                    drawSpacedFitC(g, L"perfil .nam", G::FontStyleRegular, kFTxt3,
                                    ax + aw*0.5f, ry + (G::REAL)NAMROW_H*0.56f, 0.6f, aw - 16.0f, 9.5f, 8.5f);
                 }
                 // boton TONE3000: explorar la biblioteca (marca corta T3K). Misma
@@ -6926,7 +6933,7 @@ static void buildStaticScene(int W, int H) {
                         G::Pen tp(accA(170), 1.2f);
                         roundRect(g, tx, ty, (G::REAL)NAM_T3K_W, rh, kRPill, &tp, nullptr);
                     }
-                    drawSpacedFitC(g, L"T3K", G::FontStyleBold, hovt ? kTxtHi : kTxtMd,
+                    drawSpacedFitC(g, L"T3K", G::FontStyleBold, hovt ? kFTxt : kFTxt2,
                                    tx + (G::REAL)NAM_T3K_W*0.5f, ry + (G::REAL)NAMROW_H*0.41f, 1.4f,
                                    (G::REAL)NAM_T3K_W - 14.0f, 13.0f, 10.0f);
                 }
@@ -7086,7 +7093,7 @@ static void buildStaticScene(int W, int H) {
                             G::SolidBrush cb2(G::Color(255, 0x10, 0x10, 0x12));
                             roundRect(g, chipX, chipY, tw, chipH, 6.0f, &pc, &cb2);
                             drawSpaced(g, tok.c_str(), fChip,
-                                       srBad && p0 == 0 ? kHot : kTxtMd,
+                                       srBad && p0 == 0 ? kHot : kFTxt2,
                                        chipX + 6.0f, chipY + 1.0f, 0.4f);
                             chipX += tw + 5.0f;
                             if (pf == std::wstring::npos) break;
@@ -7100,7 +7107,7 @@ static void buildStaticScene(int W, int H) {
                         // hay que pasarle el centro de su caja (0.87), no el borde
                         // derecho: con el borde como centro, la mitad del "48 kHz"
                         // se salia del vidrio. maxW 0.24 <= ancho de esa caja.
-                        drawSpacedFitC(g, wb, G::FontStyleRegular, srBad ? kHot : kTxtLo,
+                        drawSpacedFitC(g, wb, G::FontStyleRegular, srBad ? kHot : kFTxt3,
                                        sx + suW*0.87f, sy + sh*0.66f, 0.4f, suW*0.24f,
                                        9.5f, 7.5f);
                     }
@@ -7193,14 +7200,14 @@ static void buildStaticScene(int W, int H) {
             G::SolidBrush ub(kAcc);
             roundRect(g, (G::REAL)(COL_R_X + (COL_R_W - 64)/2), (G::REAL)(CAB_TAB_Y + TAB_H - 3),
                       64.0f, 2.0f, 1.0f, nullptr, &ub);
-            drawSpacedFitC(g, L"CABINA", G::FontStyleBold, kTxtHi,
+            drawSpacedFitC(g, L"CABINA", G::FontStyleBold, kFTxt,
                            (G::REAL)(COL_R_X + COL_R_W/2), (G::REAL)(CAB_TAB_Y + 3), 1.1f,
                            (G::REAL)(COL_R_W - 24), 11.5f, 9.0f);
         }
         // etiqueta de seccion
         {
-            G::Font fTagR(L"Segoe UI", 10.5f, G::FontStyleBold);
-            G::SolidBrush tag(kTxtMd);
+            G::Font fTagR(L"Segoe UI", 9.5f, G::FontStyleBold);
+            G::SolidBrush tag(kFTxt3);
             g.DrawString(L"CABINA ACTIVA", -1, &fTagR, G::RectF((G::REAL)CAB_LBL_X, (G::REAL)CAB_LBL_Y,
                                                                 200.0f, 16.0f), nullptr, &tag);
         }
@@ -7279,7 +7286,7 @@ static void buildStaticScene(int W, int H) {
             // CLIP: rotulo centrado sobre su LED y en LA MISMA linea que los
             // demas del pie (antes iba a 8,5pt y a otra altura, pegado al GATE).
             G::Font fClipL(L"Segoe UI", 10.5f);
-            G::SolidBrush ctb(kFTxt2);
+            G::SolidBrush ctb(kFTxt3);
             G::StringFormat sfCC; sfCC.SetAlignment(G::StringAlignmentCenter);
             g.DrawString(L"CLIP", -1, &fClipL,
                          G::RectF((G::REAL)CLIP_LED_X - 35.0f, (G::REAL)BOT_LBL_Y, 80.0f, 14.0f),
@@ -7289,7 +7296,7 @@ static void buildStaticScene(int W, int H) {
         // Un solo estilo de rotulo en todo el pie (10,5pt regular, tono medio),
         // centrado sobre su control y en la linea comun de rotulos.
         G::Font fFootLbl(L"Segoe UI", 10.5f);
-        G::SolidBrush tb(kFTxt2);
+        G::SolidBrush tb(kFTxt3);
         G::StringFormat sfMC; sfMC.SetAlignment(G::StringAlignmentCenter);
         g.DrawString(L"MASTER", -1, &fFootLbl,
                      G::RectF((G::REAL)(MASTER_X - 60), (G::REAL)BOT_LBL_Y, 120.0f, 14.0f),
@@ -7955,7 +7962,7 @@ static void t3kDraw(G::Graphics& g)
         const G::REAL cx2 = px + pw - T3K_PAD - 150 - 8 - 120;
         if (g_t3kConnected) {
             G::Font fu(L"Segoe UI", 9.5f, G::FontStyleBold);
-            G::SolidBrush ub(kTxtMd);
+            G::SolidBrush ub(kFTxt2);
             std::wstring who = g_t3kUser.empty() ? std::wstring(L"CONECTADO") : (L"\x2713 " + u8w(g_t3kUser));
             g.DrawString(who.c_str(), -1, &fu, G::RectF(cx2, sy + 10.0f, 120.0f, 20.0f), nullptr, &ub);
         } else {
@@ -8246,12 +8253,12 @@ static void paintWindow(HWND hwnd) {
         //  empieza en +60), no centrado en la caja: antes el rotulo quedaba
         //  flotando sobre el divisor de la flecha, desconectado del valor.
         drawSpacedFit(g, kAmpNames[g_params.model.load()], G::FontStyleBold,
-                      kTxtMd, (G::REAL)(TOP_BOX_X + 60), (G::REAL)(TOP_BOX_Y + 7), 1.2f,
+                      kFTxt2, (G::REAL)(TOP_BOX_X + 60), (G::REAL)(TOP_BOX_Y + 7), 1.2f,
                       290.0f, 9.0f, 7.5f);
 
         // "05. " se separa a un chip: el nombre del preset queda alineado a la
         // izquierda y deja de leerse como un texto suelto en mitad de la barra
-        G::SolidBrush tb(kTxtHi);
+        G::SolidBrush tb(kFTxt);
         const WCHAR* nm = pname;
         if (pname[0] && pname[1] && pname[2] == L'.' && pname[3] == L' ') {
             G::SolidBrush cb(G::Color(160, 0xff, 0xa5, 0x1f));
@@ -8272,7 +8279,7 @@ static void paintWindow(HWND hwnd) {
         }
         icChev(g, (G::REAL)TOP_BOX_X + TOP_ARROW_X + 16.0f,
                (G::REAL)TOP_BOX_Y + TOP_BOX_H*0.5f, 11.0f,
-               bhov ? kTxtHi : kTxtMd, 0);
+               bhov ? kFTxt : kFTxt2, 0);
         pressVeil(g, (G::REAL)TOP_BOX_X, (G::REAL)TOP_BOX_Y, (G::REAL)TOP_BOX_W,
                   (G::REAL)TOP_BOX_H, kRPill);
     }
@@ -8285,7 +8292,7 @@ static void paintWindow(HWND hwnd) {
                                 : (gh ? kBtnBgH : kBtnBg));
         g.FillEllipse(&cgb, TOP_GEAR_X, 14, 40, 40);
         const G::Color gtC(gopen ? kAcc
-                                 : (gh ? kTxtHi : kTxtMd));
+                                 : (gh ? kFTxt : kFTxt2));
         G::Pen gp(gopen ? kAcc
                         : (gh ? G::Color(255, 0x24, 0x24, 0x28) : kBtnLn), 1.0f);
         g.DrawEllipse(&gp, TOP_GEAR_X, 14, 40, 40);
@@ -8339,8 +8346,8 @@ static void paintWindow(HWND hwnd) {
     //  contador de un modulo de rack. Antes este renglon lo ocupaba el nombre
     //  del ampli a 15pt, que se pisaba con la serigrafia de la unidad.
     {
-        G::Font fCnt(L"Segoe UI", 8.5f, G::FontStyleBold);
-        G::SolidBrush cb(kTxtLo);
+        G::Font fCnt(L"Segoe UI", kPtLabel, G::FontStyleBold);
+        G::SolidBrush cb(kFTxt3);
         G::StringFormat sfCntR; sfCntR.SetAlignment(G::StringAlignmentFar);
         const int bandY[3] = { PRE_SHELF_Y, AMP_UNIT_Y, POST_SHELF_Y };
         for (int i = 0; i < 3; ++i) {
@@ -8376,14 +8383,14 @@ static void paintWindow(HWND hwnd) {
         // quitar un pedal (ENTRADA, PRE, cabezal, cabina, POST, SALIDA). Si una
         // fila esta vacia, su etapa se queda con el rotulo corto y su marca
         // apagada, en vez de desaparecer.
-        wcscpy_s(tmp, L"ENTRADA");            chip[nch].c = kTxtMd; wcscpy_s(chip[nch++].t, tmp);
+        wcscpy_s(tmp, L"ENTRADA");            chip[nch].c = kFTxt2; wcscpy_s(chip[nch++].t, tmp);
         {
             if (!g_chainPre.empty()) {
                 swprintf_s(tmp, L"PRE \u00D7%d", (int)g_chainPre.size());
                 chip[nch].c = colFx(g_chainPre[0]);
             } else {
                 wcscpy_s(tmp, L"PRE");
-                chip[nch].c = kTxtLo;
+                chip[nch].c = kFTxt3;
             }
             wcsncpy_s(chip[nch++].t, tmp, _TRUNCATE);
         }
@@ -8400,11 +8407,11 @@ static void paintWindow(HWND hwnd) {
                 chip[nch].c = colFx(g_chainPost[0]);
             } else {
                 wcscpy_s(tmp, L"POST");
-                chip[nch].c = kTxtLo;
+                chip[nch].c = kFTxt3;
             }
             wcsncpy_s(chip[nch++].t, tmp, _TRUNCATE);
         }
-        wcscpy_s(tmp, L"SALIDA");              chip[nch].c = kTxtMd; wcsncpy_s(chip[nch++].t, tmp, _TRUNCATE);
+        wcscpy_s(tmp, L"SALIDA");              chip[nch].c = kFTxt2; wcsncpy_s(chip[nch++].t, tmp, _TRUNCATE);
         // anchos: el nombre del amp y el de la cabina son los que mas ocupan
         G::Font fc(L"Segoe UI", 9.5f, G::FontStyleBold);
         G::REAL cwid[6], sum = 0.0f;
@@ -8502,7 +8509,7 @@ static void paintWindow(HWND hwnd) {
             }
             drawSpacedFit(g, wir, G::FontStyleRegular,
                           (cmv == 6) ? kAcc
-                                     : kTxtMd,
+                                     : kFTxt,
                           (G::REAL)(CAB_LBL_X + 118), (G::REAL)CAB_LBL_Y + 1.0f, 0.15f, 182.0f, 9.5f, 7.0f);
         }
         // boton CARGAR IR (abre dialogo WAV)
@@ -8589,7 +8596,7 @@ static void paintWindow(HWND hwnd) {
                 G::Pen hp(on ? kAcc
                              : G::Color(255, hov ? 0x4a : 0x33, hov ? 0x7d : 0x4a, hov ? 0x66 : 0x71), 1.2f);
                 roundRect(g, bx, by, (G::REAL)TUNER_BTN_W, (G::REAL)TUNER_BTN_H, 8, &hp, &hb);
-                G::SolidBrush nb(on ? kAcc : kTxtHi);
+                G::SolidBrush nb(on ? kAcc : kFTxt);
                 roundRect(g, bx + 6.0f, by + 4.0f, 3.0f, (G::REAL)TUNER_BTN_H - 8.0f, 1.5f, nullptr, &nb);
             }
             // diapason: dos puenes, base y mango
@@ -8673,14 +8680,14 @@ static void paintWindow(HWND hwnd) {
                       (G::REAL)SEARCH_H, 6.0f, &sp, nullptr);
         }
         const G::REAL lcx = (G::REAL)SEARCH_X + 16.0f, lcy = (G::REAL)SEARCH_Y + SEARCH_H*0.5f;
-        G::Pen lp(g_searchFocus ? kAcc : kTxtLo, 1.4f);
+        G::Pen lp(g_searchFocus ? kAcc : kFTxt3, 1.4f);
         g.DrawEllipse(&lp, lcx - 4.2f, lcy - 4.2f, 8.4f, 8.4f);
         g.DrawLine(&lp, lcx + 3.0f, lcy + 3.0f, lcx + 6.6f, lcy + 6.6f);
         G::Font fSrch(L"Segoe UI", 10.5f);
         G::StringFormat sfL;
         sfL.SetLineAlignment(G::StringAlignmentCenter);
         sfL.SetFormatFlags(G::StringFormatFlagsNoWrap | G::StringFormatFlagsNoClip);
-        G::SolidBrush ib(g_ampFilter[0] ? kTxtHi : kTxtLo);
+        G::SolidBrush ib(g_ampFilter[0] ? kFTxt : kFTxt3);
         WCHAR ph[48];
         if (g_ampFilter[0]) wcscpy_s(ph, g_ampFilter);
         else wcscpy_s(ph, L"Buscar amplificador...");
@@ -8768,11 +8775,11 @@ static void paintWindow(HWND hwnd) {
                     G::Pen mpc(G::Color(46, 0x9c, 0x98, 0x90), 1.0f);
                     roundRect(g, tx, ty, tw, th, 5.0f, &mpc, &mbc);
                 }
-                G::SolidBrush nb2(kTxtHi);
+                G::SolidBrush nb2(kFTxt);
                 g.DrawString(kAmpNames[a], -1, &fRowN,
                              G::RectF((G::REAL)(rx + 108), (G::REAL)(ry + 7), (G::REAL)(rw - 144), 20.0f),
                              nullptr, &nb2);
-                G::SolidBrush sb3(kTxtMd);
+                G::SolidBrush sb3(kFTxt2);
                 g.DrawString(kAmpSubs[a], -1, &fRowS,
                              G::RectF((G::REAL)(rx + 108), (G::REAL)(ry + 29), (G::REAL)(rw - 144), 16.0f),
                              nullptr, &sb3);
@@ -8784,7 +8791,7 @@ static void paintWindow(HWND hwnd) {
                     // ruido el borde derecho de la lista y competian con los
                     // nombres. En reposo quedan como un contorno tenue.
                     const G::Color stc = fav ? colAmp(a)
-                                             : (hov ? kTxtMd
+                                             : (hov ? kFTxt2
                                                     : G::Color(88, 0x8b, 0x87, 0x81));
                     icStar(g, (G::REAL)rx + rw - 15.0f, (G::REAL)ry + 26.0f, 7.0f, stc, fav);
                 }
@@ -8815,9 +8822,9 @@ static void paintWindow(HWND hwnd) {
                     // vertical que la estrella y el que declara navBadgeRect
                     // (antes el aspa iba 7px alta y el lapiz 2px bajo).
                     icPencil(g, (G::REAL)rx + rw - 42.0f, (G::REAL)ry + 26.0f, 7.0f,
-                             hE ? kTxtHi : kTxtLo);
+                             hE ? kFTxt : kFTxt3);
                     icClose(g, (G::REAL)rx + rw - 15.0f, (G::REAL)ry + 26.0f, 7.0f,
-                            armed ? kHot : (hX ? kTxtHi : kTxtLo));
+                            armed ? kHot : (hX ? kFTxt : kFTxt3));
                     if (armed) {
                         G::Pen ap(kHot, 1.5f);
                         roundRect(g, (G::REAL)rx, (G::REAL)ry, (G::REAL)rw, (G::REAL)rh,
@@ -8830,7 +8837,7 @@ static void paintWindow(HWND hwnd) {
         // blanco y no se distinguia de "la lista no ha cargado".
         if (cnt == 0) {
             G::Font fEmp(L"Segoe UI", 10.0f, G::FontStyleRegular);
-            G::SolidBrush em(kTxtMd);
+            G::SolidBrush em(kFTxt2);
             G::StringFormat sfc2; sfc2.SetAlignment(G::StringAlignmentCenter);
             const WCHAR* msg = (g_leftTab == 0) ? L"SIN AMPLIFICADORES CON ESE FILTRO"
                                                 : L"SIN PRESETS CON ESE FILTRO";
@@ -9085,7 +9092,7 @@ static void paintWindow(HWND hwnd) {
             G::SolidBrush tb3(kWellA);
             G::Pen tp3(G::Color(255, ac.GetR(), ac.GetG(), ac.GetB()), 1.5f);
             roundRect(g, bx3, by3, bw3, bh3, 6, &tp3, &tb3);
-            G::SolidBrush tt3(kTxtHi);
+            G::SolidBrush tt3(kFTxt);
             g.DrawString(wfull, -1, &fTip, G::RectF(bx3, by3, bw3, bh3), &sfC, &tt3);
         }
     }
@@ -9111,7 +9118,7 @@ static void paintWindow(HWND hwnd) {
         // al pasar el raton o arrastrar. Sin sombra ni brillo (monocromo radical).
         const G::REAL th = (hov || g_mixDrag) ? 9.0f : 8.0f;
         {
-            G::SolidBrush tb(kTxtHi);
+            G::SolidBrush tb(kFTxt);
             g.FillEllipse(&tb, tx - th, ty - th, th*2.0f, th*2.0f);
         }
         G::Pen tp((hov || g_mixDrag) ? kAcc : G::Color(255, 0x0b, 0x0b, 0x0c),
@@ -9139,7 +9146,7 @@ static void paintWindow(HWND hwnd) {
             G::Pen pp(G::Color(255, 0x18, 0x18, 0x1b), 1.0f);
             roundRect(g, 24, BOT_BOX_Y, 306, 44, 8, &pp, &pb);
         }
-        G::SolidBrush tb(kTxtHi);
+        G::SolidBrush tb(kFTxt);
         {
             G::StringFormat sfL;
             sfL.SetLineAlignment(G::StringAlignmentCenter);
@@ -9216,35 +9223,57 @@ static void paintWindow(HWND hwnd) {
         presetNameW(g_presetIdx, wpname, 96);   // incluye presets de usuario (sin leer fuera de g_presets)
         char pnameA[128] = "";
         WideCharToMultiByte(CP_ACP, 0, wpname, -1, pnameA, 128, nullptr, nullptr);
-        // Se pinta en tres tramos (prefijo / estado coloreado / resto) para que
-        // el estado resalte sin duplicar ni desalinear el texto.
+        // El estado se pinta aparte porque lleva color. El resto va como lista
+        // de CAMPOS: rotulo tenue y valor medio, con un filete de 1px entre uno
+        // y otro. Antes era un renglon corrido con " | " dentro y todo al mismo
+        // tono, asi que no se veia donde acababa un dato ni cual era el nombre.
         char stateA[64];
         sprintf_s(stateA, "%s%s", audioWord, recWord);
         WCHAR wstate[64];
         MultiByteToWideChar(CP_ACP, 0, stateA, -1, wstate, 64);
-        char tailA[640];
-        sprintf_s(tailA, " | %s | IN: %.40s | OUT: %.40s | %d Hz | Buffer %d (%.1f ms) | Preset: %.30s",
-                  stx.system == 1 ? "WASAPI EXCLUSIVO" : "WASAPI COMPARTIDO",
-                  inN, outN, rate, bsz, bsz*1000.0/rate, pnameA);
-        WCHAR wtail[700];
-        MultiByteToWideChar(CP_ACP, 0, tailA, -1, wtail, 700);
         // hairline sobre la linea de estado: la separa del pie sin recuadros
         hairSep(g, 24.0f, (G::REAL)(BOT_STAT_Y - 7), (G::REAL)(WIN_W - 48), 24);
-        G::SolidBrush sb(kTxtLo);
-        G::SolidBrush cs(!en ? G::Color(0xff, 0x82, 0x7d, 0x76)
-                      : sessOn ? kAcc
-                               : kHot);
         {
+            char tIn[64], tOut[64], tPre[64];
+            sprintf_s(tIn, "%.32s", inN);
+            sprintf_s(tOut, "%.32s", outN);
+            sprintf_s(tPre, "%.30s", pnameA);
+            WCHAR weng[64], winN[160], woutN[160], wrate[64], wbuf[96], wpres[160];
+            MultiByteToWideChar(CP_ACP, 0, stx.system == 1 ? "WASAPI EXCLUSIVO"
+                                                           : "WASAPI COMPARTIDO", -1, weng, 64);
+            MultiByteToWideChar(CP_ACP, 0, tIn, -1, winN, 160);
+            MultiByteToWideChar(CP_ACP, 0, tOut, -1, woutN, 160);
+            swprintf_s(wrate, L"%d Hz", rate);
+            swprintf_s(wbuf, L"%d muestras (%.1f ms)", bsz, bsz*1000.0/rate);
+            MultiByteToWideChar(CP_ACP, 0, tPre, -1, wpres, 160);
+
             const G::REAL py = (G::REAL)BOT_STAT_Y;
             G::REAL px = 24.0f;
             G::RectF mb;
-            g.DrawString(L"AUDIO ", -1, &fSmall, G::RectF(px, py, 900.0f, 22), nullptr, &sb);
+            G::SolidBrush bLbl(kFTxt3), bVal(kFTxt2);
+            G::SolidBrush cs(!en ? G::Color(0xff, 0x82, 0x7d, 0x76)
+                          : sessOn ? kAcc
+                                   : kHot);
+            G::Pen fsep(kFLine, 1.0f);
+            // campo 0: AUDIO y su estado, que es lo unico que lleva color
+            g.DrawString(L"AUDIO ", -1, &fSmall, G::RectF(px, py, 900.0f, 22), nullptr, &bLbl);
             g.MeasureString(L"AUDIO ", -1, &fSmall, G::RectF(0, 0, 900, 24), nullptr, &mb);
             px += mb.Width;
             g.DrawString(wstate, -1, &fSmall, G::RectF(px, py, 900.0f, 22), nullptr, &cs);
             g.MeasureString(wstate, -1, &fSmall, G::RectF(0, 0, 900, 24), nullptr, &mb);
-            px += mb.Width;
-            g.DrawString(wtail, -1, &fSmall, G::RectF(px, py, (G::REAL)WIN_W - 24.0f - px, 22), nullptr, &sb);
+            px += mb.Width + 2.0f;
+            const WCHAR* fl[6] = { L"MOTOR", L"IN", L"OUT", L"FREC", L"BUFFER", L"PRESET" };
+            const WCHAR* fv[6] = { weng, winN, woutN, wrate, wbuf, wpres };
+            for (int i = 0; i < 6; ++i) {
+                g.DrawLine(&fsep, px + 7.0f, py + 2.0f, px + 7.0f, py + 15.0f);
+                px += 14.0f;
+                g.DrawString(fl[i], -1, &fSmall, G::RectF(px, py, 260.0f, 22), nullptr, &bLbl);
+                g.MeasureString(fl[i], -1, &fSmall, G::RectF(0, 0, 900, 24), nullptr, &mb);
+                px += mb.Width + 5.0f;
+                g.DrawString(fv[i], -1, &fSmall, G::RectF(px, py, 620.0f, 22), nullptr, &bVal);
+                g.MeasureString(fv[i], -1, &fSmall, G::RectF(0, 0, 900, 24), nullptr, &mb);
+                px += mb.Width;
+            }
         }
     }
 
@@ -9258,11 +9287,15 @@ static void paintWindow(HWND hwnd) {
         const G::REAL pw = 940, ph = 390;
         const G::REAL valL = px + 230, valR = px + pw - 140;
         glassPanel(g, px, py, pw, ph, kRModal, true);
-        G::SolidBrush acc(kAcc);
-        drawSpacedFit(g, L"AJUSTES DE AUDIO", G::FontStyleBold, kAcc,
-                      px + 30, py + 14, 2.0f, pw - 80.0f, 22.0f, 14.0f);
-        // subrayado de acento bajo el titulo
-        roundRect(g, px + 30, py + 50, 190, 2.5f, 1.25f, nullptr, &acc);
+        // El titulo va en marfil, no en ambar: el ambar marca lo que suena o
+        // esta pulsado, y una cabecera no es ninguna de las dos cosas.
+        drawSpacedFit(g, L"AJUSTES DE AUDIO", G::FontStyleBold, kFTxt,
+                      px + 30, py + 14, 2.0f, pw - 80.0f, kPtNumBig, 14.0f);
+        // filete de 1px bajo el titulo (antes, subrayado de acento)
+        {
+            G::Pen ul(kFLine, 1.0f);
+            g.DrawLine(&ul, px + 30, py + 51, px + 220, py + 51);
+        }
 
         AudioSettings st;
         { std::lock_guard<std::mutex> lock(g_settingsMutex); st = g_settings; }
@@ -9288,9 +9321,11 @@ static void paintWindow(HWND hwnd) {
         int bsz = kBuffers[st.bufIdx];
         sprintf_s(vBuf, "%d muestras (%.1f ms)", bsz, bsz*1000.0/kRates[st.rateIdx]);
 
-        const char* labels[5] = { "Motor de audio", "Entrada", "Salida", "Frecuencia", "Buffer" };
+        const char* labels[5] = { "MOTOR DE AUDIO", "ENTRADA", "SALIDA",
+                                  "FRECUENCIA", "BUFFER" };
         const char* values[5] = { vEng, vIn, vOut, vRate, vBuf };
-        G::Font fVal(L"Segoe UI", 11.5f);
+        G::Font fVal(L"Segoe UI", kPtNum);
+        G::Font fLbl(L"Segoe UI", 10.5f, G::FontStyleBold);
         for (int i = 0; i < 5; ++i) {
             G::REAL ry = py + 58 + i*34;
             g_panelRows[i] = { (int)(px + 30), (int)ry, (int)(px + pw - 30), (int)(ry + 30) };
@@ -9313,27 +9348,27 @@ static void paintWindow(HWND hwnd) {
             MultiByteToWideChar(CP_ACP, 0, values[i], -1, wv, 180);
             // pildora del valor: el valor parece un control, no texto suelto
             {
-                G::SolidBrush vb(kBtnBg);
-                G::Pen vp(hovR ? G::Color(255, 0x24, 0x24, 0x28) : kBtnLn, 1.0f);
+                G::SolidBrush vb(kFSurf2);
+                G::Pen vp(hovR ? kFSurf3 : kFLine, 1.0f);
                 roundRect(g, valL - 6, ry + 3, (valR + 6) - (valL - 6), 24, 6, &vp, &vb);
             }
-            G::SolidBrush tb(kTxtHi);
-            g.DrawString(wl, -1, &fBold, G::RectF(px + 44, ry, 180, 30), nullptr, &tb);
-            G::SolidBrush vtb(kTxtHi);
+            G::SolidBrush tb(kFTxt3);
+            g.DrawString(wl, -1, &fLbl, G::RectF(px + 44, ry, 180, 30), nullptr, &tb);
+            G::SolidBrush vtb(kFTxt);
             g.DrawString(wv, -1, &fVal, G::RectF(valL, ry, valR - valL, 30), &sfC, &vtb);
             // flechas en circulos; los rects de click siguen valL-42..valL-6 / valR+6..valR+42
             bool hl = mouseIn((int)(valL - 42), (int)ry, (int)(valL - 6), (int)(ry + 30));
             bool hr = mouseIn((int)(valR + 6), (int)ry, (int)(valR + 42), (int)(ry + 30));
             {
-                G::SolidBrush cb1(hl ? kBtnBgH : kBtnBg);
-                G::Pen cp1(hl ? G::Color(255, 0x24, 0x24, 0x28) : kBtnLn, 1.0f);
+                G::SolidBrush cb1(hl ? kFSurf3 : kFSurf2);
+                G::Pen cp1(hl ? kFSurf3 : kFLine, 1.0f);
                 roundRect(g, valL - 37, ry + 2, 26, 26, 13, &cp1, &cb1);
-                G::SolidBrush cb2(hr ? kBtnBgH : kBtnBg);
-                G::Pen cp2(hr ? G::Color(255, 0x24, 0x24, 0x28) : kBtnLn, 1.0f);
+                G::SolidBrush cb2(hr ? kFSurf3 : kFSurf2);
+                G::Pen cp2(hr ? kFSurf3 : kFLine, 1.0f);
                 roundRect(g, valR + 11, ry + 2, 26, 26, 13, &cp2, &cb2);
             }
-            icChev(g, (G::REAL)valL - 24.0f, ry + 15.0f, 12.0f, hl ? kTxtHi : kTxtMd, 1);
-            icChev(g, (G::REAL)valR + 24.0f, ry + 15.0f, 12.0f, hr ? kTxtHi : kTxtMd, 2);
+            icChev(g, (G::REAL)valL - 24.0f, ry + 15.0f, 12.0f, hl ? kFTxt : kFTxt2, 1);
+            icChev(g, (G::REAL)valR + 24.0f, ry + 15.0f, 12.0f, hr ? kFTxt : kFTxt2, 2);
             pressVeil(g, (G::REAL)(valL - 42), (G::REAL)ry, 36, 30, 6.0f);
             pressVeil(g, (G::REAL)(valR + 6), (G::REAL)ry, 36, 30, 6.0f);
         }
@@ -9343,7 +9378,7 @@ static void paintWindow(HWND hwnd) {
                       bsz*1000.0/kRates[st.rateIdx]*2.0);
             WCHAR wlat[160];
             MultiByteToWideChar(CP_ACP, 0, clat, -1, wlat, 160);
-            G::SolidBrush lb(kTxtMd);
+            G::SolidBrush lb(kFTxt2);
             g.DrawString(wlat, -1, &fSmall, G::RectF(px + 44, py + 58 + 5*34 + 8, pw - 88, 24), nullptr, &lb);
         }
         // separador tenue sobre los botones
@@ -9359,7 +9394,7 @@ static void paintWindow(HWND hwnd) {
             bool ah = mouseIn(g_panelApply.left, g_panelApply.top, g_panelApply.right, g_panelApply.bottom);
             bool ch = mouseIn(g_panelCancel.left, g_panelCancel.top, g_panelCancel.right, g_panelCancel.bottom);
             {
-                G::SolidBrush abr(ah ? kTxtMd : kAcc);
+                G::SolidBrush abr(ah ? kFTxt2 : kAcc);
                 G::Pen appn(ah ? kFLine : kAccGlb, 1.0f);
                 roundRect(g, (G::REAL)g_panelApply.left, (G::REAL)g_panelApply.top, 180, 40, 8, &appn, &abr);
                 G::SolidBrush cbr(ch ? kFSurf3 : kFSurf2);
@@ -9369,7 +9404,7 @@ static void paintWindow(HWND hwnd) {
             G::SolidBrush tb(G::Color(255, 255, 255, 255));
             g.DrawString(L"APLICAR", -1, &fPreset,
                          G::RectF((G::REAL)g_panelApply.left, (G::REAL)g_panelApply.top, 180, 40), &sfC, &tb);
-            G::SolidBrush tb2(kTxtHi);
+            G::SolidBrush tb2(kFTxt);
             g.DrawString(L"CANCELAR", -1, &fPreset,
                          G::RectF((G::REAL)g_panelCancel.left, (G::REAL)g_panelCancel.top, 180, 40), &sfC, &tb2);
             pressVeil(g, (G::REAL)g_panelApply.left, (G::REAL)g_panelApply.top, 180, 40, 8.0f);
@@ -9469,7 +9504,7 @@ static void paintWindow(HWND hwnd) {
         G::SolidBrush dim(G::Color((BYTE)(kVeil.GetA()*g_anim.modal), 0, 0, 0));
         g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
         glassPanel(g, (G::REAL)REN_X, (G::REAL)REN_Y, (G::REAL)REN_W, (G::REAL)REN_H, kRModal, true);
-        drawSpacedFit(g, L"RENOMBRAR PRESET", G::FontStyleBold, kTxtHi,
+        drawSpacedFit(g, L"RENOMBRAR PRESET", G::FontStyleBold, kFTxt,
                       (G::REAL)(REN_X + 28), (G::REAL)(REN_Y + 24), 1.4f, 320.0f, 14.0f, 10.0f);
         {   // campo activo: el hueco del sistema, con filete y cursor del acento
             G::SolidBrush wb2(kWellA);
@@ -9477,7 +9512,7 @@ static void paintWindow(HWND hwnd) {
             roundRect(g, (G::REAL)REN_F_X, (G::REAL)REN_F_Y, (G::REAL)REN_F_W, (G::REAL)REN_F_H,
                       6.0f, &wp2, &wb2);
             G::Font fRen(L"Segoe UI", 13.0f);
-            G::SolidBrush tb2(kTxtHi);
+            G::SolidBrush tb2(kFTxt);
             const G::REAL tx = (G::REAL)(REN_F_X + 12), ty = (G::REAL)REN_F_Y;
             g.DrawString(g_renameBuf, -1, &fRen,
                          G::RectF(tx, ty, (G::REAL)(REN_F_W - 24), (G::REAL)REN_F_H), nullptr, &tb2);
@@ -9509,7 +9544,7 @@ static void paintWindow(HWND hwnd) {
         G::SolidBrush tbg(kFSurf2);
         G::Pen tpen(kAcc, 1.0f);
         roundRect(g, txx, tyy, tw, th, 8.0f, &tpen, &tbg);
-        G::SolidBrush ttx(kTxtHi);
+        G::SolidBrush ttx(kFTxt);
         g.DrawString(g_toast, -1, &fTo, G::RectF(txx, tyy, tw, th), &sfC, &ttx);
     }
 
