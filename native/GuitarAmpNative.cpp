@@ -7902,6 +7902,40 @@ static void listFilterIdx(int* out, int* pCount) {
     *pCount = n;
 }
 static int listVisibleRows() { return LIST_H / LIST_ROW_H; }
+// La fila del navegador: UNA definicion para pintura, hover y clic. Antes la
+// pintura usaba 4px menos de alto que la banda de pulsacion y los dos numeros
+// vivian en sitios distintos; aqui quedan juntos y el aire de abajo es
+// explicito: es visual, no de pulsacion (las filas se pulsan pegadas).
+static RECT navRowRect(int vi) {
+    const int rx = COL_L_X + 8, ry = LIST_Y + vi*LIST_ROW_H;
+    RECT r = { rx, ry, rx + (COL_L_W - 16), ry + LIST_ROW_H };
+    return r;
+}
+static RECT navRowPaintRect(int vi) {
+    RECT r = navRowRect(vi);
+    r.bottom -= 4;             // el aire entre filas es solo visual
+    return r;
+}
+// Columna de acciones del borde derecho de la fila: estrella de favorito en
+// AMPLIFICADORES, aspa de borrado en PRESETS (las dos en `primary`) y lapiz de
+// renombrar a su izquierda. Mismo sitio en las dos pestanas.
+static RECT navBadgeRect(int vi, bool primary) {
+    RECT r = navRowRect(vi);
+    if (primary) { r.left = r.right - 28; r.right = r.right - 2; }
+    else         { r.left = r.right - 54; r.right = r.right - 30; }
+    r.top += 4; r.bottom -= 8;
+    return r;
+}
+static bool rectHas(const RECT& r, int x, int y) {
+    POINT p = { x, y };
+    return PtInRect(&r, p) != 0;
+}
+// La caja de un slot del pedalboard. La misma suma (sx + PED_SLOT_W...) estaba
+// escrita en la pintura, en hoverKey y en el clic: ahora sale de aqui.
+static RECT pedSlotBox(int sx, int sy) {
+    RECT r = { sx, sy, sx + PED_SLOT_W, sy + PED_SLOT_H };
+    return r;
+}
 // Deja la fila `a` a la vista (la lista la seguiria con el raton; con el teclado
 // tiene que seguirla sola o el movimiento no se ve y no parece que pase nada)
 static void listFollow(int a) {
@@ -9254,10 +9288,11 @@ static void paintWindow(HWND hwnd) {
             const int gi = g_listScroll + vi;
             if (gi >= cnt) break;
             const int a = idx[gi];
-            const int rx = COL_L_X + 8, ry = LIST_Y + vi*LIST_ROW_H;
-            const int rw = COL_L_W - 16, rh = LIST_ROW_H - 4;
+            const RECT rp = navRowPaintRect(vi);    // la fila, de UNA definicion
+            const int rx = rp.left, ry = rp.top;
+            const int rw = rp.right - rp.left, rh = rp.bottom - rp.top;
             const bool sel = (g_leftTab == 0) ? (a == cur) : (a == g_presetIdx);
-            const bool hov = mouseIn(rx, ry, rx + rw, ry + rh);
+            const bool hov = rectHas(rp, g_mouseX, g_mouseY);
             // el hover entra/sale en kRampHover ms: la luz se vana/recupera sola,
             // en vez de encenderse y apagarse de golpe
             const float hr = (gi >= 0 && gi < kMaxListEntries)
@@ -9335,8 +9370,8 @@ static void paintWindow(HWND hwnd) {
                     // LAPIZ (renombrar) y ASPA (borrar) solo en los presets del
                     // usuario. El aspa se pone en rojo al armar el borrado: borrar
                     // pide dos clics, para no llevarse un preset de un roce.
-                    const bool hE = mouseIn(rx + rw - 54, ry + 4, rx + rw - 30, ry + LIST_ROW_H - 8);
-                    const bool hX = mouseIn(rx + rw - 28, ry + 4, rx + rw - 2, ry + LIST_ROW_H - 8);
+                    const bool hE = rectHas(navBadgeRect(vi, false), g_mouseX, g_mouseY);
+                    const bool hX = rectHas(navBadgeRect(vi, true),  g_mouseX, g_mouseY);
                     G::SolidBrush pb(hE ? kTxtHi : kTxtLo);
                     g.DrawString(L"\x270E", -1, &fSymRow,
                                  G::RectF((G::REAL)(rx + rw - 54), (G::REAL)(ry + 17), 24.0f, 22.0f),
@@ -9405,7 +9440,7 @@ static void paintWindow(HWND hwnd) {
                        PED_TMPL_W, PED_TMPL_H, g_slotTmpl[t].dc, 0, 0, SRCCOPY);
             }
             const G::Color ac = colFx(t);
-            if (mouseIn((int)sx, (int)sy, (int)(sx + PED_SLOT_W), (int)(sy + PED_SLOT_H))) {
+            if (rectHas(pedSlotBox((int)sx, (int)sy), g_mouseX, g_mouseY)) {
                 G::Pen bp(G::Color(255, ac.GetR(), ac.GetG(), ac.GetB()), 1.8f);
                 roundRect(g, sx, sy, PED_SLOT_W, PED_SLOT_H, 10, &bp, nullptr);
             }
@@ -9442,7 +9477,7 @@ static void paintWindow(HWND hwnd) {
             const int cnt = (int)((row == 0) ? g_chainPre.size() : g_chainPost.size());
             if (cnt < PED_MAX_ROW) {
                 const G::REAL sx = pedSlotX(cnt), sy = PED_ROW_Y[row];
-                const bool hov = mouseIn((int)sx, (int)sy, (int)(sx + PED_SLOT_W), (int)(sy + PED_SLOT_H));
+                const bool hov = rectHas(pedSlotBox((int)sx, (int)sy), g_mouseX, g_mouseY);
                 G::Pen dp(hov ? kAcc : G::Color(0xff, 0x39, 0x36, 0x33), 1.6f);
                 dp.SetDashStyle(G::DashStyleDash);
                 roundRect(g, sx, sy, PED_SLOT_W, PED_SLOT_H, 10, &dp, nullptr);
@@ -10176,13 +10211,13 @@ static int hoverKey() {
         const std::vector<int>& ch = (row == 0) ? g_chainPre : g_chainPost;
         for (size_t i = 0; i < ch.size(); ++i) {
             const int sx = (int)pedSlotX((int)i), sy = PED_ROW_Y[row];
-            if (mouseIn(sx, sy, sx + PED_SLOT_W, sy + PED_SLOT_H))
+            if (rectHas(pedSlotBox(sx, sy), g_mouseX, g_mouseY))
                 return 30 + row*10 + (int)i;        // slot de pedal
         }
         const int cnt = (int)ch.size();
         if (cnt < PED_MAX_ROW) {
             const int sx = (int)pedSlotX(cnt), sy = PED_ROW_Y[row];
-            if (mouseIn(sx, sy, sx + PED_SLOT_W, sy + PED_SLOT_H))
+            if (rectHas(pedSlotBox(sx, sy), g_mouseX, g_mouseY))
                 return 40 + row;                    // slot fantasma ANADIR
         }
     }
@@ -10831,15 +10866,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 int idx[kMaxListEntries], cnt = 0;
                 listFilterIdx(idx, &cnt);
                 const int vis = listVisibleRows();
+                // La banda de pulsacion de una fila es su ranura entera (ver
+                // navRowRect): esta division es su inversa exacta.
                 const int vi = (y - LIST_Y) / LIST_ROW_H;
                 const int gi = g_listScroll + vi;
-                const int rx = COL_L_X + 8, rw = COL_L_W - 16;
-                const int ry = LIST_Y + vi*LIST_ROW_H;
                 if (vi >= 0 && vi < vis && gi >= 0 && gi < cnt) {
                     const int a = idx[gi];
                     if (g_leftTab == 0) {
                         // estrella de favoritos (esquina derecha de la fila)
-                        RECT fr = { rx + rw - 28, ry + 4, rx + rw - 2, ry + LIST_ROW_H - 8 };
+                        const RECT fr = navBadgeRect(vi, true);   // estrella
                         if (PtInRect(&fr, pt)) {
                             g_favMask ^= (1u << a);         // una sola fuente de favoritos
                             g_fav = ((g_favMask >> a) & 1u) != 0;
@@ -10857,8 +10892,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         // derecha, el mismo trato que la estrella de los amplis.
                         // Borrar pide dos clics: el primero arma la fila.
                         if (isUserPreset(a)) {
-                            RECT xr = { rx + rw - 28, ry + 4, rx + rw - 2, ry + LIST_ROW_H - 8 };
-                            RECT er = { rx + rw - 54, ry + 4, rx + rw - 30, ry + LIST_ROW_H - 8 };
+                            const RECT xr = navBadgeRect(vi, true);   // aspa
+                            const RECT er = navBadgeRect(vi, false);  // lapiz
                             if (PtInRect(&xr, pt)) {
                                 if (g_delArm == a) { deleteUserPreset(a); g_delArm = -1; }
                                 else               { g_delArm = a; }
@@ -10982,7 +11017,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             const std::vector<int>& ch = (row == 0) ? g_chainPre : g_chainPost;
             for (size_t i = 0; i < ch.size(); ++i) {
                 const int sx = (int)pedSlotX((int)i), sy = PED_ROW_Y[row];
-                if (!mouseIn(sx, sy, sx + PED_SLOT_W, sy + PED_SLOT_H)) continue;
+                if (!rectHas(pedSlotBox(sx, sy), x, y)) continue;
                 const int t = ch[i];
                 // Quitar pide DOS CLICS, como borrar un preset (g_delArm): el
                 // primero arma y pone el aspa en rojo, el segundo borra. La diana
@@ -11039,7 +11074,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             const int cnt = (int)((row == 0) ? g_chainPre.size() : g_chainPost.size());
             if (cnt >= PED_MAX_ROW) continue;
             const int sx = (int)pedSlotX(cnt), sy = PED_ROW_Y[row];
-            RECT ar = { sx, sy, sx + PED_SLOT_W, sy + PED_SLOT_H };
+            RECT ar = pedSlotBox(sx, sy);
             if (PtInRect(&ar, pt)) {
                 modalCloseAll();   // un modal a la vez
                 g_addOpen = true;
@@ -12429,6 +12464,34 @@ static void hTestZones() {
     g_settingsOpen = false;
     sprintf_s(d, "zonas vivas con el panel de ajustes abierto = %d", vivas);
     hCheck(vivas == 0, "K4 un modal abierto deja la tabla vacia", d);
+
+    // L: los rectangulos DERIVADOS (navegador y pedalboard). Antes vivian en dos
+    // sitios con numeros distintos: la pintura de la fila media 4px menos que su
+    // banda de pulsacion, asi que el clic desbordaba lo que se veia. Aqui quedan
+    // clavados a las constantes para que no vuelvan a separarse.
+    const RECT rw0 = navRowRect(0), rp0 = navRowPaintRect(0);
+    sprintf_s(d, "fila=[%d,%d,%d,%d] pintada=[%d,%d,%d,%d]",
+              (int)rw0.left, (int)rw0.top, (int)rw0.right, (int)rw0.bottom,
+              (int)rp0.left, (int)rp0.top, (int)rp0.right, (int)rp0.bottom);
+    hCheck(rw0.left == COL_L_X + 8 && rw0.top == LIST_Y &&
+           rw0.right == COL_L_X + 8 + (COL_L_W - 16) && rw0.bottom == LIST_Y + LIST_ROW_H &&
+           rp0.top == rw0.top && rp0.bottom == rw0.bottom - 4,
+           "L1 la fila y su version pintada difieren solo en el aire", d);
+
+    const RECT bA = navBadgeRect(2, true), bB = navBadgeRect(2, false);
+    const int bx = COL_L_X + 8, bw = COL_L_W - 16, by = LIST_Y + 2*LIST_ROW_H;
+    sprintf_s(d, "derecha=[%d..%d] izquierda=[%d..%d] alto=%d",
+              (int)bA.left, (int)bA.right, (int)bB.left, (int)bB.right, (int)bA.bottom);
+    hCheck(bA.left == bx + bw - 28 && bA.right == bx + bw - 2 &&
+           bB.left == bx + bw - 54 && bB.right == bx + bw - 30 &&
+           bA.top == by + 4 && bA.bottom == by + LIST_ROW_H - 8,
+           "L2 las chapas caen en su columna del borde derecho", d);
+
+    const RECT sb = pedSlotBox((int)pedSlotX(3), PED_ROW_Y[0]);
+    sprintf_s(d, "slot3=[%d,%d,%d,%d]", (int)sb.left, (int)sb.top, (int)sb.right, (int)sb.bottom);
+    hCheck(sb.left == (int)pedSlotX(3) && sb.right == (int)pedSlotX(3) + PED_SLOT_W &&
+           sb.top == PED_ROW_Y[0] && sb.bottom == PED_ROW_Y[0] + PED_SLOT_H,
+           "L3 la caja del slot de pedal cubre el slot entero", d);
 
     // el estado original del proceso queda intacto
     g_t3kOpen = sT3k; g_settingsOpen = sSet; g_addOpen = sAdd; g_tunerOpen.store(sTun);
