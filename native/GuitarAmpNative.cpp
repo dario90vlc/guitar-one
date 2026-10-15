@@ -6905,10 +6905,15 @@ static void buildStaticScene(int W, int H) {
         // HINT_Y apuntaba a el) pero nada lo pintaba. Los atajos existen y son
         // reales, asi que la leyenda cierra el panel como promete el diseno.
         {
-            drawSpacedFitC(g, L"ESPACIO audio · \x2190/\x2192 preset · \x2191/\x2193 lista · ESC cierra",
+            // Los cuatro atajos, de mas usado a menos: presets (flechas), la
+            // lista de la izquierda, el audio y salir. Antes era una linea de
+            // 7,5 pt en una columna de 320 que se leia "ESPACIO audio <-/->
+            // preset ..." sin saber que significaba cada flecha ni en que
+            // orden mirarlos. Ahora cada uno nombra lo que hace.
+            drawSpacedFitC(g, L"\x2190\x2192 presets · \x2191\x2193 lista · ESPACIO audio · ESC salir",
                            G::FontStyleRegular, kTxtLo,
                            (G::REAL)(COL_L_X + COL_L_W/2), (G::REAL)HINT_Y, 0.3f,
-                           (G::REAL)(COL_L_W - 24), 7.5f, 6.5f);
+                           (G::REAL)(COL_L_W - 24), 8.0f, 6.5f);
         }
         // El buscador escribe en vivo: el hueco va en la escena estatica y el
         // texto/foco se pintan en la capa dinamica (antes el texto tipeado no
