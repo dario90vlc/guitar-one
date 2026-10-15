@@ -103,29 +103,32 @@ extern "C" BOOL __stdcall GetOpenFileNameW(LPOPENFILENAMEW);
 namespace G = Gdiplus;
 
 // ============================================================================
-//  RACK - el lenguaje visual de la aplicacion.
-//  Una torre de senal: la ventana entera es un rack de estudio, y cada unidad
-//  (pedal, cabezal, cabina) es un modulo montado en sus carriles. Superficies
-//  PLANAS y precisas: filete de 1px, sin degradado decorativo, sin grano, sin
-//  biseles que no signifiquen nada. La profundidad la da la luz de la escena
-//  (sombra de contacto bajo cada modulo) y el AMBAR -unico color vivo- marca
-//  lo que suena o lo que se puede tocar. El color grande lo pone el equipo:
-//  los frontales de los amplis, la tela de la cabina y las caras de los pedales.
+//  CONSOLA DE CRISTAL - el lenguaje visual de la aplicacion (v2).
+//  La ventana es una consola de software, no un rack de hardware. Sobre un
+//  lienzo casi negro se apilan capas de CRISTAL translucido con aire entre
+//  ellas, y una sola luz -desde arriba- ordena el conjunto: el canto superior
+//  de cada panel coge esa luz y cae en sombra, y los pozos se hunden. Fuera
+//  el skeuomorfismo: no hay tornillos, ni carriles, ni tolex, ni chapa grabada.
+//  El unico color fotografico lo pone el equipo -los frontales de los amplis,
+//  la tela de la cabina y las caras de los pedales-, y la jerarquia la lleva la
+//  tipografia, no el color: las secciones mandan, el cuerpo escucha.
 //
 //  Reglas del sistema (si algo las rompe, se ve como una maqueta):
-//   1. Ninguna superficie lleva degradado con mas de dos paradas ni halo.
-//   2. Un solo filete claro arriba (1px al 6%) es toda la "luz" de una placa.
-//   3. El grano y la vineta se han eliminado: sobre un fondo casi negro no
-//      leian como material, leian como suciedad.
-//   4. El ambar (kAcc) solo aparece en: valor activo, LED encendido, aguja,
+//   1. Una sola luz, desde arriba. La profundidad la da esa luz y una sombra
+//      ambiental ancha; nunca un bisel ni un filete "porque si".
+//   2. El cristal se pinta en dos paradas (arriba iluminado, abajo en sombra)
+//      con el lienzo intuible debajo: es translucido, no una placa opaca.
+//   3. El ambar (kAcc) solo aparece en: valor activo, LED encendido, aguja,
 //      seleccion y foco de teclado. Nunca como decoracion.
+//   4. Nada se adorna dos veces. Si una superficie ya lleva luz arriba, no
+//      lleva tambien halo; si ya lleva borde, no lleva tambien sombra dura.
 // ============================================================================
-static const G::Color kBack   (255, 0x0a, 0x0a, 0x0c);   // fondo de la ventana
+static const G::Color kBack   (255, 0x0a, 0x0a, 0x0c);   // lienzo
 static const G::Color kSurfA  (255, 0x1f, 0x1f, 0x24);   // placa: canto superior
 static const G::Color kSurfB  (255, 0x15, 0x15, 0x19);   // placa: canto inferior
-static const G::Color kSurfLn (255, 0x2c, 0x2c, 0x33);   // filo de la placa
-static const G::Color kWellA  (255, 0x07, 0x07, 0x09);   // hueco: fondo
-static const G::Color kWellB  (255, 0x0f, 0x0f, 0x12);   // hueco: salida de la luz
+static const G::Color kSurfLn (255, 0x2c, 0x2c, 0x33);   // filete de 1px
+static const G::Color kWellA  (255, 0x07, 0x07, 0x09);   // pozo: fondo
+static const G::Color kWellB  (255, 0x0f, 0x0f, 0x12);   // pozo: salida de la luz
 static const G::Color kWellLn (255, 0x22, 0x22, 0x28);
 static const G::Color kTxtHi  (255, 0xf2, 0xf0, 0xea);   // marfil (no blanco puro)
 static const G::Color kTxtMd  (255, 0x9c, 0x98, 0x90);
@@ -133,41 +136,56 @@ static const G::Color kTxtLo  (255, 0x8b, 0x87, 0x81);   // 4,6:1 sobre las plac
 static const G::Color kAcc    (255, 0xff, 0xa5, 0x1f);   // ambar de filamento
 static const G::Color kAccGlb (255, 0xff, 0xe0, 0xa0);   // ambar claro (especular)
 static const G::Color kHot    (255, 0xff, 0x45, 0x4f);   // solo techo/clip
-static const G::Color kBtnBg  (255, 0x26, 0x26, 0x2c);   // boton: canto superior
-static const G::Color kBtnBgL (255, 0x16, 0x16, 0x1a);   // boton: canto inferior
-static const G::Color kBtnBgH (255, 0x33, 0x33, 0x3a);   // boton: hover
+static const G::Color kBtnBg  (255, 0x26, 0x26, 0x2c);
+static const G::Color kBtnBgL (255, 0x16, 0x16, 0x1a);
+static const G::Color kBtnBgH (255, 0x33, 0x33, 0x3a);
 static const G::Color kBtnLn  (255, 0x35, 0x35, 0x3d);
-// Acero del rack: carriles, tornillos, asas y la chapa de las unidades
+// Acero y metal: solo para controles (pomos, aros, tornillo de los medidores)
 static const G::Color kSteel  (255, 0x39, 0x39, 0x42);
 static const G::Color kSteelD (255, 0x18, 0x18, 0x1c);
-// Metal del chrome (arcos, aros, tornillos, cifras grandes)
 static const G::Color kMetalA (255, 0xd8, 0xd5, 0xcc);
 static const G::Color kMetalB (255, 0x6e, 0x6b, 0x64);
 static const G::Color kMetalC (255, 0x33, 0x31, 0x2e);
-// Radio unico del sistema: placas con canto suave, controles mas redondos.
-static const G::REAL kR = 7.0f;
 
-// --- grano: ninguna superficie de la app es un color plano ---
-static unsigned int hash21(unsigned int x, unsigned int y);
-// El paso importa: el grano se paga UNA vez por construccion de escena (y en
-// cada resize), asi que en superficies grandes se muestrea mas grueso. Con
-// paso 3 en toda la ventana eran ~150 ms de arranque; con paso segun area,
-// la textura se lee igual y el coste baja a una fraccion.
-static void grain(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, BYTE a = 22) {
-    if (w <= 0.0f || h <= 0.0f) return;
-    const G::REAL area = w*h;
-    const G::REAL step = (area > 400000.0f) ? 9.0f : (area > 80000.0f) ? 6.0f : 4.0f;
-    a = (BYTE)(a > 8 ? (a*2)/3 : a);   // el ruido se apoya, no se ve
-    G::SolidBrush lite(G::Color(a, 0xff, 0xff, 0xff));
-    G::SolidBrush dark(G::Color((BYTE)(a + 16), 0, 0, 0));
-    for (G::REAL py = y; py < y + h; py += step) {
-        for (G::REAL px = x; px < x + w; px += step) {
-            const unsigned int hs = hash21((unsigned int)px, (unsigned int)py);
-            if (!(hs & 3u)) continue;
-            g.FillRectangle((hs & 4u) ? (G::Brush*)&lite : (G::Brush*)&dark, px, py, 1.0f, 1.0f);
-        }
-    }
-}
+// --- Cristal: los lavados translucidos del sistema -------------------------
+// Son apoyos, no pintura: sobre un negro casi puro un lavado opaco lee como
+// superficie mate, y eso es justo lo que el lenguaje v2 quiere evitar.
+static const G::Color kGlassTop   (160, 0x23, 0x23, 0x28);  // canto iluminado
+static const G::Color kGlassBot   (200, 0x13, 0x13, 0x17);  // canto en sombra
+static const G::Color kGlassWell  (220, 0x08, 0x08, 0x0b);  // pozo hundido
+static const G::Color kGlassHover ( 70, 0xff, 0xff, 0xff);  // hover: luz que pasa
+static const G::Color kGlassSel   ( 90, 0xff, 0xa5, 0x1f);  // seleccion (estado)
+static const G::Color kGlassFill  ( 46, 0xff, 0xff, 0xff);  // relleno de pastilla
+// Filetes de luz: la unica decoracion que el cristal permite.
+static const G::Color kEdgeTopHi  ( 60, 0xff, 0xff, 0xff);  // canto vivo
+static const G::Color kEdgeTopLo  ( 18, 0xff, 0xff, 0xff);  // luz que se apaga
+static const G::Color kEdgeBot    ( 12, 0x00, 0x00, 0x00);  // canto inferior
+static const G::Color kAmbShadow  (110, 0x00, 0x00, 0x00);  // sombra ambiental
+
+// --- Radios y aire ----------------------------------------------------------
+static const G::REAL kRPanel = 12.0f;   // paneles y unidades
+static const G::REAL kRCard  = 10.0f;   // tarjetas y modulos
+static const G::REAL kRWell  =  8.0f;   // pozos
+static const G::REAL kRPill  =  9.0f;   // pastillas y botones
+static const G::REAL kRBtn   =  8.0f;   // botones de accion
+static const G::REAL kR = 7.0f;         // radio heredado; se retira al migrar
+static const int     kPadX   = 16;      // margen interno de panel
+static const G::REAL kAir    = 12.0f;   // separacion vertical entre bloques
+
+// --- Escala tipografica. La jerarquia la lleva el tamano, no el color ------
+// GDI+ construye Gdiplus::Font en PUNTOS (1pt = 1,333px a 96 dpi). Versalitas
+// en MAYUSCULA: el ojo las lee como rotulo aunque el tamano sea modesto.
+static const G::REAL kPtDisplay = 21.0f;   // wordmark GUITAR ONE
+static const G::REAL kPtSection = 13.0f;   // titulo de seccion
+static const G::REAL kPtUnit    = 11.5f;   // titulo de unidad
+static const G::REAL kPtBody    = 11.5f;   // cuerpo: presets, acciones
+static const G::REAL kPtLabel   =  8.5f;   // etiqueta de perilla (versalitas)
+static const G::REAL kPtNumBig  = 22.0f;   // cifra grande tabular
+static const G::REAL kPtNum     = 11.5f;   // cifra
+
+// El grano de 1px se retira: sobre un fondo casi puro leia como suciedad, no
+// como material, y barrerlo costaba ~150 ms en la construccion de escena.
+// hash21 se queda, que drawAmpBox aun texturiza el tolex del equipo.
 // Acento translucido reutilizable (velos, halos, marcas)
 static inline G::Color accA(int a) {
     return G::Color((BYTE)a, kAcc.GetR(), kAcc.GetG(), kAcc.GetB());
@@ -5680,6 +5698,124 @@ static void wellBase(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
     roundRect(g, x, y, w, h, r, &bp, &bg);
 }
 
+// Velo de press: solo si el boton izq. esta pulsado Y el raton encima.
+// Mismo trato para todos los controles pulsables de la UI.
+static void pressVeil(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, G::REAL r = kR) {
+    if (!g_lbtn || !mouseIn((int)x, (int)y, (int)(x + w), (int)(y + h))) return;
+    G::SolidBrush veil(G::Color(70, 0, 0, 0));
+    roundRect(g, x, y, w, h, r, nullptr, &veil);
+}
+
+// ---------------------------------------------------------------------------
+//  Piezas de CRISTAL (lenguaje v2). panelBase/wellBase se conservan como
+//  envoltorios finos durante la migracion; a partir del lote 2 toda superficie
+//  visible pasa por aqui.
+// ---------------------------------------------------------------------------
+// PLACA DE CRISTAL: el caballo de batalla del rediseno.
+//   sombra ambiental ancha ->  flota sobre el lienzo, no pegada a el
+//   dos paradas translucidas  ->  el fondo se intuye por debajo
+//   banda superior iluminada  ->  la unica luz del sistema
+//   filete vivo arriba, nada abajo  ->  una arista, no un marco
+// El degradado es de dos paradas y el borde lleva un solo filete: cualquier
+// superficie con mas que esto se lee como bisel, y el bisel es lo que el
+// lenguaje v2 ha venido a quitar.
+static void glassPanel(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
+                       G::REAL r, bool shadow = true) {
+    if (shadow) softShadow(g, x, y, w, h, r, 130);
+    {
+        G::LinearGradientBrush bg(G::RectF(x, y, w, h), kGlassTop, kGlassBot, 90.0f);
+        G::Pen bp(kSurfLn, 1.0f);
+        roundRect(g, x, y, w, h, r, &bp, &bg);
+    }
+    {   // luz que nace en el canto superior y se apaga antes de llegar al medio
+        G::LinearGradientBrush gl(G::RectF(x + 1.0f, y + 1.0f, w - 2.0f, h*0.5f),
+                                  kEdgeTopHi, G::Color(0, 0xff, 0xff, 0xff), 90.0f);
+        roundRect(g, x + 1.0f, y + 1.0f, w - 2.0f, h*0.5f, r - 1.0f, nullptr, &gl);
+    }
+    G::Pen hi(kEdgeTopLo, 1.0f);
+    g.DrawLine(&hi, x + r + 1.0f, y + 1.0f, x + w - r - 1.0f, y + 1.0f);
+    // el canto inferior se apoya: una sombra de 1px en lugar de un filete claro
+    G::Pen lo(kEdgeBot, 1.0f);
+    g.DrawLine(&lo, x + r*0.5f, y + h - 1.0f, x + w - r*0.5f, y + h - 1.0f);
+}
+
+// POZO DE CRISTAL: la superficie hundida del sistema (visualizadores, canales de
+// medidor, ranuras). La profundidad la da la sombra interior de arriba, que es
+// la misma luz de glassPanel entrando en el hueco.
+static void glassWell(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, G::REAL r) {
+    {
+        G::SolidBrush bg(kWellA);
+        roundRect(g, x, y, w, h, r, nullptr, &bg);
+    }
+    {   // sombra que cae desde el borde superior: el pozo se abre hacia abajo
+        G::LinearGradientBrush sh(G::RectF(x + 1.0f, y + 1.0f, w - 2.0f, r*2.4f),
+                                  G::Color(150, 0, 0, 0), G::Color(0, 0, 0, 0), 90.0f);
+        roundRect(g, x + 1.0f, y + 1.0f, w - 2.0f, r*2.4f, r - 1.0f, nullptr, &sh);
+    }
+    G::Pen bp(kWellLn, 1.0f);
+    roundRect(g, x, y, w, h, r, &bp, nullptr);
+    G::Pen gl(G::Color(26, 0xff, 0xff, 0xff), 1.0f);
+    g.DrawLine(&gl, x + r + 1.0f, y + 1.0f, x + w - r - 1.0f, y + 1.0f);
+}
+
+// LAVADO: el apoyo comun de hover, seleccion y foco. Se pinta DENTRO de la caja
+// que ya se ha dibujado, asi que no toca ni la sombra ni el filete.
+static void glassWash(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, G::REAL r,
+                      G::Color c) {
+    G::SolidBrush b(c);
+    roundRect(g, x + 1.0f, y + 1.0f, w - 2.0f, h - 2.0f, r - 1.0f, nullptr, &b);
+}
+
+// PASTILLA DE CRISTAL: boton de accion. Tres estados y un solo cambio de luz:
+// reposo = cristal con el lienzo debajo; hover = luz que pasa; activo = ambar,
+// porque el ambar sigue significando "esto suena" y no "esto es importante".
+static void glassPill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
+                      bool hov, bool lit, G::Color litCol) {
+    const G::REAL r = kRPill;
+    if (lit) {   // el piloto ambar manda: la pastilla entera se tiende de el
+        G::SolidBrush gl(G::Color(26, 0xff, 0xa5, 0x1f));
+        g.FillEllipse(&gl, x + w*0.5f - 22.0f, y + h*0.5f - 22.0f, 44.0f, 44.0f);
+    }
+    softShadow(g, x, y, w, h, r, 90);
+    {
+        G::LinearGradientBrush bg(G::RectF(x, y, w, h),
+                                  lit ? G::Color(255, 0x2b, 0x21, 0x14)
+                                      : (hov ? kBtnBgH : kBtnBg),
+                                  lit ? G::Color(255, 0x1a, 0x12, 0x0a) : kBtnBgL,
+                                  90.0f);
+        G::Pen bp(lit ? accA(190) : kBtnLn, 1.0f);
+        roundRect(g, x, y, w, h, r, &bp, &bg);
+    }
+    if (!lit) {
+        G::SolidBrush gl(G::Color(hov ? 34 : 22, 0xff, 0xff, 0xff));
+        roundRect(g, x + 1.5f, y + 1.5f, w - 3.0f, 4.0f, r*0.7f, nullptr, &gl);
+    }
+    if (lit) {   // LED propio, sin halo: el brillo es del piloto
+        G::SolidBrush l2(G::Color(255, 0xff, 0xdd, 0x9a));
+        g.FillEllipse(&l2, x + 8.5f, y + h*0.5f - 2.0f, 4.0f, 4.0f);
+    }
+    pressVeil(g, x, y, w, h, r);
+}
+
+// BANDA DE SECCION: el rotulo del sistema. Una regla de 1px y el titulo en
+// versalitas; en la unidad activa la regla es ambar, porque el ambar marca lo
+// que suena y la unidad activa es la que suena.
+static void sectionHeader(G::Graphics& g, const WCHAR* s, G::REAL x, G::REAL y,
+                          G::REAL w, bool active, G::Color txt) {
+    if (active) {   // la regla nace encendida y se apaga hacia la derecha
+        G::Pen p(kSurfLn, 1.0f);
+        g.DrawLine(&p, x, y, x + w*0.58f, y);
+        G::LinearGradientBrush gl(G::RectF(x, y, w*0.42f, 1.0f),
+                                  accA(230), G::Color(0, 0xff, 0xa5, 0x1f), 0.0f);
+        g.FillRectangle(&gl, x, y, w*0.42f, 1.0f);
+    } else {
+        G::Pen p(kSurfLn, 1.0f);
+        g.DrawLine(&p, x, y, x + w, y);
+    }
+    drawSpacedFit(g, s, G::FontStyleBold, txt, x + 2.0f, y + 5.0f, 1.6f,
+                  w - 4.0f, kPtSection, kPtSection*0.78f);
+}
+
 // --- Piezas del rack ---------------------------------------------------------
 // Tornillo de cabeza embutida con su ranura. Es la marca que hace que una
 // unidad se lea MONTADA en un rack y no pegada al fondo.
@@ -5748,14 +5884,6 @@ static void rackUnit(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h)
 
 // Boton estandar: misma forma, mismo hover y una barra de estado a la
 // izquierda (sin robar sitio al texto, que sigue centrado).
-// Velo de press: solo si el boton izq. esta pulsado Y el raton encima.
-// Mismo trato para todos los controles pulsables de la UI.
-static void pressVeil(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, G::REAL r = kR) {
-    if (!g_lbtn || !mouseIn((int)x, (int)y, (int)(x + w), (int)(y + h))) return;
-    G::SolidBrush veil(G::Color(70, 0, 0, 0));
-    roundRect(g, x, y, w, h, r, nullptr, &veil);
-}
-
 // BOTON de hardware: cuerpo con degradado, gloss superior, bisel, sombra
 // proyectada y LED de estado a la izquierda cuando esta vivo. Es el control
 // que mas se pulsa, asi que se lleva el tratamiento mas rico.
