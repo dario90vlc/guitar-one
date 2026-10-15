@@ -198,8 +198,8 @@ static const G::REAL kPtNumBig  = 22.0f;   // cifra grande tabular
 static const G::REAL kPtNum     = 11.5f;   // cifra
 
 // El grano de 1px se retira: sobre un fondo casi puro leia como suciedad, no
-// como material, y barrerlo costaba ~150 ms en la construccion de escena.
-// hash21 se queda, que drawAmpBox aun texturiza el tolex del equipo.
+// como material, y barrerlo costaba ~150 ms en la construccion de escena. Con
+// el equipo ya plano se va tambien hash21, que era su unico usuario (el tolex).
 // Acento translucido reutilizable (velos, halos, marcas)
 static inline G::Color accA(int a) {
     return G::Color((BYTE)a, kAcc.GetR(), kAcc.GetG(), kAcc.GetB());
@@ -6014,74 +6014,21 @@ static void hairSep(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, BYTE a) {
     g.DrawLine(&p, x, y, x + w, y);
 }
 
-// Hash determinista: la textura de tolex no parpadea entre frames
-static unsigned int hash21(unsigned int x, unsigned int y) {
-    unsigned int h = x*374761393u + y*668265263u;
-    h = (h ^ (h >> 13))*1274126177u;
-    return h ^ (h >> 16);
-}
+// (hash21 se fue con el tolex: no queda ninguna textura de grano en la app)
 
-// Chasis del amp: pies de goma, tolex texturizado, luz cenital, sombra inferior, marco
-// Ultimo punto del raton: lo usan el hover de filas y el boton del perfil.
-
+// Chasis del amp: UNA placa con su filete. Se van los pies de goma, la textura
+// de tolex, la luz cenital, la sombra inferior, el marco biselado y los cuatro
+// tornillos: era material del lenguaje viejo, y el mueble lo dibuja el ARTE del
+// frontal, que no se toca. La placa solo tiene que sostener el frontal.
 static void drawAmpBox(G::Graphics& g, G::REAL bx, G::REAL by, G::REAL bw, G::REAL bh) {
-    // pies de goma asomando por debajo del chasis
-    {
-        G::SolidBrush ft(G::Color(255, 0x0b, 0x0d, 0x0f));
-        roundRect(g, bx + bw*0.10f, by + bh - 5.0f, 40.0f, 14.0f, 4.0f, nullptr, &ft);
-        roundRect(g, bx + bw*0.78f, by + bh - 5.0f, 40.0f, 14.0f, 4.0f, nullptr, &ft);
-    }
-    // cuerpo
-    G::SolidBrush body(G::Color(255, 0x0b, 0x0e, 0x11));
-    roundRect(g, bx, by, bw, bh, 10, nullptr, &body);
-    // textura de tolex (granulado de vinilo)
-    {
-        G::SolidBrush sp1(G::Color(38, 0x86, 0x83, 0x7c));
-        G::SolidBrush sp2(G::Color(46, 0, 0, 0));
-        int gxN = (int)(bw/8.0f), gyN = (int)(bh/8.0f);
-        for (int gx = 0; gx < gxN; ++gx) {
-            for (int gy = 0; gy < gyN; ++gy) {
-                unsigned int hsh = hash21((unsigned int)gx + 7u, (unsigned int)gy + 3u);
-                G::REAL px2 = bx + 4.0f + gx*8.0f + (G::REAL)((int)(hsh & 15u) - 8)*0.30f;
-                G::REAL py2 = by + 4.0f + gy*8.0f + (G::REAL)((int)((hsh >> 4) & 15u) - 8)*0.30f;
-                G::REAL rr2 = 0.7f + (G::REAL)((hsh >> 8) & 3u)*0.22f;
-                if (hsh & 0x10000u) g.FillEllipse(&sp1, px2, py2, rr2, rr2);
-                else               g.FillEllipse(&sp2, px2, py2, rr2, rr2);
-            }
-        }
-    }
-    // luz cenital y sombra inferior sobre el tolex
-    {
-        G::LinearGradientBrush top(G::RectF(bx + 2, by + 2, bw - 4, 24.0f),
-                                   G::Color(30, 255, 255, 255), G::Color(0, 255, 255, 255), 90.0f);
-        g.FillRectangle(&top, bx + 2, by + 2, bw - 4, 24.0f);
-        G::LinearGradientBrush bot(G::RectF(bx + 2, by + bh - 34, bw - 4, 32.0f),
-                                   G::Color(0, 0, 0, 0), G::Color(70, 0, 0, 0), 90.0f);
-        g.FillRectangle(&bot, bx + 2, by + bh - 34, bw - 4, 32.0f);
-    }
-    // marco + bisel interior
-    {
-        G::Pen boxp(G::Color(255, 0x18, 0x18, 0x1b), 7.0f);
-        roundRect(g, bx, by, bw, bh, 10, &boxp, nullptr);
-        G::Pen inner(G::Color(255, 0x05, 0x05, 0x05), 2.0f);
-        roundRect(g, bx + 3, by + 3, bw - 6, bh - 6, 8, &inner, nullptr);
-    }
-    // tornillos en las esquinas
-    {
-        G::SolidBrush sb(G::Color(255, 0x46, 0x43, 0x3c));
-        G::Pen sp(G::Color(255, 0x1a, 0x17, 0x10), 1.0f);
-        G::REAL sx[4] = { bx + 6.0f, bx + bw - 12.0f, bx + 6.0f, bx + bw - 12.0f };
-        G::REAL sy[4] = { by + 6.0f, by + 6.0f, by + bh - 12.0f, by + bh - 12.0f };
-        for (int i = 0; i < 4; ++i) {
-            g.FillEllipse(&sb, sx[i], sy[i], 6.0f, 6.0f);
-            g.DrawEllipse(&sp, sx[i], sy[i], 6.0f, 6.0f);
-        }
-    }
+    G::SolidBrush body(kFSurf2);
+    G::Pen bp(kFLine, 1.0f);
+    roundRect(g, bx, by, bw, bh, 10, &bp, &body);
 }
 
-// Cuerpo del knob (estatico: cacheado en la escena; los PathGradientBrush caros
-// solo se construyen una vez, no cada frame). El tinte permite dar al knob del
-// amp activo un punto de color sin repintar nada mas.
+// Cuerpo del knob (estatico: cacheado en la escena). El tinte se conserva en la
+// firma porque los sitios que llaman lo pasan, pero el cuerpo del mando ya es un
+// disco liso: el color lo pone el arco de valor (drawKnobDetail).
 static void drawKnobBody(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r,
                          G::Color tint = G::Color(0xff, 0x6e, 0x69, 0x63)) {
     // Disco plano: un tono y un filete. Ni aro cromado, ni domo, ni tapa
@@ -6212,13 +6159,8 @@ static void drawFxGlyph(G::Graphics& g, int type, G::REAL cx, G::REAL cy, G::REA
 }
 
 static void drawPower(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color col, bool on) {
-    // glow proporcional al estado
-    BYTE glowA = on ? 55 : 20;
-    for (int i = 3; i >= 1; --i) {
-        G::SolidBrush gl(G::Color(glowA, col.GetR(), col.GetG(), col.GetB()));
-        G::REAL rr = r*(1.0f + i*0.38f);
-        g.FillEllipse(&gl, cx - rr, cy - rr, rr*2, rr*2);
-    }
+    // Sin resplandor concentrico (eran tres capas de halo) y sin brillo de domo:
+    // el estado lo dice el COLOR del cuerpo, que es como lo dice todo lo demas.
     // cuerpo: encendido a color, apagado apagado
     G::Color bodyC = on ? col
         : G::Color(255, (BYTE)(col.GetR()*0.42f + 38),
@@ -6226,17 +6168,6 @@ static void drawPower(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Colo
                       (BYTE)(col.GetB()*0.42f + 44));
     G::SolidBrush body(bodyC);
     g.FillEllipse(&body, cx - r, cy - r, r*2, r*2);
-    // brillo superior del boton
-    {
-        G::GraphicsPath hl;
-        hl.AddPie(cx - r, cy - r, r*2, r*2, 180.0f, 180.0f);
-        G::PathGradientBrush hlb(&hl);
-        hlb.SetCenterColor(G::Color(70, 255, 255, 255));
-        G::Color hs(G::Color(0, 255, 255, 255));
-        INT cc = 1;
-        hlb.SetSurroundColors(&hs, &cc);
-        g.FillPath(&hlb, &hl);
-    }
     // simbolo power: arco con gap superior + linea vertical
     G::Pen sym(G::Color(255, 0x18, 0x15, 0x0e), 2.6f);
     sym.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
@@ -6526,9 +6457,11 @@ static void drawValuePop(G::Graphics& g, G::REAL bx, G::REAL by, G::REAL bw,
     g.DrawString(txt, -1, &fVal, G::RectF(bx, by, bw, bh), &sfC, &vt);
 }
 
-// Vista frontal de la cabina: caja, tela de rejilla, conos y micro colocado.
-// Sustituye al rectangulo negro con diagonales, que se leia como un hueco
-// vacio en vez de como una cabina.
+// Vista frontal de la cabina, en plano: mueble, baffle hundido, conos y micro.
+// Se QUEDA toda la geometria (el radio de los conos derivado de la caja, el
+// diametro en pulgadas y la posicion del micro), que es lo que hace que una
+// 1x12, una 2x12 y una 4x12 se lean distintas; se va el material: tolex,
+// esquineras cromadas, tejido de la rejilla y degradados.
 static void drawCabPreview(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
                            int spk, int inches, int mic, int dist, bool userIR, G::Color ac) {
     // Vista frontal del mueble, legible como objeto: cara superior con su
@@ -6538,12 +6471,7 @@ static void drawCabPreview(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::R
     const G::REAL topD = 11.0f;      // profundidad de la cara superior
     const G::REAL bx = x, by = y + topD, bw = w, bh = h - topD - legH;
 
-    // --- patas ---
-    {
-        G::SolidBrush ft(G::Color(255, 0x0b, 0x0b, 0x0c));
-        roundRect(g, bx + bw*0.10f, by + bh - 3.0f, 30.0f, legH, 2.0f, nullptr, &ft);
-        roundRect(g, bx + bw*0.70f, by + bh - 3.0f, 30.0f, legH, 2.0f, nullptr, &ft);
-    }
+    // (las patas de goma eran decoracion: el mueble se apoya en su filete)
     // --- cara superior: el grosor del mueble visto desde delante ---
     {
         const G::REAL ins = 7.0f;
@@ -6551,34 +6479,25 @@ static void drawCabPreview(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::R
             G::PointF(bx, by), G::PointF(bx + bw, by),
             G::PointF(bx + bw - ins, y), G::PointF(bx + ins, y),
         };
-        G::LinearGradientBrush tg(G::RectF(bx, y, bw, topD + 2.0f),
-                                  G::Color(255, 0x3d, 0x39, 0x32),
-                                  G::Color(255, 0x1b, 0x1a, 0x18), 90.0f);
+        G::SolidBrush tg(kFSurf3);
         g.FillPolygon(&tg, tp, 4);
-        G::Pen thk(G::Color(46, 0xb7, 0xb1, 0xa7), 1.0f);
+        G::Pen thk(kFLine, 1.0f);
         g.DrawLine(&thk, tp[3].X + 5.0f, y + 0.5f, tp[2].X - 5.0f, y + 0.5f);
     }
     // --- cuerpo de tolex ---
     {
-        G::LinearGradientBrush body(G::RectF(bx, by, bw, bh),
-                                    G::Color(255, 0x2d, 0x2a, 0x25),
-                                    G::Color(255, 0x11, 0x10, 0x0f), 90.0f);
-        G::Pen ed(G::Color(0xff, 0x39, 0x36, 0x33), 1.0f);
+        G::SolidBrush body(kFSurf2);
+        G::Pen ed(kFLine, 1.0f);
         roundRect(g, bx, by, bw, bh, 7.0f, &ed, &body);
-        G::Pen hl(G::Color(34, 0xb7, 0xb1, 0xa7), 1.0f);
-        g.DrawLine(&hl, bx + 10.0f, by + 1.5f, bx + bw - 10.0f, by + 1.5f);
     }
     // --- esquineras metalicas ---
     {
-        G::LinearGradientBrush mcb(G::RectF(bx, by, bw, bh), G::Color(0xff, 0x39, 0x36, 0x33),
-                                                       G::Color(255, 0x24, 0x22, 0x1f), 90.0f);
-        G::Pen mcp(G::Color(255, 0x0b, 0x0b, 0x0c), 1.0f);
+        G::SolidBrush mcb(kFSurf3);
+        G::Pen mcp(kFLine, 1.0f);
         const G::REAL kc[4][2] = { { bx + 2.0f, by + 2.0f }, { bx + bw - 15.0f, by + 2.0f },
                                    { bx + 2.0f, by + bh - 15.0f }, { bx + bw - 15.0f, by + bh - 15.0f } };
         for (int i = 0; i < 4; ++i) {
             roundRect(g, kc[i][0], kc[i][1], 13.0f, 13.0f, 3.0f, &mcp, &mcb);
-            G::Pen mch(G::Color(52, 0xb7, 0xb1, 0xa7), 1.0f);
-            g.DrawLine(&mch, kc[i][0] + 2.0f, kc[i][1] + 1.0f, kc[i][0] + 11.0f, kc[i][1] + 1.0f);
         }
     }
     // --- baffle enmarcado ---
@@ -6623,24 +6542,18 @@ static void drawCabPreview(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::R
         // sigue tocandose en vertical igual que antes (inchF=1).
         spr *= inchF;
         for (int i = 0; i < n; ++i) {
-            // cono: anillo exterior + campana + polvo, todo con su canto
-            G::SolidBrush ring(G::Color(255, 0x1c, 0x1b, 0x18));
+            // Cono plano: anillo, campana y polvo, cada uno de un tono con su
+            // filete. Se va el degradado radial: el cono se lee por el dibujo.
+            G::SolidBrush ring(kFSurf3);
             g.FillEllipse(&ring, spx[i] - spr, spy[i] - spr, spr*2.0f, spr*2.0f);
-            G::Pen rp(G::Color(200, 0x06, 0x06, 0x07), 1.6f);
+            G::Pen rp(kFLine, 1.0f);
             g.DrawEllipse(&rp, spx[i] - spr, spy[i] - spr, spr*2.0f, spr*2.0f);
-            G::GraphicsPath sp;
-            sp.AddEllipse(spx[i] - spr*0.86f, spy[i] - spr*0.86f, spr*1.72f, spr*1.72f);
-            G::PathGradientBrush spg(&sp);
-            spg.SetCenterColor(G::Color(0xff, 0x48, 0x45, 0x41));
-            G::Color sc(G::Color(255, 0x14, 0x14, 0x16));
-            INT scnt = 1;
-            spg.SetSurroundColors(&sc, &scnt);
-            spg.SetCenterPoint(G::PointF(spx[i], spy[i] - spr*0.25f));
-            g.FillPath(&spg, &sp);
-            G::SolidBrush cap(G::Color(0xff, 0x27, 0x25, 0x27));
+            G::Pen rp2(kFSurf, 1.0f);
+            g.DrawEllipse(&rp2, spx[i] - spr*0.86f, spy[i] - spr*0.86f, spr*1.72f, spr*1.72f);
+            G::SolidBrush cap(kFSurf2);
             g.FillEllipse(&cap, spx[i] - spr*0.32f, spy[i] - spr*0.32f, spr*0.64f, spr*0.64f);
-            G::SolidBrush dust(G::Color(0xff, 0x5a, 0x56, 0x51));
-            g.FillEllipse(&dust, spx[i] - spr*0.18f, spy[i] - spr*0.18f, spr*0.36f, spr*0.36f);
+            G::Pen cpn(kFLine, 1.0f);
+            g.DrawEllipse(&cpn, spx[i] - spr*0.32f, spy[i] - spr*0.32f, spr*0.64f, spr*0.64f);
         }
     }
     // --- tela: base + tejido tenue + luz de arriba (sin velo pesado) ---
@@ -6653,56 +6566,27 @@ static void drawCabPreview(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::R
         cp.AddArc(fx, fy + fh - d, d, d, 90, 90);
         cp.CloseFigure();
         g.SetClip(&cp, G::CombineModeReplace);
-        G::SolidBrush cloth(G::Color(46, 0x0a, 0x0a, 0x0b));
+        // Tela plana: un tono translucido sobre los conos. Se van el tejido
+        // (dos trazos por paso, ~60 en total) y la luz de arriba.
+        G::SolidBrush cloth(G::Color(120, kFBg.GetR(), kFBg.GetG(), kFBg.GetB()));
         g.FillRectangle(&cloth, fx, fy, fw, fh);
-        {
-            G::Pen w1(G::Color(24, 0xc8, 0xc5, 0xbe), 1.0f);
-            for (G::REAL dd = -fh; dd < fw; dd += 6.0f) {
-                g.DrawLine(&w1, fx + dd, fy + fh, fx + dd + fh, fy);
-                g.DrawLine(&w1, fx + dd, fy, fx + dd + fh, fy + fh);
-            }
-        }
-        G::LinearGradientBrush lit(G::RectF(fx, fy, fw, fh),
-                                   G::Color(30, 0xd0, 0xca, 0xc0),
-                                   G::Color(0, 0xd0, 0xca, 0xc0), 90.0f);
-        g.FillRectangle(&lit, fx, fy, fw, fh);
         g.ResetClip();
     }
     // --- micro sobre pie con brazo ---
     {
         const G::REAL mx = fx + fw*(0.50f + (G::REAL)dist*0.15f);
         const G::REAL my = fy + fh*0.52f;
-        G::SolidBrush msh(G::Color(70, 0, 0, 0));
-        g.FillEllipse(&msh, mx - 8.0f, my - 16.0f, 16.0f, 40.0f);
-        {   // cabezal: capsula de rejilla
-            G::GraphicsPath hp;
-            hp.AddEllipse(mx - 6.5f, my - 23.0f, 13.0f, 18.0f);
-            G::PathGradientBrush hpg(&hp);
-            hpg.SetCenterColor(G::Color(255, 0x86, 0x82, 0x7a));
-            G::Color hsur(255, 0x12, 0x11, 0x10);
-            INT hcnt = 1;
-            hpg.SetSurroundColors(&hsur, &hcnt);
-            hpg.SetCenterPoint(G::PointF(mx - 2.5f, my - 18.0f));
-            g.FillPath(&hpg, &hp);
-            G::Pen hr(G::Color(220, 0x06, 0x06, 0x07), 1.0f);
-            g.DrawPath(&hr, &hp);
-            G::Pen hg(G::Color(70, 0xff, 0xff, 0xff), 0.7f);
-            for (int i = 1; i <= 3; ++i)
-                g.DrawArc(&hg, mx - 6.5f + i*1.6f, my - 23.0f + i*2.0f,
-                          13.0f - i*3.2f, 18.0f - i*3.6f, 195.0f, 150.0f);
-            G::Pen hg2(G::Color(46, 0xff, 0xff, 0xff), 0.7f);
-            g.DrawLine(&hg2, mx - 5.0f, my - 14.0f, mx + 5.0f, my - 14.0f);
-            g.DrawLine(&hg2, mx - 4.0f, my - 11.0f, mx + 4.0f, my - 11.0f);
+        {   // cabezal: capsula plana con su filete
+            G::SolidBrush hcap(kFSurf3);
+            roundRect(g, mx - 6.5f, my - 23.0f, 13.0f, 18.0f, 6.0f, nullptr, &hcap);
+            G::Pen hp2(kFLine, 1.0f);
+            roundRect(g, mx - 6.5f, my - 23.0f, 13.0f, 18.0f, 6.0f, &hp2, nullptr);
         }
-        G::LinearGradientBrush mbg(G::RectF(mx - 3.5f, my - 6.0f, 7.0f, 22.0f),
-                                   G::Color(255, 0x3d, 0x3b, 0x37),
-                                   G::Color(255, 0x16, 0x15, 0x13), 0.0f);
+        G::SolidBrush mbg(kFSurf2);
         roundRect(g, mx - 3.5f, my - 6.0f, 7.0f, 22.0f, 3.0f, nullptr, &mbg);
-        G::Pen mring(G::Color(90, 0xd8, 0xd5, 0xcc), 0.8f);
-        g.DrawLine(&mring, mx - 3.0f, my + 2.0f, mx + 3.0f, my + 2.0f);
-        G::SolidBrush cl(G::Color(255, 0x2c, 0x2a, 0x26));
+        G::SolidBrush cl(kFSurf2);
         roundRect(g, mx - 6.0f, my + 5.0f, 12.0f, 6.0f, 2.0f, nullptr, &cl);
-        G::Pen boom(G::Color(255, 0x3a, 0x38, 0x33), 2.6f);
+        G::Pen boom(kFSurf3, 2.6f);
         g.DrawLine(&boom, mx + 6.0f, my + 8.0f, mx + 26.0f, my + 28.0f);
         g.DrawLine(&boom, mx + 26.0f, my + 28.0f, mx + 26.0f, fy + fh + 8.0f);
         G::Pen bolt(G::Color(255, 0x55, 0x52, 0x4a), 1.0f);
@@ -7115,11 +6999,9 @@ static void buildStaticScene(int W, int H) {
                     G::PointF(bx + bw + 3.0f - ins, by - 3.0f - dy),
                     G::PointF(bx - 3.0f + ins, by - 3.0f - dy),
                 };
-                G::LinearGradientBrush tg(G::RectF(bx, by - 3.0f - dy, bw, dy + 2.0f),
-                                          G::Color(255, 0x33, 0x30, 0x2b),
-                                          G::Color(255, 0x15, 0x14, 0x13), 90.0f);
+                G::SolidBrush tg(kFSurf3);
                 g.FillPolygon(&tg, tp, 4);
-                G::Pen thk(G::Color(24, 0x9c, 0x98, 0x90), 1.0f);
+                G::Pen thk(kFLine, 1.0f);
                 g.DrawLine(&thk, tp[3].X + 6.0f, tp[3].Y, tp[2].X - 6.0f, tp[2].Y);
             }
             softShadow(g, bx, by, bw, fh, 5.0f, 140);   // sombra de contacto
