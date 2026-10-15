@@ -4968,17 +4968,22 @@ static bool  g_mixDrag = false;
 // --- Footer del diseno + estado ---
 static const int FOOT_Y = 846, FOOT_H = 70;   // debajo de la banda de cadena (846..916)
 static const int BOT_LINE_Y = FOOT_Y;
-static const int BOT_BOX_Y  = FOOT_Y + 9;
-static const int BOT_MTR_Y  = FOOT_Y + 31;
+// El pie es UNA tira de canales: los rotulos en una sola linea arriba
+// (BOT_LBL_Y) y todos los controles centrados en la misma linea de abajo
+// (FOOT_Y+44). Antes cada rotulo traia su altura y su tamano y el pie leia como
+// un cajon de cosas sueltas.
+static const int BOT_LBL_Y  = FOOT_Y + 2;     // 848: linea comun de rotulos
+static const int BOT_BOX_Y  = FOOT_Y + 22;    // 868: caja de preset (44px)
+static const int BOT_MTR_Y  = FOOT_Y + 31;    // 877: pista en 888..893 (centro 890)
 static const int BOT_STAT_Y = WIN_H - 26;
 // Pie: medidores + LED de clip (posiciones compartidas por estatica y dinamica)
 static const int MTR_IN_X   = 560,  MTR_IN_W  = 120;
 static const int MTR_OUT_X  = 780,  MTR_OUT_W = 120;
 static const int MTR_GT_X   = 1000, MTR_GT_W  = 70;
 static const int CLIP_LBL_X = 1078, CLIP_LED_X = 1132;
-static const int MASTER_X = WIN_W - 130, MASTER_Y = FOOT_Y + 35, MASTER_R = 26;
-// Perilla INPUT (trim del canal) justo a la izquierda del medidor INPUT
-static const int IN_TRIM_X = 476, IN_TRIM_Y = FOOT_Y + 41, IN_TRIM_R = 18;
+static const int MASTER_X = WIN_W - 130, MASTER_Y = FOOT_Y + 44, MASTER_R = 22;
+// Perilla de trim del canal, justo a la izquierda del medidor INPUT
+static const int IN_TRIM_X = 476, IN_TRIM_Y = FOOT_Y + 44, IN_TRIM_R = 18;
 
 // --- Cabecera: caja de preset + botones (derecha) ---
 static const int TOP_AUDIO_X = WIN_W - 176;
@@ -5458,7 +5463,7 @@ static void rebuildKnobs() {
     }
     // Trim de entrada del canal: SIEMPRE antes de master (el pintado reconoce
     // a master por ser el ultimo y a INPUT por ser el penultimo).
-    g_knobs.push_back({ "INPUT", &g_params.inTrim, -18.0f, 18.0f, IN_TRIM_X, IN_TRIM_Y, IN_TRIM_R, true });
+    g_knobs.push_back({ "TRIM", &g_params.inTrim, -18.0f, 18.0f, IN_TRIM_X, IN_TRIM_Y, IN_TRIM_R, true });
     // Master (siempre el ultimo: el pintado lo reconoce por su indice). La mezcla
     // del cab es el slider MEZCLA del panel derecho, no un knob.
     g_knobs.push_back({ "MASTER", &g_params.master, 0.0f, 100.0f, MASTER_X, MASTER_Y, MASTER_R, false });
@@ -5928,10 +5933,12 @@ static void flatKnob(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, float v0
 static void flatMeterTrack(G::Graphics& g, G::Font& fLbl, const WCHAR* label,
                            G::REAL x, G::REAL y, G::REAL w) {
     flatWell(g, x, y + 11.0f, w, 5.0f, 2.5f);
-    G::SolidBrush lb(kFTxt);
-    G::StringFormat sf;   // etiqueta a la derecha de su pista
-    sf.SetAlignment(G::StringAlignmentFar);
-    g.DrawString(label, -1, &fLbl, G::RectF(x - 74.0f, y - 3.0f, 68.0f, 15.0f), &sf, &lb);
+    // Etiqueta ARRIBA y a la izquierda de la pista: el pie pasa a ser una tira
+    // de canales (rotulos en UNA linea, controles debajo) en vez de etiquetas
+    // sueltas a distinta altura. Tono medio: el rotulo no compite con el valor,
+    // que es lo unico que se mueve.
+    G::SolidBrush lb(kFTxt2);
+    g.DrawString(label, -1, &fLbl, G::RectF(x, y - 29.0f, 140.0f, 14.0f), nullptr, &lb);
 }
 
 static void flatMeterFill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w,
@@ -6006,6 +6013,120 @@ static void chevron(G::Graphics& g, G::REAL x, G::REAL y, G::REAL h, G::Color c)
     g.DrawLine(&p, x, y, x + h*0.40f, y + h*0.5f);
     g.DrawLine(&p, x + h*0.40f, y + h*0.5f, x, y + h);
 }
+
+// --- Familia de iconos ------------------------------------------------------
+//  UN trazo (1,5), UNA caja (r=7, el ojo de un glifo de 16px) y el mismo remate
+//  redondo. Los glifos de fuente (Segoe UI Symbol) traen su propio peso, su
+//  propio ojo y hasta su propio descentrado -habia que corregirlo midiendo-, y
+//  mantenian la interfaz a medio camino. Todo icono de la app sale de aqui.
+static void icChev(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL w, G::Color c, int dir) {
+    // dir: 0 abajo, 1 izquierda, 2 derecha. "w" es el ancho de la caja.
+    G::Pen p(c, 1.5f);
+    p.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
+    const G::REAL s = w*0.5f;
+    G::PointF a, m, b;
+    if (dir == 0) {
+        a = G::PointF(cx - s*0.85f, cy - s*0.42f);
+        m = G::PointF(cx,            cy + s*0.52f);
+        b = G::PointF(cx + s*0.85f, cy - s*0.42f);
+    } else if (dir == 1) {
+        a = G::PointF(cx + s*0.42f, cy - s*0.85f);
+        m = G::PointF(cx - s*0.52f, cy);
+        b = G::PointF(cx + s*0.42f, cy + s*0.85f);
+    } else {
+        a = G::PointF(cx - s*0.42f, cy - s*0.85f);
+        m = G::PointF(cx + s*0.52f, cy);
+        b = G::PointF(cx - s*0.42f, cy + s*0.85f);
+    }
+    g.DrawLine(&p, a.X, a.Y, m.X, m.Y);
+    g.DrawLine(&p, m.X, m.Y, b.X, b.Y);
+}
+
+static void icStar(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color c, bool filled) {
+    // Cinco puntas con tabla fija (sin trigonometria): 10 vertices alternando
+    // radio r y r*0,42, empezando arriba.
+    static const G::REAL ux[10] = {  0.000f,  0.247f,  0.951f,  0.399f,  0.588f,
+                                     0.000f, -0.588f, -0.399f, -0.951f, -0.247f };
+    static const G::REAL uy[10] = { -1.000f, -0.340f, -0.309f,  0.130f,  0.809f,
+                                     0.420f,  0.809f,  0.130f, -0.309f, -0.340f };
+    G::PointF pt[10];
+    for (int i = 0; i < 10; ++i) pt[i] = G::PointF(cx + ux[i]*r, cy + uy[i]*r);
+    if (filled) {
+        G::SolidBrush b(c);
+        g.FillPolygon(&b, pt, 10);
+    } else {
+        G::Pen p(c, 1.5f);
+        p.SetLineJoin(G::LineJoinRound);
+        g.DrawPolygon(&p, pt, 10);
+    }
+}
+
+static void icHeart(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color c, bool filled) {
+    // Dos lobulos de radio R sobre la linea y=cy-centro y una V hasta la punta.
+    const G::REAL R = r*0.52f, cyc = cy - R*0.20f;
+    G::GraphicsPath hp;
+    hp.AddArc(cx - 2.0f*R, cyc - R, 2.0f*R, 2.0f*R, 180.0f, 180.0f);    // lobulo izq
+    hp.AddArc(cx,          cyc - R, 2.0f*R, 2.0f*R, 180.0f, -180.0f);   // lobulo dcho
+    hp.AddLine(cx + 2.0f*R, cyc, cx, cy + 1.60f*R);
+    hp.AddLine(cx, cy + 1.60f*R, cx - 2.0f*R, cyc);
+    hp.CloseFigure();
+    if (filled) {
+        G::SolidBrush b(c);
+        g.FillPath(&b, &hp);
+    } else {
+        G::Pen p(c, 1.5f);
+        p.SetLineJoin(G::LineJoinRound);
+        g.DrawPath(&p, &hp);
+    }
+}
+
+static void icGear(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color c) {
+    // Dientes CORTOS y gruesos que nacen del aro, y el buje al centro: si los
+    // dientes son largos y finos el icono se lee como un sol, no como un
+    // engranaje.
+    static const G::REAL dx[8] = { 1.000f, 0.707f, 0.000f, -0.707f, -1.000f, -0.707f, 0.000f, 0.707f };
+    static const G::REAL dy[8] = { 0.000f, 0.707f, 1.000f,  0.707f,  0.000f, -0.707f, -1.000f, -0.707f };
+    G::Pen pt(c, 2.6f);
+    pt.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
+    for (int i = 0; i < 8; ++i)
+        g.DrawLine(&pt, cx + dx[i]*r*0.62f, cy + dy[i]*r*0.62f,
+                        cx + dx[i]*r*0.90f, cy + dy[i]*r*0.90f);
+    G::Pen pr(c, 1.7f);
+    g.DrawEllipse(&pr, cx - r*0.56f, cy - r*0.56f, r*1.12f, r*1.12f);
+    G::SolidBrush b(c);
+    g.FillEllipse(&b, cx - r*0.15f, cy - r*0.15f, r*0.30f, r*0.30f);
+}
+
+static void icPencil(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color c) {
+    // Silueta: cuerpo diagonal + punta. Eje de punta (abajo-izq) a culata
+    // (arriba-dcha); la perpendicular es (0,707, 0,707).
+    const G::REAL k = 0.707f, w = r*0.33f;
+    const G::REAL tx = cx - r*0.80f, ty = cy + r*0.80f;
+    const G::REAL bx = cx + r*0.78f, by = cy - r*0.78f;
+    const G::REAL sx = tx + (bx - tx)*0.34f, sy = ty + (by - ty)*0.34f;
+    G::PointF body[4] = { G::PointF(sx + k*w, sy + k*w), G::PointF(bx + k*w, by + k*w),
+                          G::PointF(bx - k*w, by - k*w), G::PointF(sx - k*w, sy - k*w) };
+    G::PointF tip[3]  = { G::PointF(tx, ty), G::PointF(sx + k*w, sy + k*w),
+                          G::PointF(sx - k*w, sy - k*w) };
+    G::SolidBrush b(c);
+    g.FillPolygon(&b, body, 4);
+    g.FillPolygon(&b, tip, 3);
+}
+
+static void icClose(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color c) {
+    G::Pen p(c, 1.5f);
+    p.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
+    g.DrawLine(&p, cx - r*0.62f, cy - r*0.62f, cx + r*0.62f, cy + r*0.62f);
+    g.DrawLine(&p, cx + r*0.62f, cy - r*0.62f, cx - r*0.62f, cy + r*0.62f);
+}
+
+static void icPlus(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color c) {
+    G::Pen p(c, 1.5f);
+    p.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
+    g.DrawLine(&p, cx - r*0.68f, cy, cx + r*0.68f, cy);
+    g.DrawLine(&p, cx, cy - r*0.68f, cx, cy + r*0.68f);
+}
+
 
 // Separador horizontal: una linea de 1px. El desvanecido en los extremos era
 // una luz decorativa del lenguaje viejo (y ademas costaba dos pinceles).
@@ -6821,7 +6942,6 @@ static void buildStaticScene(int W, int H) {
     G::Font fH2(L"Segoe UI", 22, G::FontStyleBold);
     G::Font fKnob(L"Segoe UI", 10.5f);
     G::Font fBold(L"Segoe UI", 11.5f, G::FontStyleBold);
-    G::Font fSym(L"Segoe UI Symbol", 22);
 
     // ---- ENTORNO: el fondo es una sala de rack, no un escenario con focos ----
     //  Un tono plano y UNA lavada de luz de techo: sin charcos de luz, sin
@@ -7408,27 +7528,33 @@ static void buildStaticScene(int W, int H) {
         drawMeterTrack(g, fKnob, L"GATE",   (G::REAL)MTR_GT_X,  (G::REAL)BOT_MTR_Y, (G::REAL)MTR_GT_W);
         // etiqueta CLIP (el LED vivo lo pinta la capa dinamica)
         {
-            G::Font fClipL(L"Segoe UI", 8.5f, G::FontStyleBold);
-            G::SolidBrush ctb(G::Color(255, 0x78, 0x78, 0x7e));
-            G::StringFormat sfR; sfR.SetAlignment(G::StringAlignmentFar);
+            // CLIP: rotulo centrado sobre su LED y en LA MISMA linea que los
+            // demas del pie (antes iba a 8,5pt y a otra altura, pegado al GATE).
+            G::Font fClipL(L"Segoe UI", 10.5f);
+            G::SolidBrush ctb(kFTxt2);
+            G::StringFormat sfCC; sfCC.SetAlignment(G::StringAlignmentCenter);
             g.DrawString(L"CLIP", -1, &fClipL,
-                         G::RectF((G::REAL)CLIP_LBL_X, (G::REAL)BOT_MTR_Y - 6.0f, 46.0f, 21.0f),
-                         &sfR, &ctb);
+                         G::RectF((G::REAL)CLIP_LED_X - 35.0f, (G::REAL)BOT_LBL_Y, 80.0f, 14.0f),
+                         &sfCC, &ctb);
         }
         drawKnobBody(g, (G::REAL)MASTER_X, (G::REAL)MASTER_Y, (G::REAL)MASTER_R);
-        G::Font fFootLbl(L"Segoe UI", 9.0f, G::FontStyleBold);
-        G::SolidBrush tb(G::Color(255, 0x78, 0x78, 0x7e));
-        G::StringFormat sfMR; sfMR.SetAlignment(G::StringAlignmentFar);
+        // Un solo estilo de rotulo en todo el pie (10,5pt regular, tono medio),
+        // centrado sobre su control y en la linea comun de rotulos.
+        G::Font fFootLbl(L"Segoe UI", 10.5f);
+        G::SolidBrush tb(kFTxt2);
+        G::StringFormat sfMC; sfMC.SetAlignment(G::StringAlignmentCenter);
         g.DrawString(L"MASTER", -1, &fFootLbl,
-                     G::RectF((G::REAL)(MASTER_X - 138), (G::REAL)MASTER_Y - 7.0f, 100.0f, 16.0f),
-                     &sfMR, &tb);
-        // Perilla INPUT (trim): cuerpo en la escena estatica, puntero y aro
-        // los pinta la capa dinamica como al resto. Etiqueta encima, centrada.
+                     G::RectF((G::REAL)(MASTER_X - 60), (G::REAL)BOT_LBL_Y, 120.0f, 14.0f),
+                     &sfMC, &tb);
+        // Perilla de TRIM de entrada: cuerpo en la escena estatica, puntero y
+        // aro los pinta la capa dinamica como al resto. Se llama TRIM y no INPUT
+        // porque INPUT ya es el nombre del medidor de al lado: dos rotulos
+        // iguales a 5cm uno de otro no decian cual era cual.
         drawKnobBody(g, (G::REAL)IN_TRIM_X, (G::REAL)IN_TRIM_Y, (G::REAL)IN_TRIM_R);
         {
             G::StringFormat sfT; sfT.SetAlignment(G::StringAlignmentCenter);
-            g.DrawString(L"INPUT", -1, &fFootLbl,
-                         G::RectF((G::REAL)(IN_TRIM_X - 45), (G::REAL)FOOT_Y + 2.0f, 90.0f, 14.0f),
+            g.DrawString(L"TRIM", -1, &fFootLbl,
+                         G::RectF((G::REAL)(IN_TRIM_X - 45), (G::REAL)BOT_LBL_Y, 90.0f, 14.0f),
                          &sfT, &tb);
         }
     }
@@ -8440,9 +8566,6 @@ static void paintWindow(HWND hwnd) {
     G::Font fBold(L"Segoe UI", 11.5f, G::FontStyleBold);
     G::Font fSmall(L"Segoe UI", 11);
     G::Font fPreset(L"Segoe UI", 14);
-    G::Font fSym(L"Segoe UI Symbol", 22);
-    G::Font fArrow(L"Segoe UI", 20);
-    G::Font fHeart(L"Segoe UI", 18);
 
     // 2) Capa dinamica: solo lo que cambia con el estado y el raton
 
@@ -8452,12 +8575,11 @@ static void paintWindow(HWND hwnd) {
         WCHAR pname[128];
         presetNameW(g_presetIdx, pname, 128);
         const bool bhov = zoneHit(6);          // preset superior
-        if (bhov) {   // hover: la luz pasa por el cristal, sin repintar la pieza
-            glassWash(g, (G::REAL)TOP_BOX_X, (G::REAL)TOP_BOX_Y, (G::REAL)TOP_BOX_W,
-                      (G::REAL)TOP_BOX_H, kRPill, kGlassHover);
-            G::Pen hp(G::Color(74, 0xff, 0xff, 0xff), 1.0f);
+        if (bhov) {   // hover: la caja SUBE un tono, el mismo trato que las filas
+            G::SolidBrush hb(kFSurf3);
+            G::Pen hp(kFLine, 1.0f);
             roundRect(g, (G::REAL)TOP_BOX_X, (G::REAL)TOP_BOX_Y, (G::REAL)TOP_BOX_W,
-                      (G::REAL)TOP_BOX_H, kRPill, &hp, nullptr);
+                      (G::REAL)TOP_BOX_H, kRPill, &hp, &hb);
         }
         // Linea de arriba: QUE CABEZA suena. Es el sitio que el diseno reserva
         //  al nombre del ampli (la banda de la unidad dice que ESTANTE es, no
@@ -8489,9 +8611,9 @@ static void paintWindow(HWND hwnd) {
             g.DrawString(nm, -1, &fPreset,
                          G::RectF((G::REAL)TOP_BOX_X + 62.0f, (G::REAL)(TOP_BOX_Y + 18), 288.0f, 28.0f), &sfL, &tb);
         }
-        G::SolidBrush ab(bhov ? kTxtHi : kTxtMd);
-        g.DrawString(L"\x25BE", -1, &fArrow,
-                     G::RectF((G::REAL)TOP_BOX_X + TOP_ARROW_X, (G::REAL)TOP_BOX_Y, 32.0f, (G::REAL)TOP_BOX_H), &sfC, &ab);
+        icChev(g, (G::REAL)TOP_BOX_X + TOP_ARROW_X + 16.0f,
+               (G::REAL)TOP_BOX_Y + TOP_BOX_H*0.5f, 11.0f,
+               bhov ? kTxtHi : kTxtMd, 0);
         pressVeil(g, (G::REAL)TOP_BOX_X, (G::REAL)TOP_BOX_Y, (G::REAL)TOP_BOX_W,
                   (G::REAL)TOP_BOX_H, kRPill);
     }
@@ -8503,8 +8625,8 @@ static void paintWindow(HWND hwnd) {
         G::SolidBrush cgb(gopen ? G::Color(255, 0x10, 0x10, 0x12)
                                 : (gh ? kBtnBgH : kBtnBg));
         g.FillEllipse(&cgb, TOP_GEAR_X, 14, 40, 40);
-        G::SolidBrush gt(gopen ? kAcc
-                               : (gh ? kTxtHi : kTxtMd));
+        const G::Color gtC(gopen ? kAcc
+                                 : (gh ? kTxtHi : kTxtMd));
         G::Pen gp(gopen ? kAcc
                         : (gh ? G::Color(255, 0x24, 0x24, 0x28) : kBtnLn), 1.0f);
         g.DrawEllipse(&gp, TOP_GEAR_X, 14, 40, 40);
@@ -8512,15 +8634,9 @@ static void paintWindow(HWND hwnd) {
             G::SolidBrush gv(G::Color(70, 0, 0, 0));
             g.FillEllipse(&gv, TOP_GEAR_X, 14, 40, 40);
         }
-        {
-            // Centrar el glifo en el circulo de 40px midiendo sus bounds reales
-            // (StringFormat en RectF(40x44) dejaba el engranaje desplazado).
-            G::RectF b;
-            g.MeasureString(L"\x2699", -1, &fSym, G::PointF(0.0f, 0.0f), &b);
-            const G::REAL gx = (G::REAL)TOP_GEAR_X + (40.0f - b.Width)*0.5f - b.X;
-            const G::REAL gy = 14.0f + (40.0f - b.Height)*0.5f - b.Y;
-            g.DrawString(L"\x2699", -1, &fSym, G::RectF(gx, gy, 40.0f, 40.0f), nullptr, &gt);
-        }
+        // Engranaje vectorial, centrado en el circulo POR CONSTRUCCION: el
+        // glifo de Segoe UI Symbol traia descentrado propio y habia que medirlo.
+        icGear(g, (G::REAL)TOP_GEAR_X + 20.0f, 34.0f, 10.5f, gtC);
     }
 
     profMark("Boton global AUDIO ON/OFF (arranca apa");   //PFMARK
@@ -8944,8 +9060,6 @@ static void paintWindow(HWND hwnd) {
         }
         G::Font fRowN(L"Segoe UI", 13, G::FontStyleBold);
         G::Font fRowS(L"Segoe UI", 9.5f);
-        G::Font fStar(L"Segoe UI", 14);
-        G::Font fSymRow(L"Segoe UI Symbol", 13);
         const int cur = g_params.model.load();
         for (int vi = 0; vi < vis; ++vi) {
             const int gi = g_listScroll + vi;
@@ -8961,20 +9075,22 @@ static void paintWindow(HWND hwnd) {
             const float hr = (gi >= 0 && gi < kMaxListEntries)
                                ? g_anim.row[gi] : (hov ? 1.0f : 0.0f);
             if (sel) {
-                // SELECCIONADA: cristal tintado de ambar. El ambar significa "esto
-                // suena", y el que suena es el ampli de la fila. Se mantiene la
-                // regla del unico vivo: solo la barra y este tinte.
-                G::SolidBrush sb2(kGlassSel);
-                G::Pen sp(G::Color(170, kAcc.GetR(), kAcc.GetG(), kAcc.GetB()), 1.0f);
-                roundRect(g, (G::REAL)rx, (G::REAL)ry, (G::REAL)rw, (G::REAL)rh, 6.0f, &sp, &sb2);
+                // SELECCIONADA: la fila SUBE un tono (kFSurf2) y lleva su barra ambar en el
+                // canto. El ambar significa "esto suena" y con la barra basta:
+                // antes la fila llevaba tambien contorno ambar entero y tinte de
+                // cristal (cuatro señales para un solo estado) y la lista leia
+                // como un panel de alarmas.
+                G::SolidBrush sb2(kFSurf2);
+                roundRect(g, (G::REAL)rx, (G::REAL)ry, (G::REAL)rw, (G::REAL)rh, 6.0f, nullptr, &sb2);
                 G::SolidBrush ab(kAcc);
-                roundRect(g, (G::REAL)rx + 3.0f, (G::REAL)ry + 12.0f, 3.0f, (G::REAL)rh - 24.0f,
-                          1.5f, nullptr, &ab);
+                roundRect(g, (G::REAL)rx + 2.0f, (G::REAL)ry + 11.0f, 3.0f, (G::REAL)rh - 22.0f,
+                           1.5f, nullptr, &ab);
             } else if (hr > 0.001f) {
-                // hover: luz que pasa por el cristal de la fila, rampada
-                const int ha = (int)(kGlassHover.GetA()*hr);
-                G::Color hc = G::Color(ha, kGlassHover.GetR(), kGlassHover.GetG(), kGlassHover.GetB());
-                glassWash(g, (G::REAL)rx, (G::REAL)ry, (G::REAL)rw, (G::REAL)rh, 6.0f, hc);
+                // hover: UN tono mas (kFSurf3) y rampado. La luz que "pasaba por
+                // el cristal" era del lenguaje viejo.
+                G::SolidBrush hb(G::Color((BYTE)(kFSurf3.GetA()*hr), kFSurf3.GetR(),
+                                          kFSurf3.GetG(), kFSurf3.GetB()));
+                roundRect(g, (G::REAL)rx, (G::REAL)ry, (G::REAL)rw, (G::REAL)rh, 6.0f, nullptr, &hb);
             }
             if (g_leftTab == 0) {
                 // miniatura: marco de cristal + frontal recortado a las esquinas
@@ -9005,12 +9121,10 @@ static void paintWindow(HWND hwnd) {
                     // el raton: trece estrellas encendidas de seguido llenaban de
                     // ruido el borde derecho de la lista y competian con los
                     // nombres. En reposo quedan como un contorno tenue.
-                    G::SolidBrush stb(fav ? colAmp(a)
-                                          : (hov ? kTxtMd
-                                                 : G::Color(88, 0x8b, 0x87, 0x81)));
-                    g.DrawString(fav ? L"\x2605" : L"\x2606", -1, &fStar,
-                                 G::RectF((G::REAL)(rx + rw - 26), (G::REAL)(ry + 15), 22.0f, 22.0f),
-                                 &sfC, &stb);
+                    const G::Color stc = fav ? colAmp(a)
+                                             : (hov ? kTxtMd
+                                                    : G::Color(88, 0x8b, 0x87, 0x81));
+                    icStar(g, (G::REAL)rx + rw - 15.0f, (G::REAL)ry + 26.0f, 7.0f, stc, fav);
                 }
             } else {
                 WCHAR pn[128];
@@ -9035,14 +9149,13 @@ static void paintWindow(HWND hwnd) {
                     // pide dos clics, para no llevarse un preset de un roce.
                     const bool hE = rectHas(navBadgeRect(vi, false), g_mouseX, g_mouseY);
                     const bool hX = rectHas(navBadgeRect(vi, true),  g_mouseX, g_mouseY);
-                    G::SolidBrush pb(hE ? kTxtHi : kTxtLo);
-                    g.DrawString(L"\x270E", -1, &fSymRow,
-                                 G::RectF((G::REAL)(rx + rw - 54), (G::REAL)(ry + 17), 24.0f, 22.0f),
-                                 &sfC, &pb);
-                    G::SolidBrush xb(armed ? kHot : (hX ? kTxtHi : kTxtLo));
-                    g.DrawString(L"\x2715", -1, &fSymRow,
-                                 G::RectF((G::REAL)(rx + rw - 28), (G::REAL)(ry + 8), 24.0f, 22.0f),
-                                 &sfC, &xb);
+                    // Lapiz y aspa: vectores de la familia, con el MISMO centro
+                    // vertical que la estrella y el que declara navBadgeRect
+                    // (antes el aspa iba 7px alta y el lapiz 2px bajo).
+                    icPencil(g, (G::REAL)rx + rw - 42.0f, (G::REAL)ry + 26.0f, 7.0f,
+                             hE ? kTxtHi : kTxtLo);
+                    icClose(g, (G::REAL)rx + rw - 15.0f, (G::REAL)ry + 26.0f, 7.0f,
+                            armed ? kHot : (hX ? kTxtHi : kTxtLo));
                     if (armed) {
                         G::Pen ap(kHot, 1.5f);
                         roundRect(g, (G::REAL)rx, (G::REAL)ry, (G::REAL)rw, (G::REAL)rh,
@@ -9375,16 +9488,17 @@ static void paintWindow(HWND hwnd) {
             g.DrawString(pname, -1, &fPreset, G::RectF(38, BOT_BOX_Y, 250, 44), &sfL, &tb);
         }
 
-        G::Color acCol = zoneHit(71) ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7);
-        G::Color acCol2 = zoneHit(72) ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7);
-        G::SolidBrush pb1(acCol), pb2(acCol2);
-        g.DrawString(L"\x2039", -1, &fArrow, G::RectF(334, BOT_BOX_Y + 4, 32, 40), &sfC, &pb1);
-        g.DrawString(L"\x203A", -1, &fArrow, G::RectF(370, BOT_BOX_Y + 4, 32, 40), &sfC, &pb2);
+        const G::Color acCol  = zoneHit(71) ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7);
+        const G::Color acCol2 = zoneHit(72) ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7);
+        // Los tres glifos de la tira de transporte, en UNA linea (centros en
+        // BOT_BOX_Y+23): antes cada uno traia la altura de su fuente.
+        icChev(g, 350.0f, (G::REAL)BOT_BOX_Y + 23.0f, 13.0f, acCol, 1);
+        icChev(g, 386.0f, (G::REAL)BOT_BOX_Y + 23.0f, 13.0f, acCol2, 2);
         bool fhov = zoneHit(73);               // favorito
-        G::SolidBrush hb(g_fav  ? kHot
-                        : fhov  ? G::Color(0xff, 0xd8, 0x9c, 0x98)
-                                : G::Color(0xff, 0x82, 0x7d, 0x76));
-        g.DrawString(L"\x2661", -1, &fHeart, G::RectF(410, BOT_BOX_Y + 6, 34, 40), &sfC, &hb);
+        const G::Color hbC = g_fav  ? kHot
+                           : fhov  ? G::Color(0xff, 0xd8, 0x9c, 0x98)
+                                   : G::Color(0xff, 0x82, 0x7d, 0x76);
+        icHeart(g, 427.0f, (G::REAL)BOT_BOX_Y + 23.0f, 7.5f, hbC, g_fav);
 
         pressVeil(g, 24.0f, (G::REAL)BOT_BOX_Y, 306.0f, 44.0f, 8.0f);
         pressVeil(g, 334.0f, (G::REAL)BOT_BOX_Y + 4, 32.0f, 40.0f, 6.0f);
@@ -9406,7 +9520,7 @@ static void paintWindow(HWND hwnd) {
             static float hold = 0.0f;
             const float fl = g_clipFlag.exchange(0.0f);
             hold = (fl > hold) ? fl : hold*0.90f;   // decaimiento ~1 s a 25 fps
-            const G::REAL cx = (G::REAL)CLIP_LED_X + 5.5f, cy = (G::REAL)BOT_MTR_Y + 4.5f, r = 5.5f;
+            const G::REAL cx = (G::REAL)CLIP_LED_X + 5.5f, cy = (G::REAL)BOT_MTR_Y + 13.0f, r = 5.5f;
             if (hold > 0.05f) {
                 G::SolidBrush gl(G::Color(0x78, 0x6e, 0x69, 0x63));
                 g.FillEllipse(&gl, cx - r - 5.0f, cy - r - 5.0f, (r + 5.0f)*2.0f, (r + 5.0f)*2.0f);
@@ -9559,10 +9673,8 @@ static void paintWindow(HWND hwnd) {
                 G::Pen cp2(hr ? G::Color(255, 0x24, 0x24, 0x28) : kBtnLn, 1.0f);
                 roundRect(g, valR + 11, ry + 2, 26, 26, 13, &cp2, &cb2);
             }
-            G::SolidBrush ab(hl ? kTxtHi : kTxtMd);
-            G::SolidBrush ab2(hr ? kTxtHi : kTxtMd);
-            g.DrawString(L"\x2039", -1, &fArrow, G::RectF(valL - 42, ry, 36, 30), &sfC, &ab);
-            g.DrawString(L"\x203A", -1, &fArrow, G::RectF(valR + 6, ry, 36, 30), &sfC, &ab2);
+            icChev(g, (G::REAL)valL - 24.0f, ry + 15.0f, 12.0f, hl ? kTxtHi : kTxtMd, 1);
+            icChev(g, (G::REAL)valR + 24.0f, ry + 15.0f, 12.0f, hr ? kTxtHi : kTxtMd, 2);
             pressVeil(g, (G::REAL)(valL - 42), (G::REAL)ry, 36, 30, 6.0f);
             pressVeil(g, (G::REAL)(valR + 6), (G::REAL)ry, 36, 30, 6.0f);
         }
