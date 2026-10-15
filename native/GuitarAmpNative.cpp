@@ -7269,12 +7269,18 @@ static void buildStaticScene(int W, int H) {
                     // vidrio entero se encoge, y un suelo fijo de 9 pt hacia que
                     // los nombres largos se cortasen con "…" antes de poderse
                     // reducir. Con el suelo escalado cabe el nombre en el minimo.
-                    const G::REAL pm1 = 9.0f * g_uiS, pm2 = 8.0f * g_uiS;
+                    //
+                    // El espaciado del nombre tambien baja: con tracking 2, un
+                    // nombre de 30+ caracteres -"NEW VERSION | Fender DRRI |
+                    // CIRCA 1965"- media 496 pt en el vidrio de 183, de modo que
+                    // se cortaba a "Fender D..." sin haber podido encogerse. Con
+                    // 1.0 y suelo 7 cabe entero; el sub va a 0.6 por lo mismo.
+                    const G::REAL pm1 = 7.0f * g_uiS, pm2 = 6.5f * g_uiS;
                     drawSpacedFitC(g, wn.c_str(), G::FontStyleBold, G::Color(0xe6, 0x82, 0x7d, 0x76),
-                                   txtCx, sy + sh*0.30f, 2.0f, txtW, fs1, pm1);
+                                   txtCx, sy + sh*0.30f, 1.0f, txtW, fs1, pm1);
                     if (!sub.empty())
                         drawSpacedFitC(g, sub.c_str(), G::FontStyleRegular, G::Color(0xbe, 0x82, 0x7d, 0x76),
-                                       txtCx, sy + sh*0.66f, 1.0f, txtW, fs2, pm2);
+                                       txtCx, sy + sh*0.66f, 0.6f, txtW, fs2, pm2);
                 } else {
                     drawSpacedFitC(g, L"SIN PERFIL", G::FontStyleBold, G::Color(0xc8, 0x82, 0x7d, 0x76),
                                    suCx, sy + sh*0.40f, 2.0f, suW*0.92f, fs1, 9.0f);
