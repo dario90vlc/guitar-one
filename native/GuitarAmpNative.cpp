@@ -96,6 +96,7 @@ typedef struct tagOFNW {
 extern "C" BOOL __stdcall GetOpenFileNameW(LPOPENFILENAMEW);
 #endif
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
@@ -168,7 +169,6 @@ static const G::REAL kRCard  = 10.0f;   // tarjetas y modulos
 static const G::REAL kRWell  =  8.0f;   // pozos
 static const G::REAL kRPill  =  9.0f;   // pastillas y botones
 static const G::REAL kRBtn   =  8.0f;   // botones de accion
-static const G::REAL kR = 7.0f;         // radio heredado; se retira al migrar
 static const int     kPadX   = 16;      // margen interno de panel
 static const G::REAL kAir    = 12.0f;   // separacion vertical entre bloques
 
@@ -5687,28 +5687,10 @@ static void softShadow(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL 
 //  dos tonos planos    ->  la luz viene de arriba, sin degradado decorativo
 //  filete de 1px       ->  un solo filo claro arriba; abajo nada
 //  (sin grano: sobre negro el ruido de 1px lee como suciedad, no como material)
-static void panelBase(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
-                      G::REAL r, bool shadow = true) {
-    if (shadow) softShadow(g, x, y, w, h, r, 90);
-    G::LinearGradientBrush bg(G::RectF(x, y, w, h), kSurfA, kSurfB, 90.0f);
-    G::Pen bp(kSurfLn, 1.0f);
-    roundRect(g, x, y, w, h, r, &bp, &bg);
-    G::Pen hi(G::Color(22, 0xff, 0xff, 0xff), 1.0f);
-    g.DrawLine(&hi, x + r + 1.0f, y + 1.0f, x + w - r - 1.0f, y + 1.0f);
-}
-
-// HUECO: superficie hundida (listas, visualizadores, ranuras). Un solo tono y
-// su filete: la profundidad la da la diferencia de valor con la placa, no una
-// escalera de grises.
-static void wellBase(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, G::REAL r) {
-    G::SolidBrush bg(kWellA);
-    G::Pen bp(kWellLn, 1.0f);
-    roundRect(g, x, y, w, h, r, &bp, &bg);
-}
 
 // Velo de press: solo si el boton izq. esta pulsado Y el raton encima.
 // Mismo trato para todos los controles pulsables de la UI.
-static void pressVeil(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, G::REAL r = kR) {
+static void pressVeil(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, G::REAL r = 7.0f) {
     if (!g_lbtn || !mouseIn((int)x, (int)y, (int)(x + w), (int)(y + h))) return;
     G::SolidBrush veil(G::Color(70, 0, 0, 0));
     roundRect(g, x, y, w, h, r, nullptr, &veil);
@@ -6539,7 +6521,7 @@ static void drawValuePop(G::Graphics& g, G::REAL bx, G::REAL by, G::REAL bw,
     if (by > (G::REAL)WIN_H - 12.0f - bh) by = (G::REAL)WIN_H - 12.0f - bh;
     G::SolidBrush vb(kWellA);
     G::Pen vp(G::Color(255, ac.GetR(), ac.GetG(), ac.GetB()), 1.5f);
-    roundRect(g, bx, by, bw, bh, kR, &vp, &vb);
+    roundRect(g, bx, by, bw, bh, kRWell, &vp, &vb);
     G::SolidBrush vt(G::Color(255, ac.GetR(), ac.GetG(), ac.GetB()));
     G::Font fVal(L"Segoe UI", 11, G::FontStyleBold);
     G::StringFormat sfC;
@@ -6901,6 +6883,46 @@ static void buildSlotTemplates() {
 }
 
 // ---------------------------------------------------------------------------
+//  Movimiento: una sola tabla de rampas, sin asignar nada por fotograma.
+//  Todo se cuelga del timer de 16 ms que ya existia y de la compuerta de
+//  invalidacion: cuando no hay ninguna rampa viva la app vuelve a costar 0% en
+//  reposo, que es como estaba. Las rampas no son adorno: avisan de que algo
+//  acaba de cambiar, asi que son cortas (80-140 ms) y desaparecen solas.
+// ---------------------------------------------------------------------------
+static const float kRampHover = 80.0f;    // ms: el raton entra en una fila
+static const float kRampModal = 140.0f;   // ms: un modal se abre o se cierra
+
+struct UAnim {
+    float row[64];      // rampa de hover de cada fila visible
+    float modal;        // 0..1: cuanto esta puesto el velo del modal
+    float pulse;        // fase del latido de la cadena (radianes)
+};
+static UAnim g_anim;
+
+static void animStep(float& v, float target, float ms) {
+    if (ms < 1.0f) ms = 1.0f;
+    const float d = (target - v)*(16.0f/ms);
+    if (d > -0.004f && d < 0.004f) { v = target; return; }
+    v += d;
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+}
+// Una rampa esta viva mientras no haya llegado a su destino.
+static bool animActive() {
+    if (g_anim.modal != 0.0f && g_anim.modal != 1.0f) return true;
+    for (int i = 0; i < 64; ++i) {
+        if (g_anim.row[i] != 0.0f && g_anim.row[i] != 1.0f) return true;
+    }
+    return false;
+}
+// Latido de la cadena: solo con audio. En silencio no late nada, porque el
+// pulso significa "esto esta pasando ahora" y en silencio no pasa nada.
+static float animPulse() {
+    if (!g_params.audioActive.load()) return 0.0f;
+    return 0.5f + 0.5f*(float)sin((double)g_anim.pulse);
+}
+
+// ---------------------------------------------------------------------------
 //  Escena estatica cacheada + pintado principal (estilo GUITAR ONE)
 // ---------------------------------------------------------------------------
 static void buildStaticScene(int W, int H) {
@@ -7154,13 +7176,15 @@ static void buildStaticScene(int W, int H) {
                 {
                     const G::REAL ax = (G::REAL)NAM_ADD_X, aw = (G::REAL)NAM_ADD_W;
                     const bool hova = mouseIn((int)ax, (int)ry, (int)(ax + aw), (int)(ry + rh));
-                    G::SolidBrush ab(G::Color(0xff, 0x1c, 0x1b, 0x1d));
-                    G::Pen ap(hova ? accA(170) : kWellLn, hova ? 1.2f : 1.0f);
-                    roundRect(g, ax, ry, aw, rh, 6.0f, &ap, &ab);
+                    glassPillBody(g, ax, ry, aw, rh, hova, false, kAcc, true);
+                    if (hova) {   // el hover de estos dos botones es lo unico ambar
+                        G::Pen ap(accA(170), 1.2f);
+                        roundRect(g, ax, ry, aw, rh, kRPill, &ap, nullptr);
+                    }
                     drawSpacedFitC(g, L"+ A\xD1" L"ADIR", G::FontStyleBold,
                                    hova ? kTxtHi : kTxtMd,
                                    ax + aw*0.5f, ry + (G::REAL)NAMROW_H*0.30f, 1.2f, aw - 16.0f, 14.5f, 11.0f);
-                    drawSpacedFitC(g, L"perfil .nam", G::FontStyleRegular, G::Color(0x96, 0x8b, 0x87, 0x81),
+                    drawSpacedFitC(g, L"perfil .nam", G::FontStyleRegular, kTxtLo,
                                    ax + aw*0.5f, ry + (G::REAL)NAMROW_H*0.56f, 0.6f, aw - 16.0f, 9.5f, 8.5f);
                 }
                 // boton TONE3000: explorar la biblioteca (marca corta T3K). Misma
@@ -7170,9 +7194,11 @@ static void buildStaticScene(int W, int H) {
                     const G::REAL tx = (G::REAL)NAM_T3K_X;
                     const G::REAL ty = ry;
                     const bool hovt = mouseIn((int)tx, (int)ty, (int)(tx + NAM_T3K_W), (int)(ty + rh));
-                    G::SolidBrush tb(G::Color(0xff, 0x1c, 0x1b, 0x1d));
-                    G::Pen tp(hovt ? accA(170) : kWellLn, hovt ? 1.2f : 1.0f);
-                    roundRect(g, tx, ty, (G::REAL)NAM_T3K_W, rh, 6.0f, &tp, &tb);
+                    glassPillBody(g, tx, ty, (G::REAL)NAM_T3K_W, rh, hovt, false, kAcc, true);
+                    if (hovt) {
+                        G::Pen tp(accA(170), 1.2f);
+                        roundRect(g, tx, ty, (G::REAL)NAM_T3K_W, rh, kRPill, &tp, nullptr);
+                    }
                     drawSpacedFitC(g, L"T3K", G::FontStyleBold, hovt ? kTxtHi : kTxtMd,
                                    tx + (G::REAL)NAM_T3K_W*0.5f, ry + (G::REAL)NAMROW_H*0.41f, 1.4f,
                                    (G::REAL)NAM_T3K_W - 14.0f, 13.0f, 10.0f);
@@ -8089,7 +8115,7 @@ static void t3kDrawSheet(G::Graphics& g)
     // El panel ya apaga la ventana entera (kVeil), pero el suyo propio se quedaba a
     // plena luz: en la captura del usuario las tarjetas competian con la hoja.
     {
-        G::SolidBrush v(kVeil);
+        G::SolidBrush v(G::Color((BYTE)(kVeil.GetA()*g_anim.modal), 0, 0, 0));
         g.FillRectangle(&v, (G::REAL)T3K_X, (G::REAL)T3K_Y, (G::REAL)T3K_W, (G::REAL)T3K_H);
     }
     // La hoja es cristal como todo lo demas: se separa por la sombra y por su
@@ -8201,7 +8227,7 @@ static void t3kDrawSheet(G::Graphics& g)
 static void t3kDraw(G::Graphics& g)
 {
     const G::REAL px = T3K_X, py = T3K_Y, pw = T3K_W, ph = T3K_H;
-    G::SolidBrush dim(kVeil);
+    G::SolidBrush dim(G::Color((BYTE)(kVeil.GetA()*g_anim.modal), 0, 0, 0));
     g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
     glassPanel(g, px, py, pw, ph, kRModal, true);
 
@@ -8770,6 +8796,13 @@ static void paintWindow(HWND hwnd) {
                            ccx, cy2 + 1.0f, 0.7f, cwid[i] - 4.0f, 10.0f, 8.0f);
             const G::REAL railY = cy2 + 29.0f;
             if (isAmp) {
+                // halo ambar que late mientras hay audio: pulso suave 1.5 s,
+                // solo vivo con g_params.audioActive. No se dibuja en reposo.
+                if (g_params.audioActive.load()) {
+                    const int ga = (int)(40.0f + 30.0f*animPulse());
+                    G::SolidBrush gb(G::Color(ga, 0xff, 0xa5, 0x1f));
+                    roundRect(g, ccx - 7.0f, railY - 12.0f, 14.0f, 24.0f, 6.0f, nullptr, &gb);
+                }
                 G::SolidBrush tk(kAcc);
                 roundRect(g, ccx - 1.5f, railY - 7.0f, 3.0f, 14.0f, 1.0f, nullptr, &tk);
             } else {
@@ -9036,6 +9069,10 @@ static void paintWindow(HWND hwnd) {
             const int rw = COL_L_W - 16, rh = LIST_ROW_H - 4;
             const bool sel = (g_leftTab == 0) ? (a == cur) : (a == g_presetIdx);
             const bool hov = mouseIn(rx, ry, rx + rw, ry + rh);
+            // el hover entra/sale en kRampHover ms: la luz se vana/recupera sola,
+            // en vez de encenderse y apagarse de golpe
+            const float hr = (gi >= 0 && gi < kMaxListEntries)
+                               ? g_anim.row[gi] : (hov ? 1.0f : 0.0f);
             if (sel) {
                 // SELECCIONADA: cristal tintado de ambar. El ambar significa "esto
                 // suena", y el que suena es el ampli de la fila. Se mantiene la
@@ -9046,9 +9083,11 @@ static void paintWindow(HWND hwnd) {
                 G::SolidBrush ab(kAcc);
                 roundRect(g, (G::REAL)rx + 3.0f, (G::REAL)ry + 12.0f, 3.0f, (G::REAL)rh - 24.0f,
                           1.5f, nullptr, &ab);
-            } else if (hov) {
-                // hover: luz que pasa por el cristal de la fila, sin repintarla
-                glassWash(g, (G::REAL)rx, (G::REAL)ry, (G::REAL)rw, (G::REAL)rh, 6.0f, kGlassHover);
+            } else if (hr > 0.001f) {
+                // hover: luz que pasa por el cristal de la fila, rampada
+                const int ha = (int)(kGlassHover.GetA()*hr);
+                G::Color hc = G::Color(ha, kGlassHover.GetR(), kGlassHover.GetG(), kGlassHover.GetB());
+                glassWash(g, (G::REAL)rx, (G::REAL)ry, (G::REAL)rw, (G::REAL)rh, 6.0f, hc);
             }
             if (g_leftTab == 0) {
                 // miniatura: marco de cristal + frontal recortado a las esquinas
@@ -9264,7 +9303,7 @@ static void paintWindow(HWND hwnd) {
     profMark("Panel modal: ANADIR PEDAL ---");   //PFMARK
     // --- Panel modal: ANADIR PEDAL ---
     if (g_addOpen) {
-        G::SolidBrush dim(kVeil);
+        G::SolidBrush dim(G::Color((BYTE)(kVeil.GetA()*g_anim.modal), 0, 0, 0));
         g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
         const G::REAL px = PAL_X, py = PAL_Y, pw = PAL_W, ph = PAL_H;
         glassPanel(g, px, py, pw, ph, kRModal, true);
@@ -9555,7 +9594,7 @@ static void paintWindow(HWND hwnd) {
     profMark("Panel AJUSTES (modal, kAcc) -");   //PFMARK
     // --- Panel AJUSTES (modal, paleta kAcc de la app) ---
     if (g_settingsOpen) {
-        G::SolidBrush dim(kVeil);
+        G::SolidBrush dim(G::Color((BYTE)(kVeil.GetA()*g_anim.modal), 0, 0, 0));
         g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
         // Dialogo centrado y compacto: antes era un panel casi a pantalla completa con mucho vacio
         const G::REAL px = (WIN_W - 940) / 2, py = (WIN_H - 390) / 2 - 10;
@@ -9690,7 +9729,7 @@ static void paintWindow(HWND hwnd) {
     profMark("Modal AFINADOR (cromatico): se pinta e");   //PFMARK
     // --- Modal AFINADOR (cromatico): se pinta el ultimo para ocultar todo lo demas ---
     if (g_tunerOpen.load()) {
-        G::SolidBrush dim(kVeil);
+        G::SolidBrush dim(G::Color((BYTE)(kVeil.GetA()*g_anim.modal), 0, 0, 0));
         g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
         const G::REAL px = TUN_X, py = TUN_Y, pw = TUN_W, ph = TUN_H;
         glassPanel(g, px, py, pw, ph, kRModal, true);
@@ -9776,7 +9815,7 @@ static void paintWindow(HWND hwnd) {
 
     // --- Modal RENOMBRAR preset de usuario (tapa el resto) ---
     if (g_renameOpen) {
-        G::SolidBrush dim(kVeil);
+        G::SolidBrush dim(G::Color((BYTE)(kVeil.GetA()*g_anim.modal), 0, 0, 0));
         g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
         glassPanel(g, (G::REAL)REN_X, (G::REAL)REN_Y, (G::REAL)REN_W, (G::REAL)REN_H, kRModal, true);
         drawSpacedFit(g, L"RENOMBRAR PRESET", G::FontStyleBold, kTxtHi,
@@ -10129,9 +10168,25 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         float vo = g_params.meterOut.load();
         g_pkHoldIn  = (vi > g_pkHoldIn)  ? vi : g_pkHoldIn*0.93f;
         g_pkHoldOut = (vo > g_pkHoldOut) ? vo : g_pkHoldOut*0.93f;
+        // rampas: animacion y logica de repintado comparten este tick
+        const int nvis = LIST_H / LIST_ROW_H;
+        for (int vi = 0; vi < nvis && vi < 64; ++vi) {
+            const int gi = g_listScroll + vi;
+            const int rx = COL_L_X + 8, ry = LIST_Y + vi*LIST_ROW_H;
+            const int rw = COL_L_W - 16, rh = LIST_ROW_H - 4;
+            if (gi >= 0 && gi < kMaxListEntries)
+                animStep(g_anim.row[gi], mouseIn(rx, ry, rx + rw, ry + rh) ? 1.0f : 0.0f, kRampHover);
+        }
+        const bool modalOpen = g_addOpen || g_settingsOpen || g_renameOpen ||
+                               g_t3kOpen || g_t3kConnOpen;
+        animStep(g_anim.modal, modalOpen ? 1.0f : 0.0f, kRampModal);
+        if (g_params.audioActive.load())
+            g_anim.pulse = (float)fmod((double)g_anim.pulse + 16.0*(6.283185307/1500.0), 6.283185307);
         // dirty-flag: si nada visible cambio, el frame seria identico y se
-        // salta el repintado (en reposo la CPU cae a ~0%)
-        if (visSigDirty())
+        // salta el repintado (en reposo la CPU cae a ~0%). animActive anade las
+        // rampas que siguen en marcha: sin esto se repintarian los frames
+        // finales al apagarse.
+        if (visSigDirty() || animActive())
             InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
