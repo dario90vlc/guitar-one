@@ -5821,6 +5821,138 @@ static void glassPill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h
     pressVeil(g, x, y, w, h, kRPill);
 }
 
+// ============================================================================
+//  LENGUAJE PLANO (v3)
+//  La misma app sin cromo. Ni degradados, ni sombras, ni biseles: la
+//  profundidad la da el TONO, y la unica luz de la interfaz es el acento.
+//  Estas piezas son el sustituto directo de las de cristal
+//     glassPanel + glassWell + glassPill   ->  flatPanel / flatWell / flatPill
+//     drawKnobBody + drawKnobDetail        ->  flatKnob
+//     drawMeterTrack + drawMeterFill       ->  flatMeterTrack / flatMeterFill
+//  y se enchufan zona a zona: mientras un panel siga pintando con las viejas,
+//  el resto no se mueve. El ambar NO cambia: es la marca del producto.
+// ============================================================================
+static const G::Color kFBg   (255, 0x17, 0x17, 0x1a);   // lienzo
+static const G::Color kFSurf (255, 0x1f, 0x1f, 0x23);   // placa
+static const G::Color kFSurf2(255, 0x26, 0x26, 0x2b);   // control, pastilla, ranura
+static const G::Color kFSurf3(255, 0x2e, 0x2e, 0x34);   // superficie alta (hover/activo)
+static const G::Color kFLine (255, 0x2a, 0x2a, 0x30);   // filete de placa
+static const G::Color kFTxt  (255, 0xf2, 0xf1, 0xee);
+static const G::Color kFTxt2 (255, 0xa6, 0xa3, 0x9d);
+static const G::Color kFTxt3 (255, 0x6f, 0x6c, 0x67);
+static const G::Color kFHot  (255, 0xff, 0x5f, 0x57);
+
+// Mezcla de un color sobre otro. Evita el "tinte a ojo" repartido por el codigo.
+static G::Color flatTint(G::Color base, G::Color tint, G::REAL k) {
+    if (k < 0.0f) k = 0.0f;
+    if (k > 1.0f) k = 1.0f;
+    return G::Color(255,
+        (BYTE)(base.GetR() + ((int)tint.GetR() - base.GetR())*k + 0.5f),
+        (BYTE)(base.GetG() + ((int)tint.GetG() - base.GetG())*k + 0.5f),
+        (BYTE)(base.GetB() + ((int)tint.GetB() - base.GetB())*k + 0.5f));
+}
+
+// SUPERFICIE PLANA: un tono y un filete. Sin sombra, sin luz de canto.
+static void flatPanel(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
+                      G::REAL r, bool border = true) {
+    G::SolidBrush bg(kFSurf);
+    if (border) { G::Pen bp(kFLine, 1.0f); roundRect(g, x, y, w, h, r, &bp, &bg); }
+    else        { roundRect(g, x, y, w, h, r, nullptr, &bg); }
+}
+
+// SUPERFICIE HUNDIDA: el pozo del sistema plano (visualizador, pistas, listas).
+static void flatWell(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, G::REAL r) {
+    G::SolidBrush bg(kFBg);
+    G::Pen bp(kFLine, 1.0f);
+    roundRect(g, x, y, w, h, r, &bp, &bg);
+}
+
+// PASTILLA PLANA: los estados cambian de tono, nunca de luz.
+static void flatPillBody(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
+                         bool hov, bool lit, G::Color litCol) {
+    const G::REAL r = kRPill;
+    const G::Color fill  = lit ? flatTint(kFSurf3, litCol, 0.30f) : (hov ? kFSurf3 : kFSurf2);
+    const G::Color line  = lit ? litCol : kFLine;
+    G::SolidBrush bg(fill);
+    G::Pen bp(line, 1.0f);
+    roundRect(g, x, y, w, h, r, &bp, &bg);
+    if (lit) {   // piloto: un punto, no un halo
+        G::SolidBrush led(G::Color(255, 0xff, 0xdd, 0x9a));
+        g.FillEllipse(&led, x + 9.0f, y + h*0.5f - 2.0f, 4.0f, 4.0f);
+    }
+}
+
+static void flatPill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
+                     bool hov, bool lit, G::Color litCol) {
+    flatPillBody(g, x, y, w, h, hov, lit, litCol);
+    pressVeil(g, x, y, w, h, kRPill);
+}
+
+// MANDO PLANO: disco, arco de valor y puntero. Ni aro cromado ni domo.
+//  v01 en 0..1; el barrido es de 270 grados empezando a las siete y media.
+static void flatKnob(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, float v01,
+                     G::Color accent, bool hov, bool active) {
+    if (v01 < 0.0f) v01 = 0.0f;
+    if (v01 > 1.0f) v01 = 1.0f;
+    const G::REAL d = r*2.0f;
+    const G::REAL arcIn = 3.5f;                       // el arco vive dentro del disco
+    const G::REAL ax = cx - r + arcIn, ay = cy - r + arcIn, ad = d - arcIn*2.0f;
+    {   // pista completa: se ve el recorrido que queda, no solo el consumido
+        G::Pen tr(kFSurf3, 3.0f);
+        g.DrawArc(&tr, ax, ay, ad, ad, 135.0f, 270.0f);
+    }
+    {   // arco de valor
+        G::Pen vp(accent, 3.0f);
+        g.DrawArc(&vp, ax, ay, ad, ad, 135.0f, 270.0f*v01);
+    }
+    {   // disco
+        G::SolidBrush bg(kFSurf2);
+        g.FillEllipse(&bg, cx - r + 4.0f, cy - r + 4.0f, d - 8.0f, d - 8.0f);
+        G::Pen bp(hov || active ? accent : kFLine, 1.0f);
+        g.DrawEllipse(&bp, cx - r + 4.0f, cy - r + 4.0f, d - 8.0f, d - 8.0f);
+    }
+    {   // puntero: una capsula, no una aguja
+        const G::REAL ang = (135.0f + 270.0f*v01)*(G::REAL)3.14159265f/180.0f;
+        const G::REAL px = cx + (r - 8.0f)*(G::REAL)cos(ang);
+        const G::REAL py = cy + (r - 8.0f)*(G::REAL)sin(ang);
+        G::Pen pp(kFTxt, 2.4f);
+        g.DrawLine(&pp, cx, cy, px, py);
+    }
+}
+
+// MEDIDOR PLANO: pista de 5px y relleno continuo. Sin marco ni tornillo.
+static void flatMeterTrack(G::Graphics& g, G::Font& fLbl, const WCHAR* label,
+                           G::REAL x, G::REAL y, G::REAL w) {
+    flatWell(g, x, y + 11.0f, w, 5.0f, 2.5f);
+    G::SolidBrush lb(kFTxt);
+    G::StringFormat sf;   // etiqueta a la derecha de su pista
+    sf.SetAlignment(G::StringAlignmentFar);
+    g.DrawString(label, -1, &fLbl, G::RectF(x - 74.0f, y - 3.0f, 68.0f, 15.0f), &sf, &lb);
+}
+
+static void flatMeterFill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w,
+                          float v, float hold) {
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    if (v <= 0.0001f) return;
+    const G::REAL h = 5.0f, yy = y + 11.0f;
+    // tres tramos en un solo pincel: marfil, ambar, techo
+    G::LinearGradientBrush gr(G::RectF(x, yy, w, h), kFTxt2, kFHot, 0.0f);
+    G::Color cols[3] = { kFTxt2, kAcc, kFHot };
+    G::REAL  pos[3]  = { 0.0f, 0.70f, 0.92f };
+    gr.SetInterpolationColors(cols, pos, 3);
+    const G::REAL ww = w*v;
+    // recorte: se rellena solo hasta ww, para no pasarse de la pista
+    G::Region old; g.GetClip(&old);
+    g.SetClip(G::RectF(x, yy, ww, h));
+    g.FillRectangle(&gr, x, yy, ww, h);
+    g.SetClip(&old);
+    if (hold > 0.002f) {                                 // aguja de retencion de pico
+        G::Pen hp(G::Color(255, 0xff, 0xe0, 0xa0), 1.6f);
+        g.DrawLine(&hp, x + w*hold, yy, x + w*hold, yy + h);
+    }
+}
+
 // BANDA DE SECCION: el rotulo del sistema. Una regla de 1px y el titulo en
 // versalitas; en la unidad activa la regla es ambar, porque el ambar marca lo
 // que suena y la unidad activa es la que suena.
@@ -12085,6 +12217,89 @@ static void hIniContract() {
     DeleteFileW(tmp.c_str());
 }
 
+// J: el lenguaje plano dibuja lo que dice. Se comprueba con PIXELES reales, no
+// de vista: una superficie plana es un tono exacto, no lleva sombra, y el acento
+// solo aparece donde debe. Sin esta prueba, un degradado que se cuele o un arco
+// que se salga de su pista pasarian desapercibidos hasta abrir la app.
+static void hTestFlat() {
+    G::GdiplusStartupInput gsi;
+    ULONG_PTR tok = 0;
+    if (G::GdiplusStartup(&tok, &gsi, nullptr) != G::Ok) {
+        hCheck(false, "J0 el lenguaje plano arranca", "GDI+ no arranco");
+        return;
+    }
+    // TODO lo de GDI+ (lienzo, pinceles, el dibujo y las lecturas de pixel) vive
+    // en este bloque: GdiplusShutdown exige que no quede ningun objeto GDI+ con
+    // vida. Con el bitmap y el Graphics a nivel de funcion, el apagado movia
+    // tierra bajo ellos y el proceso caia con 0xC0000005.
+    {
+        const int W = 230, H = 130;
+        G::Bitmap bmp(W, H, PixelFormat32bppARGB);
+        G::Graphics g(&bmp);
+        g.Clear(kFBg);
+
+        auto px = [&bmp](int x, int y) -> G::Color {
+            G::Color c; bmp.GetPixel(x, y, &c); return c;
+        };
+        auto same = [](G::Color c, G::Color t, int tol) -> bool {
+            int dr = (int)c.GetR() - (int)t.GetR();
+            int dg = (int)c.GetG() - (int)t.GetG();
+            int db = (int)c.GetB() - (int)t.GetB();
+            if (dr < 0) dr = -dr; if (dg < 0) dg = -dg; if (db < 0) db = -db;
+            return dr <= tol && dg <= tol && db <= tol;
+        };
+        // el ambar del sistema, contado en un cuadro (robusto al antialiasing)
+        auto countAcc = [&](int x0, int y0, int x1, int y1) -> int {
+            int n = 0;
+            for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) {
+                const G::Color c = px(x, y);
+                if (c.GetR() > 190 && c.GetG() > 120 && c.GetG() < 215 && c.GetB() < 130) ++n;
+            }
+            return n;
+        };
+        char d[180];
+
+        // J1: una superficie plana es UN tono, y no proyecta nada sobre el lienzo
+        flatPanel(g, 12, 12, 60, 40, 8.0f);
+        const bool pTono = same(px(42, 32), kFSurf, 2);
+        const bool pLimp = same(px(9, 32), kFBg, 0);      // 3px a la izquierda: sin sombra
+        sprintf_s(d, "centro = kFSurf (%d), lienzo limpio a la izquierda (%d)", pTono, pLimp);
+        hCheck(pTono && pLimp, "J1 flatPanel pinta un tono plano y sin sombra", d);
+
+        // J2: el pozo plano es el lienzo: la profundidad la da el tono
+        flatWell(g, 80, 12, 60, 40, 8.0f);
+        const bool pPozo = same(px(110, 32), kFBg, 0);
+        hCheck(pPozo, "J2 flatWell pinta el tono del lienzo",
+               pPozo ? "centro = kFBg" : "el centro no es kFBg");
+
+        // J3: la pastilla activa tiñe su borde del color del piloto y enciende un LED
+        flatPillBody(g, 150, 12, 60, 40, false, true, kAcc);
+        const int led = countAcc(150, 12, 210, 52);
+        hCheck(led > 0, "J3 la pastilla activa lleva piloto ambar", led ? "LED presente" : "sin LED");
+
+        // J4: el mando plano = disco liso + arco de valor + puntero
+        flatKnob(g, 45, 95, 22, 1.0f, kAcc, false, false);
+        const bool disco = same(px(45, 87), kFSurf2, 3);   // dentro del disco, no en el puntero
+        const int arco = countAcc(20, 70, 70, 120);
+        sprintf_s(d, "disco liso (%d), px de arco ambar (%d)", disco, arco);
+        hCheck(disco && arco >= 8, "J4 el mando plano dibuja disco y arco de valor", d);
+
+        // J5: el medidor plano rellena continuo, sin marco alrededor
+        flatWell(g, 95, 86, 120, 5, 2.5f);
+        flatMeterFill(g, 95, 75, 120, 0.8f, 0.8f);
+        const int rell = countAcc(95, 82, 215, 96);
+        hCheck(rell > 0, "J5 el medidor plano rellena en ambar", rell ? "relleno presente" : "sin relleno");
+
+        // J6: la mezcla de color es estable y tira a ambar (nada de tintes a ojo)
+        const G::Color t1 = flatTint(kFSurf3, kAcc, 0.30f);
+        const G::Color t2 = flatTint(kFSurf3, kAcc, 0.30f);
+        const bool tOk = same(t1, t2, 0) && t1.GetR() > t1.GetG() && t1.GetG() > t1.GetB();
+        hCheck(tOk, "J6 el tinte de activo es estable y tira a ambar",
+               tOk ? "flatTint es estable" : "flatTint no es estable");
+    }
+    G::GdiplusShutdown(tok);
+}
+
 static void hSelftest(int fs) {
     printf("\n== autotest de correcciones ==\n");
     hNamRejects();
@@ -12094,6 +12309,7 @@ static void hSelftest(int fs) {
     hTestTuner(fs);
     hTestStaticIR(fs);
     hTestPaste();
+    hTestFlat();
     hTestExtraLeak(fs);
     // P2 va al final: inyecta NaN en el motor y aunque prepare(false) lo deja
     // recuperable, el historial de las lineas de retardo queda con residuos que
