@@ -10838,6 +10838,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
 
+    // Cualquier arrastre (pedal, perilla, mezcla) se cancela al perder la captura
+    // (otra ventana roba el foco, un dialogo del sistema) o con WM_CANCELMODE.
+    // Sin este handler los flags quedaban vivos: el fantasma del pedal -la
+    // tarjeta entera con su NOISE GATE y sus perillas- seguia pintandose para
+    // siempre donde estuviera el cursor, sobre el slot fantasma "+ ANADIR".
+    case WM_CAPTURECHANGED:
+    case WM_CANCELMODE: {
+        const bool stuck = (g_dragPedalRow >= 0 || g_dragPedalIdx >= 0 ||
+                            g_dragPedalType >= 0 || g_dragIdx >= 0 || g_mixDrag);
+        if (stuck) {
+            g_dragPedalRow = g_dragPedalIdx = g_dragPedalType = -1;
+            g_dropRow = g_dropIdx = -1;
+            g_dragIdx = -1;
+            g_mixDrag = false;
+            g_lbtn = false;
+            if (GetCapture() == hwnd) ReleaseCapture();
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return 0;
+    }
+
     case WM_LBUTTONUP:
         if (g_lbtn) { g_lbtn = false; InvalidateRect(hwnd, nullptr, FALSE); }
         if (g_dragPedalRow >= 0) {
@@ -10936,6 +10957,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_KEYDOWN: {
         // Atajos: ESPACIO = silencio, flechas = cambiar preset, ESC = cerrar modal
         if (wp == VK_ESCAPE) {
+            // ESC tambien suelta un arrastre en curso (pedal, perilla, mezcla):
+            // sin esto el fantasma quedaba colgando del cursor hasta el proximo
+            // clic (WM_CANCELMODE no llega con una tecla, solo con un modal).
+            if (g_dragPedalRow >= 0 || g_dragPedalIdx >= 0 || g_dragPedalType >= 0 ||
+                g_dragIdx >= 0 || g_mixDrag) {
+                g_dragPedalRow = g_dragPedalIdx = g_dragPedalType = -1;
+                g_dropRow = g_dropIdx = -1;
+                g_dragIdx = -1;
+                g_mixDrag = false;
+                g_lbtn = false;
+                if (GetCapture() == hwnd) ReleaseCapture();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             if (g_t3kOpen) {
                 if (g_t3kConnOpen) { g_t3kConnOpen = false; g_t3kFocus = 0; }
                 else { g_t3kOpen = false; g_t3kFocus = 0; t3kImgFree(); }
