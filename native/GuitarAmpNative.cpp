@@ -3260,6 +3260,13 @@ struct RingBuffer {
         w.store((ww + n) % data.size(), std::memory_order_release);
     }
     size_t pop(float* out, size_t n) {
+        // Sin anillo dimensionado no hay nada que sacar. Esta guarda es
+        // OBLIGATORIA: si data esta vacio, el % data.size() de abajo es una
+        // division por cero y tumba el proceso. No es teorico: el primer
+        // repintado de la ventana puede llegar antes que el hilo de audio, que
+        // es quien dimensiona el anillo (g_scopeRing.resize en prepare), asi que
+        // el arranque dependia de quien ganase la carrera. push ya lo miraba.
+        if (data.empty() || n == 0) return 0;
         size_t rr = r.load(std::memory_order_relaxed);
         size_t ww = w.load(std::memory_order_acquire);
         size_t avail = (ww + data.size() - rr) % data.size();
@@ -12572,6 +12579,113 @@ static void hSelftest(int fs) {
     hCheck(os6 > -0.5 && os30 < -50.0, "B2 el 4x filtra de verdad: pasa 6 kHz, mata 30 kHz", d);
 }
 
+// ---------------------------------------------------------------------------
+//  render <png> [estado]: fotografia de la ventana entera, para poder mirar el
+//  rediseno en una maquina sin sesion grafica utilizable.
+//  Es EXACTAMENTE el mismo paintWindow que usa la app, en una ventana fuera de
+//  pantalla; el destino real del pintado es el buffer trasero, asi que la foto
+//  sale entera aunque la ventana no se vea. Con esto cada panel se revisa con
+//  pixeles reales en vez de a ciegas, y se puede ensenar antes y despues.
+//  NO usa DestroyWindow: su WM_DESTROY llama a saveIni() y un render no debe
+//  escribir los ajustes del usuario. Al terminar se sueltan a mano los Bitmaps
+//  de GDI+ y NO se llama a GdiplusShutdown (con Bitmaps vivos mata el proceso:
+//  es la trampa 0xC0000005 ya documentada en hTestFlat).
+// ---------------------------------------------------------------------------
+static bool hPngEncoder(CLSID* out) {
+    UINT num = 0, size = 0;
+    if (G::GetImageEncodersSize(&num, &size) != G::Ok || size == 0) return false;
+    std::vector<BYTE> buf(size);
+    G::ImageCodecInfo* p = (G::ImageCodecInfo*)buf.data();
+    if (G::GetImageEncoders(num, size, p) != G::Ok) return false;
+    for (UINT i = 0; i < num; ++i)
+        if (wcscmp(p[i].MimeType, L"image/png") == 0) { *out = p[i].Clsid; return true; }
+    return false;
+}
+
+static const void* g_renderFaultAddr = nullptr;
+static int hRenderFaultFilter(EXCEPTION_POINTERS* ep) {   // el unico sitio donde
+    g_renderFaultAddr = ep->ExceptionRecord->ExceptionAddress;   // es valido pedirla
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// Sonda del pintado, aislada y sin objetos C++ para poder usar SEH. Un fallo
+// dentro del WndProc lo reporta Windows como 0xC000041D (excepcion en un
+// callback) y se pierde el codigo real; llamando a WM_PAINT desde aqui el
+// __except si ve la excepcion de verdad.
+static void hRenderPaintProbe(HWND hwnd) {
+    __try {
+        SendMessageA(hwnd, WM_PAINT, 0, 0);
+    } __except (hRenderFaultFilter(GetExceptionInformation())) {
+        printf("PINTADO_PETA %08lx en +0x%llx (el PNG sale a medias)\n",
+               (unsigned long)GetExceptionCode(),
+               (unsigned long long)((const char*)g_renderFaultAddr -
+                                    (const char*)GetModuleHandleA(nullptr)));
+    }
+}
+
+static int hRender(const char* outPath, const char* state) {
+    setvbuf(stdout, nullptr, _IONBF, 0);   // si algo peta, el log tiene que llegar
+    G::GdiplusStartupInput gsi;
+    ULONG_PTR tok = 0;
+    if (G::GdiplusStartup(&tok, &gsi, nullptr) != G::Ok) { printf("RENDER_SIN_GDI+\n"); return 1; }
+
+    WNDCLASSEXA wc = { sizeof(wc) };
+    wc.lpfnWndProc   = WndProc;
+    wc.hInstance     = GetModuleHandleA(nullptr);
+    wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
+    wc.lpszClassName = "GuitarAmpRenderClass";
+    RegisterClassExA(&wc);
+
+    // Fuera de pantalla: da igual, el pintado va al buffer trasero
+    HWND hwnd = CreateWindowExA(0, wc.lpszClassName, "GUITAR ONE", WS_POPUP,
+                                -4000, -4000, WIN_W, WIN_H,
+                                nullptr, nullptr, wc.hInstance, nullptr);
+    if (!hwnd) { printf("RENDER_SIN_VENTANA\n"); return 1; }
+
+    // Mismo orden que WinMain, sin hilos ni audio. loadIni() es de solo lectura:
+    // asi la foto sale con los presets y ajustes reales del usuario.
+    initDspDefaults();
+    applyPreset(0);
+    loadIni();
+    loadAmpArt();
+    rebuildKnobs();
+
+    // El motor tiene que estar PREPARADO antes de pintar: en la app lo hace el
+    // hilo de audio. Sin esto el frame sale con el scope y los medidores a cero
+    // (y, antes de arreglar pop(), tumbaba el proceso con una division por cero).
+    g_amp.prepare(48000.0f);
+
+    if (state) {   // los modales tambien se retratan
+        if      (strcmp(state, "add") == 0)      { g_addOpen = true; g_addRow = 0; }
+        else if (strcmp(state, "tuner") == 0)    g_tunerOpen.store(true);
+        else if (strcmp(state, "settings") == 0) g_settingsOpen = true;
+        else if (strcmp(state, "presets") == 0)  g_leftTab = 1;
+    }
+
+    ShowWindow(hwnd, SW_SHOWNA);
+    InvalidateRect(hwnd, nullptr, FALSE);
+    hRenderPaintProbe(hwnd);
+
+    int rc = 1;
+    if (g_bufBits && g_bufW > 0 && g_bufH > 0) {
+        surfaceDibOpaque(g_bufBits, g_bufW, g_bufH);   // sin alfa el PNG sale transparente
+        {
+            G::Bitmap bmp(g_bufW, g_bufH, g_bufW*4, PixelFormat32bppPARGB, (BYTE*)g_bufBits);
+            CLSID enc;
+            if (hPngEncoder(&enc) && bmp.Save(u8w(outPath).c_str(), &enc, nullptr) == G::Ok) {
+                printf("RENDER_OK %s %dx%d %s\n", outPath, g_bufW, g_bufH, state ? state : "main");
+                rc = 0;
+            } else {
+                printf("RENDER_SIN_GUARDAR %s\n", outPath);
+            }
+        }
+        freeStaticScene(); freeAmpArt(); freeSlotTemplates(); freeBackbuffer();
+    } else {
+        printf("RENDER_SIN_BUFFER\n");
+    }
+    return rc;
+}
+
 int main(int argc, char** argv) {
     const int fs = 48000;
     const char* mode = (argc > 1) ? argv[1] : "all";
@@ -12614,6 +12728,14 @@ int main(int argc, char** argv) {
         printf("\nHOYOS_SIN_ACCION=%d\n", hFail);
         printf("\nHARNESS_DONE\n");
         return hFail ? 1 : 0;
+    }
+    if (strcmp(mode, "render") == 0) {
+        const char* outP = (argc > 2) ? argv[2] : "_dsp_out/render.png";
+        const char* st   = (argc > 3) ? argv[3] : nullptr;
+        const int r = hRender(outP, st);
+        printf("\nRENDER_FAILS=%d\n", r);
+        printf("\nHARNESS_DONE\n");
+        return r ? 1 : 0;
     }
     if (strcmp(mode, "selftest") == 0) {
         hSelftest(fs);

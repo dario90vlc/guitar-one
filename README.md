@@ -45,6 +45,17 @@ Requisitos: Visual Studio 2022 Build Tools (`cl`). Nada más.
 .\native\_dsp_test.exe all                # respuesta, THD, aliasing, IR, WAV, FX, coste
 .\native\_dsp_test.exe extra              # hueco impreso de cada ampli (0 sin accion)
 .\native\_dsp_test.exe selftest           # autotest: sale != 0 si algo falla
+.\native\_dsp_test.exe render <png> [estado]   # foto de la ventana entera
+```
+
+`render` pinta la ventana completa con el **mismo `paintWindow` que usa la app**
+(en una ventana fuera de pantalla) y la guarda en PNG: sirve para revisar y
+enseñar la interfaz sin abrirla, y para comparar antes/después de un rediseño.
+`estado` retrata además un modal: `add`, `tuner`, `settings` o `presets`.
+
+```powershell
+.\native\_dsp_test.exe render _dsp_out\ui.png              # ventana principal
+.\native\_dsp_test.exe render _dsp_out\add.png add         # panel AÑADIR PEDAL
 ```
 
 Los tres comandos valen **desde cualquier carpeta**: el banco ancla sus datos
