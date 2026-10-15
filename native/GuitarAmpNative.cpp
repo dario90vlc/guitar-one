@@ -8457,10 +8457,12 @@ static void paintWindow(HWND hwnd) {
         }
         // Linea de arriba: QUE CABEZA suena. Es el sitio que el diseno reserva
         //  al nombre del ampli (la banda de la unidad dice que ESTANTE es, no
-        //  que ampli lleva montado).
-        drawSpacedFitC(g, kAmpNames[g_params.model.load()], G::FontStyleBold,
-                       kTxtMd, (G::REAL)(TOP_BOX_X + 200), 16.0f, 1.2f,
-                       250.0f, 8.5f, 7.5f);
+        //  que ampli lleva montado). Va ALINEADO con el nombre del preset (que
+        //  empieza en +60), no centrado en la caja: antes el rotulo quedaba
+        //  flotando sobre el divisor de la flecha, desconectado del valor.
+        drawSpacedFit(g, kAmpNames[g_params.model.load()], G::FontStyleBold,
+                      kTxtMd, (G::REAL)(TOP_BOX_X + 60), 16.0f, 1.2f,
+                      290.0f, 8.5f, 7.5f);
 
         // "05. " se separa a un chip: el nombre del preset queda alineado a la
         // izquierda y deja de leerse como un texto suelto en mitad de la barra
@@ -8979,7 +8981,13 @@ static void paintWindow(HWND hwnd) {
                 // estrella de favoritos
                 {
                     const bool fav = ((g_favMask >> a) & 1) != 0;
-                    G::SolidBrush stb(fav ? colAmp(a) : kTxtLo);
+                    // A plena intensidad solo si es favorito o la fila esta bajo
+                    // el raton: trece estrellas encendidas de seguido llenaban de
+                    // ruido el borde derecho de la lista y competian con los
+                    // nombres. En reposo quedan como un contorno tenue.
+                    G::SolidBrush stb(fav ? colAmp(a)
+                                          : (hov ? kTxtMd
+                                                 : G::Color(88, 0x8b, 0x87, 0x81)));
                     g.DrawString(fav ? L"\x2605" : L"\x2606", -1, &fStar,
                                  G::RectF((G::REAL)(rx + rw - 26), (G::REAL)(ry + 8), 22.0f, 22.0f),
                                  &sfC, &stb);
