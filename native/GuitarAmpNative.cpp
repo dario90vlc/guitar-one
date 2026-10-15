@@ -3410,7 +3410,6 @@ static void saveIni() {
     if (!g_t3kRefresh.empty()) WritePrivateProfileStringW(L"state", L"t3kRefresh", wstr(t3kProtect(g_t3kRefresh)).c_str(), g_iniPath.c_str());
     // Cadena de capturas del cabezal PERFIL: orden, ruta, encendido y nivel
     {
-        const int oldCount = iniGetInt(L"chain", L"count", 0);   // antes de sobrescribirlo
         NamChain snap;
         { std::lock_guard<std::mutex> lk(g_namMutex); snap = g_namUi; }
         WCHAR buf2[64];
@@ -3432,8 +3431,11 @@ static void saveIni() {
         // .ini acaba guardando rutas de sesiones antiguas (medido en el estado
         // anterior: count=1 con p0, p1 y p2 de tres montajes distintos).
         // Para borrar una clave la API quiere el valor a NULL, no vacio: "" deja
-        // la linea puesta y sin contenido.
-        for (int i = (int)snap.size(); i < oldCount && i < 64; ++i) {
+        // la linea puesta y sin contenido. El barrido va de snap.size() al tope
+        // que puede leer el cargador, no al count ANTERIOR: con el count ya
+        // rebajado, las claves viejas de indices mayores no entraban en el rango
+        // y el .ini se las quedaba para siempre.
+        for (int i = (int)snap.size(); i < 64; ++i) {
             for (int f = 0; f < 3; ++f) {
                 WCHAR key[32];
                 swprintf_s(key, (f == 0) ? L"p%d" : (f == 1) ? L"on%d" : L"lv%d", i);
