@@ -125,11 +125,7 @@ namespace G = Gdiplus;
 //      lleva tambien halo; si ya lleva borde, no lleva tambien sombra dura.
 // ============================================================================
 static const G::Color kBack   (255, 0x0a, 0x0a, 0x0c);   // lienzo
-static const G::Color kSurfA  (255, 0x1f, 0x1f, 0x24);   // placa: canto superior
-static const G::Color kSurfB  (255, 0x15, 0x15, 0x19);   // placa: canto inferior
-static const G::Color kSurfLn (255, 0x2c, 0x2c, 0x33);   // filete de 1px
 static const G::Color kWellA  (255, 0x07, 0x07, 0x09);   // pozo: fondo
-static const G::Color kWellB  (255, 0x0f, 0x0f, 0x12);   // pozo: salida de la luz
 static const G::Color kWellLn (255, 0x22, 0x22, 0x28);
 static const G::Color kTxtHi  (255, 0xf2, 0xf0, 0xea);   // marfil (no blanco puro)
 static const G::Color kTxtMd  (255, 0x9c, 0x98, 0x90);
@@ -138,30 +134,8 @@ static const G::Color kAcc    (255, 0xff, 0xa5, 0x1f);   // ambar de filamento
 static const G::Color kAccGlb (255, 0xff, 0xe0, 0xa0);   // ambar claro (especular)
 static const G::Color kHot    (255, 0xff, 0x45, 0x4f);   // solo techo/clip
 static const G::Color kBtnBg  (255, 0x26, 0x26, 0x2c);
-static const G::Color kBtnBgL (255, 0x16, 0x16, 0x1a);
 static const G::Color kBtnBgH (255, 0x33, 0x33, 0x3a);
 static const G::Color kBtnLn  (255, 0x35, 0x35, 0x3d);
-// Acero y metal: solo para controles (pomos, aros, tornillo de los medidores)
-static const G::Color kSteel  (255, 0x39, 0x39, 0x42);
-static const G::Color kSteelD (255, 0x18, 0x18, 0x1c);
-static const G::Color kMetalA (255, 0xd8, 0xd5, 0xcc);
-static const G::Color kMetalB (255, 0x6e, 0x6b, 0x64);
-static const G::Color kMetalC (255, 0x33, 0x31, 0x2e);
-
-// --- Cristal: los lavados translucidos del sistema -------------------------
-// Son apoyos, no pintura: sobre un negro casi puro un lavado opaco lee como
-// superficie mate, y eso es justo lo que el lenguaje v2 quiere evitar.
-static const G::Color kGlassTop   (160, 0x23, 0x23, 0x28);  // canto iluminado
-static const G::Color kGlassBot   (200, 0x13, 0x13, 0x17);  // canto en sombra
-static const G::Color kGlassWell  (220, 0x08, 0x08, 0x0b);  // pozo hundido
-static const G::Color kGlassHover ( 70, 0xff, 0xff, 0xff);  // hover: luz que pasa
-static const G::Color kGlassSel   ( 90, 0xff, 0xa5, 0x1f);  // seleccion (estado)
-static const G::Color kGlassFill  ( 46, 0xff, 0xff, 0xff);  // relleno de pastilla
-// Filetes de luz: la unica decoracion que el cristal permite.
-static const G::Color kEdgeTopHi  ( 60, 0xff, 0xff, 0xff);  // canto vivo
-static const G::Color kEdgeTopLo  ( 18, 0xff, 0xff, 0xff);  // luz que se apaga
-static const G::Color kEdgeBot    ( 12, 0x00, 0x00, 0x00);  // canto inferior
-static const G::Color kAmbShadow  (110, 0x00, 0x00, 0x00);  // sombra ambiental
 
 // --- Lenguaje plano (v3): el lenguaje ACTUAL -------------------------------
 // Un tono por superficie y un filete de 1px. Sin degradados, sin sombras, sin
@@ -3027,7 +3001,6 @@ struct AmpChain {
         x = inHp.process(x);
         // COMP del ampli (solo en los amps cuya chapa lo imprime): neutro en 50.
 
-
         // --- Pedales ANTES del amp, en el orden del tablero ---
         for (size_t i = 0; i < pre.size(); ++i) x = applyFx(pre[i], x);
 
@@ -4967,7 +4940,6 @@ static bool  g_mixDrag = false;
 
 // --- Footer del diseno + estado ---
 static const int FOOT_Y = 846, FOOT_H = 70;   // debajo de la banda de cadena (846..916)
-static const int BOT_LINE_Y = FOOT_Y;
 // El pie es UNA tira de canales: los rotulos en una sola linea arriba
 // (BOT_LBL_Y) y todos los controles centrados en la misma linea de abajo
 // (FOOT_Y+44). Antes cada rotulo traia su altura y su tamano y el pie leia como
@@ -4980,7 +4952,7 @@ static const int BOT_STAT_Y = WIN_H - 26;
 static const int MTR_IN_X   = 560,  MTR_IN_W  = 120;
 static const int MTR_OUT_X  = 780,  MTR_OUT_W = 120;
 static const int MTR_GT_X   = 1000, MTR_GT_W  = 70;
-static const int CLIP_LBL_X = 1078, CLIP_LED_X = 1132;
+static const int CLIP_LED_X = 1132;
 static const int MASTER_X = WIN_W - 130, MASTER_Y = FOOT_Y + 44, MASTER_R = 22;
 // Perilla de trim del canal, justo a la izquierda del medidor INPUT
 static const int IN_TRIM_X = 476, IN_TRIM_Y = FOOT_Y + 44, IN_TRIM_R = 18;
@@ -5811,14 +5783,6 @@ static void glassWell(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h
     flatWell(g, x, y, w, h, r);
 }
 
-// LAVADO: el apoyo comun de hover, seleccion y foco. Se pinta DENTRO de la caja
-// que ya se ha dibujado, asi que no toca ni la sombra ni el filete.
-static void glassWash(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, G::REAL r,
-                      G::Color c) {
-    G::SolidBrush b(c);
-    roundRect(g, x + 1.0f, y + 1.0f, w - 2.0f, h - 2.0f, r - 1.0f, nullptr, &b);
-}
-
 // PASTILLA: boton de accion. Los estados cambian de TONO, nunca de luz:
 // reposo = superficie media; hover = un escalon mas claro; activo = ambar,
 // porque el ambar sigue significando "esto suena" y no "esto es importante".
@@ -6120,14 +6084,6 @@ static void icClose(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color 
     g.DrawLine(&p, cx + r*0.62f, cy - r*0.62f, cx - r*0.62f, cy + r*0.62f);
 }
 
-static void icPlus(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color c) {
-    G::Pen p(c, 1.5f);
-    p.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
-    g.DrawLine(&p, cx - r*0.68f, cy, cx + r*0.68f, cy);
-    g.DrawLine(&p, cx, cy - r*0.68f, cx, cy + r*0.68f);
-}
-
-
 // Separador horizontal: una linea de 1px. El desvanecido en los extremos era
 // una luz decorativa del lenguaje viejo (y ademas costaba dos pinceles).
 static void hairSep(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, BYTE a) {
@@ -6276,214 +6232,6 @@ static void drawFxGlyph(G::Graphics& g, int type, G::REAL cx, G::REAL cy, G::REA
             }
             break;
         }
-    }
-}
-
-static void drawPower(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color col, bool on) {
-    // Sin resplandor concentrico (eran tres capas de halo) y sin brillo de domo:
-    // el estado lo dice el COLOR del cuerpo, que es como lo dice todo lo demas.
-    // cuerpo: encendido a color, apagado apagado
-    G::Color bodyC = on ? col
-        : G::Color(255, (BYTE)(col.GetR()*0.42f + 38),
-                      (BYTE)(col.GetG()*0.42f + 40),
-                      (BYTE)(col.GetB()*0.42f + 44));
-    G::SolidBrush body(bodyC);
-    g.FillEllipse(&body, cx - r, cy - r, r*2, r*2);
-    // simbolo power: arco con gap superior + linea vertical
-    G::Pen sym(G::Color(255, 0x18, 0x15, 0x0e), 2.6f);
-    sym.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
-    G::REAL sr = r*0.52f;
-    g.DrawArc(&sym, cx - sr, cy - sr, sr*2, sr*2, -60.0f, 240.0f);
-    g.DrawLine(&sym, cx, cy - sr*1.15f, cx, cy - sr*0.10f);
-}
-
-static void drawGrille(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, int amp) {
-    // base tejida con degradado (familia: 0 clean / 1 crunch / 2 alta distorsion)
-    const int fam = amp/4;
-    G::Color b1 = (fam == 0) ? G::Color(255, 0x34, 0x31, 0x2a)
-               : (fam == 1) ? G::Color(255, 28, 25, 24)
-                            : G::Color(255, 26, 20, 20);
-    G::Color b2 = (fam == 0) ? G::Color(255, 0x23, 0x20, 0x19)
-               : (fam == 1) ? G::Color(255, 16, 14, 14)
-                            : G::Color(255, 15, 11, 11);
-    G::LinearGradientBrush bg(G::RectF(x, y, w, h), b1, b2, 90.0f);
-    roundRect(g, x, y, w, h, 6, nullptr, &bg);
-
-    // recorte al rectangulo redondeado
-    G::GraphicsPath clip;
-    {
-        G::REAL d = 12.0f;
-        clip.AddArc(x, y, d, d, 180, 90);
-        clip.AddArc(x + w - d, y, d, d, 270, 90);
-        clip.AddArc(x + w - d, y + h - d, d, d, 0, 90);
-        clip.AddArc(x, y + h - d, d, d, 90, 90);
-        clip.CloseFigure();
-    }
-    G::GraphicsState st = g.Save();
-    g.SetClip(&clip, G::CombineModeReplace);
-
-    // patrón del paño por modelo
-    if (fam == 0) {
-        G::Pen v(G::Color(26, 255, 255, 255), 1.0f);
-        for (G::REAL cx = x; cx <= x + w; cx += 8.0f) g.DrawLine(&v, cx, y, cx, y + h);
-        G::Pen hp(G::Color(80, 0, 0, 0), 1.0f);
-        for (G::REAL cy = y; cy <= y + h; cy += 6.0f) g.DrawLine(&hp, x, cy, x + w, cy);
-    } else if (fam == 1) {
-        G::Pen p1(G::Color(46, 0x82, 0x7d, 0x76), 1.2f);
-        for (G::REAL d = -h; d < w; d += 9.0f) g.DrawLine(&p1, x + d, y + h, x + d + h, y);
-        G::Pen p2(G::Color(22, 0x82, 0x7d, 0x76), 1.2f);
-        for (G::REAL d = 0; d < w + h; d += 9.0f) g.DrawLine(&p2, x + d, y, x + d - h, y + h);
-    } else {
-        G::SolidBrush dot(G::Color(0xb4, 0x6e, 0x69, 0x63));
-        for (G::REAL cy = y + 4; cy < y + h - 2; cy += 12.0f)
-            for (G::REAL cx = x + 4; cx < x + w - 2; cx += 12.0f)
-                g.FillEllipse(&dot, cx, cy, 3.2f, 3.2f);
-    }
-
-    // sombra del altavoz asomando tras el paño
-    {
-        G::GraphicsPath cone;
-        cone.AddEllipse(x + w*0.5f - w*0.30f, y + h*0.42f - h*0.38f, w*0.60f, h*0.80f);
-        G::PathGradientBrush cb(&cone);
-        cb.SetCenterColor(G::Color(85, 0, 0, 0));
-        G::Color cs(G::Color(0, 0, 0, 0));
-        INT cc = 1;
-        cb.SetSurroundColors(&cs, &cc);
-        g.FillPath(&cb, &cone);
-    }
-
-    // vineta interior
-    {
-        G::LinearGradientBrush vg(G::RectF(x, y, w, 16.0f),
-                                  G::Color(150, 0, 0, 0), G::Color(0, 0, 0, 0), 90.0f);
-        g.FillRectangle(&vg, x, y, w, 16.0f);
-        G::LinearGradientBrush vg2(G::RectF(x, y + h - 14, w, 14.0f),
-                                   G::Color(0, 0, 0, 0), G::Color(110, 0, 0, 0), 90.0f);
-        g.FillRectangle(&vg2, x, y + h - 14, w, 14.0f);
-        G::Pen edge(G::Color(170, 0, 0, 0), 1.6f);
-        g.DrawRectangle(&edge, x, y, w, h);
-    }
-    g.Restore(st);
-
-    // marco del paño
-    {
-        G::Pen fr(G::Color(255, 0x39, 0x36, 0x2f), 2.0f);
-        roundRect(g, x - 1, y - 1, w + 2, h + 2, 7, &fr, nullptr);
-    }
-
-    // placa del altavoz (texto centrado y ajustado al hueco: no se corta)
-    {
-        G::REAL bw2 = 74.0f, bh2 = 17.0f;
-        G::REAL bx2 = x + w/2 - bw2/2, by2 = y + h - bh2 - 7.0f;
-        G::LinearGradientBrush plb(G::RectF(bx2, by2, bw2, bh2),
-                                   G::Color(255, 0x34, 0x31, 0x2a), G::Color(255, 0x18, 0x15, 0x0e), 90.0f);
-        G::Pen plp(G::Color(255, 0x68, 0x65, 0x5e), 1.2f);
-        roundRect(g, bx2, by2, bw2, bh2, 3, &plp, &plb);
-        drawSpacedFitC(g, L"GUITARONE", G::FontStyleBold, G::Color(255, 0xb8, 0xb5, 0xae),
-                       bx2 + bw2/2, by2 + 2.5f, 0.7f, bw2 - 12.0f, 7.0f, 5.5f);
-    }
-}
-
-static void drawFace(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, int amp) {
-    const int fam = amp/4;
-    G::Color face = (fam == 0) ? G::Color(0xff, 0x82, 0x7d, 0x76)
-                 : (fam == 1) ? G::Color(0xff, 0x82, 0x7d, 0x76)
-                              : G::Color(255, 0x1b, 0x18, 0x11);
-    G::Color face2 = (fam == 2) ? G::Color(255, 14, 17, 19)
-                     : G::Color(255, (BYTE)(face.GetR()*0.88f),
-                                    (BYTE)(face.GetG()*0.88f),
-                                    (BYTE)(face.GetB()*0.86f));
-    G::LinearGradientBrush fb(G::RectF(x, y, w, h), face, face2, 90.0f);
-    g.FillRectangle(&fb, x, y, w, h);
-    // cepillado metalico horizontal
-    {
-        G::Pen br1(G::Color(20, 255, 255, 255), 1.0f);
-        G::Pen br2(G::Color(14, 0, 0, 0), 1.0f);
-        for (G::REAL ly = y + 2; ly < y + h - 2; ly += 3.0f) {
-            if (((int)((ly - y)/3.0f)) % 2 == 0) g.DrawLine(&br1, x + 1, ly, x + w - 1, ly);
-            else                                   g.DrawLine(&br2, x + 1, ly, x + w - 1, ly);
-        }
-    }
-    // brillo superior de la placa
-    {
-        G::LinearGradientBrush sh(G::RectF(x, y, w, 14.0f),
-                                  G::Color(46, 255, 255, 255), G::Color(0, 255, 255, 255), 90.0f);
-        g.FillRectangle(&sh, x + 1, y + 1, w - 2, 14.0f);
-    }
-    G::Pen bp(G::Color(255, 0x39, 0x36, 0x2f), 1.0f);
-    g.DrawRectangle(&bp, x, y, w, h);
-
-    const bool dark = (fam == 2);
-    G::Color txtC = dark ? G::Color(255, 0xa1, 0x9e, 0x97) : G::Color(255, 40, 36, 30);
-    G::Color scrC = dark ? G::Color(255, 0x46, 0x43, 0x3c)    : G::Color(0xff, 0x5a, 0x56, 0x51);
-
-    // entrada de guitarra (jack) a la izquierda
-    {
-        G::REAL jx = x + 22, jy = y + h/2;
-        G::SolidBrush ring(scrC);
-        g.FillEllipse(&ring, jx - 9.0f, jy - 9.0f, 18.0f, 18.0f);
-        G::SolidBrush hole(G::Color(255, 8, 9, 11));
-        g.FillEllipse(&hole, jx - 5.5f, jy - 5.5f, 11.0f, 11.0f);
-        G::SolidBrush pin(G::Color(255, 0x65, 0x62, 0x5b));
-        g.FillEllipse(&pin, jx - 1.5f, jy - 1.5f, 3.0f, 3.0f);
-    }
-
-    // --- Detalle de la cara: proporcional al ancho disponible ---
-    // Cara ancha (hero, 796 px): fila de 6 knobs con etiquetas diminutas +
-    // placa de marca. Miniatura del rack (134 px): el span de la fila saldria
-    // negativo y las 6 etiquetas quedarian montadas unas sobre otras; ahi se
-    // dibujan 3 pips de knob SIN texto, alineados con el jack.
-    G::Font fTiny(L"Segoe UI", 6.5f, G::FontStyleBold);
-    G::StringFormat sfL;
-    sfL.SetAlignment(G::StringAlignmentCenter);
-    const bool wide = (w >= 400.0f);
-    const bool mid  = (w >= 120.0f);
-    if (wide) {
-        const char* tiny[6] = { "GAIN", "BASS", "MID", "TREB", "VOL", "PRESENCE" };
-        int n = 6; G::REAL kw = 12.0f;
-        G::REAL x0 = x + 44, x1 = x + w - 136;
-        for (int i = 0; i < n; ++i) {
-            G::REAL cxi = x0 + (x1 - x0)*i/(n - 1);
-            G::REAL cyi = y + h*0.36f;
-            G::REAL kx = cxi - kw/2, ky = cyi - kw/2;
-            G::SolidBrush kb(G::Color(255, 8, 8, 8));
-            G::Pen kp(G::Color(255, 130, 130, 130), 1.0f);
-            g.FillEllipse(&kb, kx, ky, kw, kw);
-            g.DrawEllipse(&kp, kx, ky, kw, kw);
-            WCHAR wl[16];
-            MultiByteToWideChar(CP_ACP, 0, tiny[i], -1, wl, 16);
-            G::SolidBrush tb(txtC);
-            g.DrawString(wl, -1, &fTiny, G::RectF(cxi - 19.0f, ky + kw + 3.0f, 38.0f, 12.0f), &sfL, &tb);
-        }
-    } else if (mid) {
-        const G::REAL kw2 = 10.0f, cyi2 = y + h*0.5f;
-        const G::REAL p0 = x + 46, p1 = x + w - 14;
-        G::SolidBrush kb(G::Color(255, 8, 8, 8));
-        G::Pen kp(G::Color(255, 130, 130, 130), 1.0f);
-        G::Pen ip(G::Color(255, 175, 175, 175), 1.0f);
-        for (int i = 0; i < 3; ++i) {
-            G::REAL cxi = p0 + (p1 - p0)*i/2.0f;
-            g.FillEllipse(&kb, cxi - kw2/2, cyi2 - kw2/2, kw2, kw2);
-            g.DrawEllipse(&kp, cxi - kw2/2, cyi2 - kw2/2, kw2, kw2);
-            g.DrawLine(&ip, cxi, cyi2 - kw2/2, cxi, cyi2 - kw2/2 - 2.5f);
-        }
-    }
-
-    // placa cromada de marca (solo la cara ancha: en miniatura ya no cabe)
-    if (wide) {
-        G::REAL pw2 = 76.0f, ph2 = 18.0f;
-        G::REAL px2 = x + w - pw2 - 10, py2 = y + h/2 - ph2/2;
-        G::LinearGradientBrush plb(G::RectF(px2, py2, pw2, ph2),
-            dark ? G::Color(255, 0x30, 0x2d, 0x26)  : kTxtMd,
-            dark ? G::Color(255, 0x18, 0x15, 0x0e)  : G::Color(0xff, 0x82, 0x7d, 0x76), 90.0f);
-        G::Pen plp(dark ? G::Color(255, 0x65, 0x62, 0x5b) : G::Color(0xff, 0x5a, 0x56, 0x51), 1.0f);
-        roundRect(g, px2, py2, pw2, ph2, 3, &plp, &plb);
-        G::Font fBrand(L"Segoe UI", 8.0f, G::FontStyleBold);
-        G::StringFormat sfB;
-        sfB.SetAlignment(G::StringAlignmentCenter);
-        sfB.SetLineAlignment(G::StringAlignmentCenter);
-        G::SolidBrush bt(dark ? G::Color(255, 0xd3, 0xd0, 0xc9) : G::Color(0xff, 0x21, 0x1f, 0x21));
-        g.DrawString(L"GUITAR ONE", -1, &fBrand, G::RectF(px2, py2, pw2, ph2), &sfB, &bt);
     }
 }
 
@@ -7562,94 +7310,6 @@ static void buildStaticScene(int W, int H) {
     g_scene.valid = true;
 }
 
-// Dibuja un item del carrusel (panel + cabeza + piloto + textos) en cualquier Graphics
-static void drawCarItem(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
-                        G::REAL s, int amp, bool selected, G::REAL dimF) {
-    const G::Color ac = colAmp(amp);
-    const BYTE r0 = (BYTE)((int)ac.GetR()*dimF);
-    const BYTE g0 = (BYTE)((int)ac.GetG()*dimF);
-    const BYTE b0 = (BYTE)((int)ac.GetB()*dimF);
-    // panel con borde de acento cuando esta elegido
-    {
-        G::LinearGradientBrush pb(G::RectF(x, y, w, h),
-            selected ? G::Color(255, 0x18, 0x18, 0x1b) : G::Color(255, (BYTE)(0x16*dimF + 6), (BYTE)(0x1c*dimF + 7), (BYTE)(0x23*dimF + 8)),
-            selected ? G::Color(255, 0x10, 0x10, 0x12) : G::Color(255, (BYTE)(0x0d*dimF + 5), (BYTE)(0x12*dimF + 5), (BYTE)(0x17*dimF + 6)), 90.0f);
-        G::Pen bp(selected ? kAcc : G::Color(0xa0, 0x27, 0x25, 0x27),
-                  selected ? 2.4f : 1.3f);
-        roundRect(g, x, y, w, h, 10.0f*s, &bp, &pb);
-    }
-    if (g_artOk[amp] && g_fondoImg[amp]) {
-        // frontal real del zip: contain-fit + textos de identidad; sin procedural
-        const G::REAL pad = 6.0f*s;
-        const G::REAL txtH = (s > 0.9f) ? 30.0f*s : ((s > 0.6f) ? 14.0f*s : 0.0f);
-        const G::REAL aw = w - pad*2.0f, ah = h - pad*2.0f - txtH;
-        const G::REAL k1 = aw/1200.0f, k2 = ah/540.0f;
-        const G::REAL sc2 = (k1 < k2) ? k1 : k2;
-        const G::REAL dw = 1200.0f*sc2, dh = 540.0f*sc2;
-        g.DrawImage(g_fondoImg[amp], x + (w - dw)/2.0f, y + pad, dw, dh);
-        {
-            const G::REAL dx = x + w - 14.0f*s, dy = y + 12.0f*s;
-            if (selected) {
-                G::SolidBrush gl(G::Color(80, r0, g0, b0));
-                g.FillEllipse(&gl, dx - 5.0f*s, dy - 5.0f*s, 16.0f*s, 16.0f*s);
-                G::SolidBrush dot(G::Color(255, r0, g0, b0));
-                g.FillEllipse(&dot, dx - 3.0f*s, dy - 3.0f*s, 11.0f*s, 11.0f*s);
-            } else {
-                G::SolidBrush dot(G::Color(255, (BYTE)(0x2a*dimF + 8), (BYTE)(0x33*dimF + 8), (BYTE)(0x3a*dimF + 8)));
-                g.FillEllipse(&dot, dx - 3.0f*s, dy - 3.0f*s, 11.0f*s, 11.0f*s);
-            }
-        }
-        if (s > 0.9f) {
-            drawSpacedFit(g, kAmpNames[amp], G::FontStyleBold,
-                          selected ? G::Color(255, r0, g0, b0) : kTxtMd,
-                          x + 12.0f, y + h - 36.0f, 2.0f, w - 24.0f, 14.0f, 11.0f);
-            G::Font fSub2(L"Segoe UI", 8.5f, G::FontStyleRegular);
-            G::SolidBrush sb(G::Color(255, 0x78, 0x78, 0x7e));
-            G::StringFormat sfS; sfS.SetAlignment(G::StringAlignmentCenter);
-            sfS.SetLineAlignment(G::StringAlignmentCenter);
-            g.DrawString(kAmpSubs[amp], -1, &fSub2,
-                         G::RectF(x + 10.0f, y + h - 20.0f, w - 20.0f, 16.0f), &sfS, &sb);
-        } else if (s > 0.6f) {
-            drawSpacedFit(g, kAmpNames[amp], G::FontStyleBold, G::Color(0xff, 0x82, 0x7d, 0x76),
-                          x + 10.0f, y + h - 16.0f, 1.5f, w - 20.0f, 9.0f, 7.5f);
-        }
-        return;
-    }
-    // cabeza: handle + grille + face
-    drawHandle(g, x + w/2.0f, y + 1.0f*s, 70.0f*s, 13.0f*s);
-    const G::REAL gy = y + 24.0f*s, gh = h - 46.0f*s, gw = w*0.48f;
-    drawGrille(g, x + 14.0f*s, gy, gw, gh, amp);
-    drawFace(g, x + 14.0f*s + gw + 6.0f*s, gy, w - 28.0f*s - gw - 6.0f*s, gh, amp);
-    // piloto de encendido
-    {
-        const G::REAL dx = x + w - 14.0f*s, dy = y + 12.0f*s;
-        if (selected) {
-            G::SolidBrush gl(G::Color(80, r0, g0, b0));
-            g.FillEllipse(&gl, dx - 5.0f*s, dy - 5.0f*s, 16.0f*s, 16.0f*s);
-            G::SolidBrush dot(G::Color(255, r0, g0, b0));
-            g.FillEllipse(&dot, dx - 3.0f*s, dy - 3.0f*s, 11.0f*s, 11.0f*s);
-        } else {
-            G::SolidBrush dot(G::Color(255, (BYTE)(0x2a*dimF + 8), (BYTE)(0x33*dimF + 8), (BYTE)(0x3a*dimF + 8)));
-            g.FillEllipse(&dot, dx - 3.0f*s, dy - 3.0f*s, 11.0f*s, 11.0f*s);
-        }
-    }
-    // textos: nombre + base real solo en el item grande; nombre corto en los medios
-    if (s > 0.9f) {
-        drawSpacedFit(g, kAmpNames[amp], G::FontStyleBold,
-                      selected ? G::Color(255, r0, g0, b0) : kTxtMd,
-                      x + 12.0f, y + h - 36.0f, 2.0f, w - 24.0f, 14.0f, 11.0f);
-        G::Font fSub2(L"Segoe UI", 8.5f, G::FontStyleRegular);
-        G::SolidBrush sb(G::Color(255, 0x78, 0x78, 0x7e));
-        G::StringFormat sfS; sfS.SetAlignment(G::StringAlignmentCenter);
-        sfS.SetLineAlignment(G::StringAlignmentCenter);
-        g.DrawString(kAmpSubs[amp], -1, &fSub2,
-                     G::RectF(x + 10.0f, y + h - 20.0f, w - 20.0f, 16.0f), &sfS, &sb);
-    } else if (s > 0.6f) {
-        drawSpacedFit(g, kAmpNames[amp], G::FontStyleBold, G::Color(0xff, 0x82, 0x7d, 0x76),
-                      x + 10.0f, y + h - 16.0f, 1.5f, w - 20.0f, 9.0f, 7.5f);
-    }
-}
-
 // --- Estado extra de la capa dinamica (N3/N4) ---
 static bool  g_hoverMix = false;      // hover sobre el slider MEZCLA
 
@@ -7772,7 +7432,6 @@ static void profMark(const char* label) {                 //PFMARK
     g_pfLabel[g_pfSecN] = label;                          //PFMARK
     ++g_pfSecN; g_pfSecT0 = t;                            //PFMARK
 }                                                          //PFMARK
-
 
 // --- GA_PROF: origen del repaint (0=otro, 1=timer, 2=evento de entrada) -----
 static int g_pfSrc = 0;
@@ -8808,9 +8467,12 @@ static void paintWindow(HWND hwnd) {
                 G::SolidBrush tk(kAcc);
                 roundRect(g, ccx - 1.5f, railY - 7.0f, 3.0f, 14.0f, 1.0f, nullptr, &tk);
             } else {
-                G::SolidBrush tk(chip[i].c.GetA() < 200 ? chip[i].c
-                                                        : kTxtLo);
-                g.FillRectangle(&tk, ccx - 0.5f, railY - 4.0f, 1.0f, 8.0f);
+                // Marca 2x10 y UN solo tono (kFTxt3) para todas las etapas: a
+                // este tamano el color de cada pedal no decia nada y llenaba el
+                // mapa de puntitos de colores. El unico ambar de la cadena es el
+                // cabezal, que es lo unico que suena.
+                G::SolidBrush tk(kFTxt3);
+                roundRect(g, ccx - 1.0f, railY - 5.0f, 2.0f, 10.0f, 1.0f, nullptr, &tk);
             }
             cx2 += cwid[i];
             if (i < nch - 1) cx2 += gap;
@@ -9194,8 +8856,6 @@ static void paintWindow(HWND hwnd) {
         }
     }
 
-
-
     profMark("Slots del pedalboard ---");   //PFMARK
     // --- Slots del pedalboard ---
     for (int row = 0; row < 2; ++row) {
@@ -9243,9 +8903,8 @@ static void paintWindow(HWND hwnd) {
                 g.FillEllipse(&xb, cx - 8, cy - 8, 16.0f, 16.0f);
                 G::Pen xr(hx ? G::Color(0x96, 0x6e, 0x69, 0x63) : G::Color(70, 0x9c, 0x98, 0x90), 1.0f);
                 g.DrawEllipse(&xr, cx - 8, cy - 8, 16.0f, 16.0f);
-                G::Pen xp(hx ? kHot : G::Color(0xff, 0x82, 0x7d, 0x76), 1.5f);
-                g.DrawLine(&xp, cx - 3.5f, cy - 3.5f, cx + 3.5f, cy + 3.5f);
-                g.DrawLine(&xp, cx + 3.5f, cy - 3.5f, cx - 3.5f, cy + 3.5f);
+                icClose(g, (G::REAL)cx, (G::REAL)cy, 5.6f,
+                        hx ? kHot : G::Color(0xff, 0x82, 0x7d, 0x76));
             }
         }
         // slot fantasma "+ ANADIR"
