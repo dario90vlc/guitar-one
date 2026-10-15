@@ -5801,32 +5801,42 @@ static void glassWash(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h
 // PASTILLA DE CRISTAL: boton de accion. Tres estados y un solo cambio de luz:
 // reposo = cristal con el lienzo debajo; hover = luz que pasa; activo = ambar,
 // porque el ambar sigue significando "esto suena" y no "esto es importante".
-static void glassPill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
-                      bool hov, bool lit, G::Color litCol) {
+// El CUERPO de la pastilla, sin el velo de pulsacion: lo comparten los botones
+// que se pintan enteros cada frame y los que tienen la base cacheada en la
+// escena estatica (esos no pueden coger pressVeil: congelaria el estado).
+static void glassPillBody(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
+                          bool hov, bool lit, G::Color litCol, bool shadow = true) {
     const G::REAL r = kRPill;
-    if (lit) {   // el piloto ambar manda: la pastilla entera se tiende de el
-        G::SolidBrush gl(G::Color(26, 0xff, 0xa5, 0x1f));
-        g.FillEllipse(&gl, x + w*0.5f - 22.0f, y + h*0.5f - 22.0f, 44.0f, 44.0f);
+    if (lit) {   // el piloto manda: la pastilla entera se tiende de el
+        G::SolidBrush gl(G::Color(26, litCol.GetR(), litCol.GetG(), litCol.GetB()));
+        g.FillEllipse(&gl, x + w*0.5f - 24.0f, y + h*0.5f - 24.0f, 48.0f, 48.0f);
     }
-    softShadow(g, x, y, w, h, r, 90);
+    if (shadow) softShadow(g, x, y, w, h, r, 100);
     {
         G::LinearGradientBrush bg(G::RectF(x, y, w, h),
-                                  lit ? G::Color(255, 0x2b, 0x21, 0x14)
-                                      : (hov ? kBtnBgH : kBtnBg),
-                                  lit ? G::Color(255, 0x1a, 0x12, 0x0a) : kBtnBgL,
+                                  lit  ? G::Color(255, 0x2b, 0x24, 0x18)
+                                       : (hov ? kBtnBgH : kBtnBg),
+                                  lit  ? G::Color(255, 0x1a, 0x15, 0x0e) : kBtnBgL,
                                   90.0f);
-        G::Pen bp(lit ? accA(190) : kBtnLn, 1.0f);
+        G::Pen bp(lit ? G::Color(190, litCol.GetR(), litCol.GetG(), litCol.GetB()) : kBtnLn, 1.0f);
         roundRect(g, x, y, w, h, r, &bp, &bg);
     }
-    if (!lit) {
-        G::SolidBrush gl(G::Color(hov ? 34 : 22, 0xff, 0xff, 0xff));
-        roundRect(g, x + 1.5f, y + 1.5f, w - 3.0f, 4.0f, r*0.7f, nullptr, &gl);
+    {   // la luz del canto superior: la firma del sistema, en todas las pastillas
+        G::LinearGradientBrush gl(G::RectF(x + 1.0f, y + 1.0f, w - 2.0f, h*0.5f),
+                                  G::Color(lit ? 44 : 28, 0xff, 0xff, 0xff),
+                                  G::Color(0, 0xff, 0xff, 0xff), 90.0f);
+        roundRect(g, x + 1.0f, y + 1.0f, w - 2.0f, h*0.5f, r - 1.0f, nullptr, &gl);
     }
     if (lit) {   // LED propio, sin halo: el brillo es del piloto
         G::SolidBrush l2(G::Color(255, 0xff, 0xdd, 0x9a));
-        g.FillEllipse(&l2, x + 8.5f, y + h*0.5f - 2.0f, 4.0f, 4.0f);
+        g.FillEllipse(&l2, x + 9.0f, y + h*0.5f - 2.0f, 4.0f, 4.0f);
     }
-    pressVeil(g, x, y, w, h, r);
+}
+
+static void glassPill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
+                      bool hov, bool lit, G::Color litCol) {
+    glassPillBody(g, x, y, w, h, hov, lit, litCol);
+    pressVeil(g, x, y, w, h, kRPill);
 }
 
 // BANDA DE SECCION: el rotulo del sistema. Una regla de 1px y el titulo en
@@ -5860,30 +5870,31 @@ static void rackUnit(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h)
                     x + w - 14.0f, y + (G::REAL)UNIT_HDR_H + 1.0f);
 }
 
-// Boton estandar: misma forma, mismo hover y una barra de estado a la
-// izquierda (sin robar sitio al texto, que sigue centrado).
-// BOTON de hardware: cuerpo con degradado, gloss superior, bisel, sombra
-// proyectada y LED de estado a la izquierda cuando esta vivo. Es el control
-// que mas se pulsa, asi que se lleva el tratamiento mas rico.
+// BOTON de la cabecera: pastilla de cristal con piloto. Ya no lleva gloss ni
+// bisel -eran las dos marcas de "plastico pulido" del lenguaje viejo-: lleva la
+// misma luz desde arriba que todo lo demas, y el estado lo dice el piloto.
 static void topBtn(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
                    const WCHAR* label, G::Font& f, bool hov, bool lit, G::Color litCol) {
-    const G::REAL r = 6.0f;
-    softShadow(g, x, y, w, h, r, 90);
+    const G::REAL r = kRBtn;
+    if (lit) {   // el piloto se tiende sobre el cristal: estado, no adorno
+        G::SolidBrush gl(G::Color(26, litCol.GetR(), litCol.GetG(), litCol.GetB()));
+        g.FillEllipse(&gl, x + w*0.5f - 26.0f, y + h*0.5f - 26.0f, 52.0f, 52.0f);
+    }
+    softShadow(g, x, y, w, h, r, 110);
     {
         G::LinearGradientBrush bg(G::RectF(x, y, w, h),
-                                  lit  ? G::Color(255, (BYTE)(0x2a + litCol.GetR()/18),
-                                                       (BYTE)(0x26 + litCol.GetG()/18),
-                                                       (BYTE)(0x22 + litCol.GetB()/18))
+                                  lit  ? G::Color(255, 0x2c, 0x24, 0x18)
                                        : (hov ? kBtnBgH : kBtnBg),
-                                  lit  ? G::Color(255, 0x16, 0x13, 0x0e)
-                                       : G::Color(255, kBtnBgL.GetR(), kBtnBgL.GetG(), kBtnBgL.GetB()),
+                                  lit  ? G::Color(255, 0x1a, 0x14, 0x0c) : kBtnBgL,
                                   90.0f);
         G::Pen bp(lit ? G::Color(190, litCol.GetR(), litCol.GetG(), litCol.GetB()) : kBtnLn, 1.0f);
         roundRect(g, x, y, w, h, r, &bp, &bg);
     }
-    {   // gloss: media luna superior, marca de plastico pulido
-        G::SolidBrush gl(G::Color(lit ? 30 : 20, 0xff, 0xff, 0xff));
-        roundRect(g, x + 1.5f, y + 1.5f, w - 3.0f, 4.0f, r*0.7f, nullptr, &gl);
+    {   // la luz del canto superior, la misma de todo el sistema
+        G::LinearGradientBrush gl(G::RectF(x + 1.0f, y + 1.0f, w - 2.0f, h*0.5f),
+                                  G::Color(lit ? 46 : 30, 0xff, 0xff, 0xff),
+                                  G::Color(0, 0xff, 0xff, 0xff), 90.0f);
+        roundRect(g, x + 1.0f, y + 1.0f, w - 2.0f, h*0.5f, r - 1.0f, nullptr, &gl);
     }
     if (lit) {   // piloto (sin halo: el brillo es del LED, no un adorno)
         const G::REAL lx = x + 9.0f, ly = y + h*0.5f;
@@ -5897,9 +5908,6 @@ static void topBtn(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
     sfB.SetAlignment(G::StringAlignmentCenter);
     sfB.SetLineAlignment(G::StringAlignmentCenter);
     sfB.SetFormatFlags(G::StringFormatFlagsNoWrap | G::StringFormatFlagsNoClip);
-    // el texto lleva sombra: sobre un cuerpo con gloss hace falta separarlo
-    G::SolidBrush sh(G::Color(150, 0, 0, 0));
-    g.DrawString(label, -1, &f, G::RectF(x, y + 1.0f, w, h), &sfB, &sh);
     G::SolidBrush tb(lit ? kTxtHi : (hov ? kTxtHi : kTxtMd));
     g.DrawString(label, -1, &f, G::RectF(x, y, w, h), &sfB, &tb);
     pressVeil(g, x, y, w, h, r);
@@ -6470,14 +6478,19 @@ static void drawMeterTrack(G::Graphics& g, G::Font& fLbl, const WCHAR* label,
     G::StringFormat sfM;
     sfM.SetAlignment(G::StringAlignmentFar);   // etiqueta pegada al canal, sin invadirlo
     g.DrawString(label, -1, &fLbl, G::RectF(x - 90, y - 8, 84, 26), &sfM, &tb);
-    G::SolidBrush bg(kWellA);
+    // Canal: pozo de cristal. La luz entra por arriba, asi que el canto VIVO va
+    // abajo; al reves el canal se lee como una barra pegada encima del panel.
+    G::SolidBrush bg(kGlassWell);
+    roundRect(g, x, y, w, 9.0f, 3.0f, nullptr, &bg);
     G::Pen bp(kWellLn, 1.0f);
-    roundRect(g, x, y, w, 9, 1.0f, &bp, &bg);
+    roundRect(g, x, y, w, 9.0f, 3.0f, &bp, nullptr);
     G::Pen tk(G::Color(70, kTxtLo.GetR(), kTxtLo.GetG(), kTxtLo.GetB()), 1.0f);
     for (int i = 1; i < 4; ++i) {
         G::REAL tx = x + w*i/4.0f;
         g.DrawLine(&tk, tx, y + 2.0f, tx, y + 6.5f);
     }
+    G::Pen gl(G::Color(34, 0xff, 0xff, 0xff), 1.0f);
+    g.DrawLine(&gl, x + 4.0f, y + 8.0f, x + w - 4.0f, y + 8.0f);
 }
 
 // Relleno del medidor (dinamico): un traje CONTINUO de tres paradas (marfil ->
@@ -7466,12 +7479,10 @@ static void buildStaticScene(int W, int H) {
                 (G::REAL)(COL_R_W - 24), 22);
         // bases de botones/pills (texto, hover y estado en capa dinamica)
         {
-            G::SolidBrush bb(kBtnBg);
-            G::Pen bp3(kBtnLn, 1.0f);
-            roundRect(g, CAB_BTN_X, CAB_BTN_Y, CAB_BTN_W, CAB_BTN_H, 8, &bp3, &bb);
-            roundRect(g, CAB_SEL_X, CAB_SEL_Y, CAB_SEL_W, CAB_SEL_H, 8, &bp3, &bb);
-            roundRect(g, CAB_MIC_X, CAB_MIC_Y, CAB_MIC_W, CAB_MIC_H, 8, &bp3, &bb);
-            roundRect(g, CAB_DST_X, CAB_DST_Y, CAB_DST_W, CAB_DST_H, 8, &bp3, &bb);
+            glassPillBody(g, (G::REAL)CAB_BTN_X, (G::REAL)CAB_BTN_Y, (G::REAL)CAB_BTN_W, (G::REAL)CAB_BTN_H, false, false, kAcc);
+            glassPillBody(g, (G::REAL)CAB_SEL_X, (G::REAL)CAB_SEL_Y, (G::REAL)CAB_SEL_W, (G::REAL)CAB_SEL_H, false, false, kAcc);
+            glassPillBody(g, (G::REAL)CAB_MIC_X, (G::REAL)CAB_MIC_Y, (G::REAL)CAB_MIC_W, (G::REAL)CAB_MIC_H, false, false, kAcc);
+            glassPillBody(g, (G::REAL)CAB_DST_X, (G::REAL)CAB_DST_Y, (G::REAL)CAB_DST_W, (G::REAL)CAB_DST_H, false, false, kAcc);
         }
         // slider MIX (diseno: filas de mezcla) + su etiqueta
         {
@@ -7493,9 +7504,8 @@ static void buildStaticScene(int W, int H) {
             // Visualizador = hueco del sistema (dos tonos casi negros). Llevaba un
             //  degradado AZUL MARINO y rejilla azul-blanca: 18k pixeles fuera de
             //  paleta (1,2% de la ventana) y un segundo acento implicito.
-            G::LinearGradientBrush sgr(sr, kWellB, kWellA, 90.0f);
-            G::Pen bp4(kWellLn, 1.0f);
-            roundRect(g, SCOPE_X, SCOPE_Y, SCOPE_W, SCOPE_H, 8, &bp4, &sgr);
+            glassWell(g, (G::REAL)SCOPE_X, (G::REAL)SCOPE_Y,
+                      (G::REAL)SCOPE_W, (G::REAL)SCOPE_H, kRWell);
             g.SetClip(sr, G::CombineModeReplace);
             G::Pen gl(G::Color(30, kWellLn.GetR(), kWellLn.GetG(), kWellLn.GetB()), 1.0f);
             for (int i = 1; i < 4; ++i) {
@@ -8082,11 +8092,9 @@ static void t3kDrawSheet(G::Graphics& g)
         G::SolidBrush v(kVeil);
         g.FillRectangle(&v, (G::REAL)T3K_X, (G::REAL)T3K_Y, (G::REAL)T3K_W, (G::REAL)T3K_H);
     }
-    softShadow(g, sx, sy, (G::REAL)T3K_SHEET_W, (G::REAL)T3K_SHEET_H, 12.0f, 200);
-    G::LinearGradientBrush sb(G::RectF(sx, sy, (G::REAL)T3K_SHEET_W, (G::REAL)T3K_SHEET_H),
-                              G::Color(255, 0x18, 0x1d, 0x24), G::Color(255, 0x0d, 0x10, 0x15), 90.0f);
-    G::Pen sp(kAcc, 1.6f);
-    roundRect(g, sx, sy, (G::REAL)T3K_SHEET_W, (G::REAL)T3K_SHEET_H, kRModal, &sp, &sb);
+    // La hoja es cristal como todo lo demas: se separa por la sombra y por su
+    // canto vivo, no por un filete ambar (el ambar sigue siendo solo estado).
+    glassPanel(g, sx, sy, (G::REAL)T3K_SHEET_W, (G::REAL)T3K_SHEET_H, kRModal, true);
     drawSpacedFit(g, L"CONECTAR CON TONE3000", G::FontStyleBold, G::Color(0xff, 0xb7, 0xb1, 0xa7),
                   sx + 24.0f, sy + 18.0f, 1.6f, 420.0f, 14.0f, 11.0f);
 
@@ -8195,11 +8203,7 @@ static void t3kDraw(G::Graphics& g)
     const G::REAL px = T3K_X, py = T3K_Y, pw = T3K_W, ph = T3K_H;
     G::SolidBrush dim(kVeil);
     g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
-    softShadow(g, px, py, pw, ph, 14.0f, 190);
-    G::LinearGradientBrush bg(G::RectF(px, py, pw, ph),
-                              G::Color(255, 0x10, 0x14, 0x19), G::Color(255, 0x07, 0x09, 0x0c), 90.0f);
-    G::Pen bp(G::Color(0xff, 0x27, 0x25, 0x27), 1.6f);
-    roundRect(g, px, py, pw, ph, kRModal, &bp, &bg);
+    glassPanel(g, px, py, pw, ph, kRModal, true);
 
     // --- Marca COMPLETA de TONE3000 (su requisito de diseno) ---------------
     {
@@ -9263,11 +9267,7 @@ static void paintWindow(HWND hwnd) {
         G::SolidBrush dim(kVeil);
         g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
         const G::REAL px = PAL_X, py = PAL_Y, pw = PAL_W, ph = PAL_H;
-        softShadow(g, px, py, pw, ph, 12, 160);
-        G::LinearGradientBrush pb(G::RectF(px, py, pw, ph),
-                                  G::Color(0xff, 0x17, 0x16, 0x18), G::Color(0xff, 0x12, 0x11, 0x13), 90.0f);
-        G::Pen pp(G::Color(0xff, 0x2e, 0x2c, 0x2c), 1.6f);
-        roundRect(g, px, py, pw, ph, kRModal, &pp, &pb);
+        glassPanel(g, px, py, pw, ph, kRModal, true);
         drawSpacedFit(g, L"A\u00D1ADIR PEDAL", G::FontStyleBold, kAcc,
                       px + 16, py + 18, 2.0f, pw - 32, 18.0f, 12.0f);
         for (int t = 0; t < 18; ++t) {
@@ -9561,14 +9561,7 @@ static void paintWindow(HWND hwnd) {
         const G::REAL px = (WIN_W - 940) / 2, py = (WIN_H - 390) / 2 - 10;
         const G::REAL pw = 940, ph = 390;
         const G::REAL valL = px + 230, valR = px + pw - 140;
-        {
-            softShadow(g, px, py, pw, ph, 14, 160);
-            G::LinearGradientBrush pbg(G::RectF(px, py, pw, ph),
-                                       G::Color(0xff, 0x17, 0x16, 0x18),
-                                       G::Color(0xff, 0x12, 0x11, 0x13), 90.0f);
-            G::Pen pp(kSurfLn, 1.4f);
-            roundRect(g, px, py, pw, ph, kRModal, &pp, &pbg);
-        }
+        glassPanel(g, px, py, pw, ph, kRModal, true);
         G::SolidBrush acc(kAcc);
         drawSpacedFit(g, L"AJUSTES DE AUDIO", G::FontStyleBold, kAcc,
                       px + 30, py + 14, 2.0f, pw - 80.0f, 22.0f, 14.0f);
@@ -9700,11 +9693,7 @@ static void paintWindow(HWND hwnd) {
         G::SolidBrush dim(kVeil);
         g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
         const G::REAL px = TUN_X, py = TUN_Y, pw = TUN_W, ph = TUN_H;
-        softShadow(g, px, py, pw, ph, 12, 160);
-        G::LinearGradientBrush pb(G::RectF(px, py, pw, ph),
-                                  G::Color(0xff, 0x17, 0x16, 0x18), G::Color(0xff, 0x12, 0x11, 0x13), 90.0f);
-        G::Pen pp(G::Color(0xff, 0x2e, 0x2c, 0x2c), 1.6f);
-        roundRect(g, px, py, pw, ph, kRModal, &pp, &pb);
+        glassPanel(g, px, py, pw, ph, kRModal, true);
         drawSpacedFit(g, L"AFINADOR", G::FontStyleBold, kAcc,
                       px + 34, py + 20, 2.0f, pw - 68, 18.0f, 12.0f);
         const int   note   = g_tunerNote.load();
@@ -9789,13 +9778,7 @@ static void paintWindow(HWND hwnd) {
     if (g_renameOpen) {
         G::SolidBrush dim(kVeil);
         g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
-        softShadow(g, (G::REAL)REN_X, (G::REAL)REN_Y, (G::REAL)REN_W, (G::REAL)REN_H, 14.0f, 190);
-        G::LinearGradientBrush rbg(G::RectF((G::REAL)REN_X, (G::REAL)REN_Y,
-                                            (G::REAL)REN_W, (G::REAL)REN_H),
-                                   G::Color(255, 0x1f, 0x1f, 0x24),
-                                   G::Color(255, 0x15, 0x15, 0x19), 90.0f);
-        G::Pen rp(kWellLn, 1.0f);
-        roundRect(g, (G::REAL)REN_X, (G::REAL)REN_Y, (G::REAL)REN_W, (G::REAL)REN_H, kRModal, &rp, &rbg);
+        glassPanel(g, (G::REAL)REN_X, (G::REAL)REN_Y, (G::REAL)REN_W, (G::REAL)REN_H, kRModal, true);
         drawSpacedFit(g, L"RENOMBRAR PRESET", G::FontStyleBold, kTxtHi,
                       (G::REAL)(REN_X + 28), (G::REAL)(REN_Y + 24), 1.4f, 320.0f, 14.0f, 10.0f);
         {   // campo activo: el hueco del sistema, con filete y cursor del acento
