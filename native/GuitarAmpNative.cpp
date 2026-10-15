@@ -5215,6 +5215,61 @@ static bool mouseIn(int x0, int y0, int x1, int y1) {
     return g_mouseX >= x0 && g_mouseX < x1 && g_mouseY >= y0 && g_mouseY < y1;
 }
 
+// ---------------------------------------------------------------------------
+//  TABLA UNICA DE ZONAS
+//  Cada rectangulo de control estaba escrito TRES veces: lo pinta la capa
+//  dinamica, lo mira hoverKey y lo lee WM_LBUTTONDOWN. Cuando uno cambiaba y
+//  los otros no, el clic dejaba de coincidir con lo que se veia: ese fue el
+//  fallo del chip T3K de la cadena, que caia justo encima del primer bloque.
+//  Ahora se calcula UNA vez por frame en buildZones() y los tres leen la misma
+//  tabla. Los identificadores son los que hoverKey ya devolvia, asi que el
+//  codigo que compara contra 4, 5, 6, 70... sigue igual.
+//  Los mandos (circulares) y el panel TONE3000 se quedan fuera a proposito:
+//  cada uno tiene su propio hit-test y ya lo usan todos sus sitios.
+// ---------------------------------------------------------------------------
+static const int ZONE_MAX = 260;
+struct Zone { int x0, y0, x1, y1; };
+static Zone g_zone[ZONE_MAX];
+static bool g_zoneOn[ZONE_MAX];
+
+static void zoneBeginFrame() {
+    for (int i = 0; i < ZONE_MAX; ++i) g_zoneOn[i] = false;
+}
+static void zoneSet(int id, int x0, int y0, int x1, int y1) {
+    if (id <= 0 || id >= ZONE_MAX) return;
+    g_zone[id].x0 = x0; g_zone[id].y0 = y0;
+    g_zone[id].x1 = x1; g_zone[id].y1 = y1;
+    g_zoneOn[id] = true;
+}
+static void zoneSetBox(int id, int x, int y, int w, int h) { zoneSet(id, x, y, x + w, y + h); }
+static bool zoneHit(int id) {
+    if (id <= 0 || id >= ZONE_MAX || !g_zoneOn[id]) return false;
+    return mouseIn(g_zone[id].x0, g_zone[id].y0, g_zone[id].x1, g_zone[id].y1);
+}
+static bool zoneHitAt(int id, int x, int y) {
+    if (id <= 0 || id >= ZONE_MAX || !g_zoneOn[id]) return false;
+    return x >= g_zone[id].x0 && x < g_zone[id].x1 && y >= g_zone[id].y0 && y < g_zone[id].y1;
+}
+// El centro de una zona: lo usa el pintado para colocar iconos y texto.
+static void zoneCenter(int id, int& cx, int& cy) {
+    cx = (g_zone[id].x0 + g_zone[id].x1)/2;
+    cy = (g_zone[id].y0 + g_zone[id].y1)/2;
+}
+// El rectangulo de una zona, para el codigo que ya trabaja con RECT + PtInRect.
+// Si la zona no existe este frame (modal abierto), sale un rectangulo vacio y
+// PtInRect nunca acierta: el clic queda desactivado sin ningun caso especial.
+static RECT zoneRect(int id) {
+    RECT r = { 0, 0, 0, 0 };
+    if (id > 0 && id < ZONE_MAX && g_zoneOn[id]) {
+        r.left = g_zone[id].x0; r.top    = g_zone[id].y0;
+        r.right = g_zone[id].x1; r.bottom = g_zone[id].y1;
+    }
+    return r;
+}
+// Cuerpo mas abajo (junto a hoverKey, que es su primer lector): se declara aqui
+// porque paintWindow lo llama antes de llegar a su definicion.
+static void buildZones();
+
 // --- Cache de render: escena estatica + buffer trasero reutilizados ---
 // La escena estatica (toxel, paños, caras, chasis) se renderiza UNA vez por
 // tamano; cada frame solo se dibuja la capa dinamica. Sin esto, GDI+ tarda
@@ -8675,6 +8730,9 @@ static void paintWindow(HWND hwnd) {
     // a la vez. El BitBlt de arriba ya iba a tanyo real.
     uiApplyTransform(g, W, H);
 
+    // 2) Zonas: UNA tabla para pintura, hover y clic (ver buildZones)
+    buildZones();
+
     G::StringFormat sfC;
     sfC.SetAlignment(G::StringAlignmentCenter);
     sfC.SetLineAlignment(G::StringAlignmentCenter);
@@ -8696,8 +8754,7 @@ static void paintWindow(HWND hwnd) {
     {
         WCHAR pname[128];
         presetNameW(g_presetIdx, pname, 128);
-        const bool bhov = mouseIn(TOP_BOX_X, TOP_BOX_Y,
-                                  TOP_BOX_X + TOP_BOX_W, TOP_BOX_Y + TOP_BOX_H);
+        const bool bhov = zoneHit(6);          // preset superior
         if (bhov) {   // hover: la luz pasa por el cristal, sin repintar la pieza
             glassWash(g, (G::REAL)TOP_BOX_X, (G::REAL)TOP_BOX_Y, (G::REAL)TOP_BOX_W,
                       (G::REAL)TOP_BOX_H, kRPill, kGlassHover);
@@ -8743,7 +8800,7 @@ static void paintWindow(HWND hwnd) {
     }
 
     {
-        bool gh = mouseIn(TOP_GEAR_X, 14, TOP_GEAR_X + 40, 54);
+        bool gh = zoneHit(5);                      // ajustes
         const bool gopen = g_settingsOpen;
         softShadow(g, (G::REAL)TOP_GEAR_X, 14.0f, 40.0f, 40.0f, 20.0f, 48);
         G::SolidBrush cgb(gopen ? G::Color(255, 0x10, 0x10, 0x12)
@@ -8754,7 +8811,7 @@ static void paintWindow(HWND hwnd) {
         G::Pen gp(gopen ? kAcc
                         : (gh ? G::Color(255, 0x24, 0x24, 0x28) : kBtnLn), 1.0f);
         g.DrawEllipse(&gp, TOP_GEAR_X, 14, 40, 40);
-        if (g_lbtn && mouseIn(TOP_GEAR_X, 14, TOP_GEAR_X + 40, 54)) {
+        if (g_lbtn && zoneHit(5)) {
             G::SolidBrush gv(G::Color(70, 0, 0, 0));
             g.FillEllipse(&gv, TOP_GEAR_X, 14, 40, 40);
         }
@@ -8773,7 +8830,7 @@ static void paintWindow(HWND hwnd) {
     // --- Boton global AUDIO ON/OFF (arranca apagado) ---
     {
         bool en = g_audioEnabled.load();
-        bool hov = mouseIn(TOP_AUDIO_X, 14, TOP_AUDIO_X + 100, 54);
+        bool hov = zoneHit(4);                     // AUDIO ON/OFF
         G::Font fBtn(L"Segoe UI", 10.0f, G::FontStyleBold);
         topBtn(g, (G::REAL)TOP_AUDIO_X, 14.0f, 100.0f, 40.0f,
                en ? L"AUDIO ON" : L"AUDIO OFF", fBtn, hov, en, kAcc);
@@ -8784,13 +8841,13 @@ static void paintWindow(HWND hwnd) {
     {
         G::Font fTop(L"Segoe UI", 10.0f, G::FontStyleBold);
         {
-            const bool hov = mouseIn(TOP_SAVE_X, 14, TOP_SAVE_X + 100, 54);
+            const bool hov = zoneHit(74);              // GUARDAR
             topBtn(g, (G::REAL)TOP_SAVE_X, 14.0f, 100.0f, 40.0f, L"GUARDAR", fTop,
                    hov, false, kAcc);
         }
         {
             const bool recOn = g_recActive.load();
-            const bool hov = mouseIn(TOP_REC_X, 14, TOP_REC_X + 100, 54);
+            const bool hov = zoneHit(75);              // GRABAR
             WCHAR wrec[32];
             if (recOn) {
                 const DWORD secs = (GetTickCount() - g_recTickStart) / 1000;
@@ -8975,7 +9032,7 @@ static void paintWindow(HWND hwnd) {
         }
         // boton CARGAR IR (abre dialogo WAV)
         {
-            const bool hov = mouseIn(CAB_BTN_X, CAB_BTN_Y, CAB_BTN_X + CAB_BTN_W, CAB_BTN_Y + CAB_BTN_H);
+            const bool hov = zoneHit(76);          // CARGAR IR
             G::SolidBrush bb(hov ? G::Color(0xff, 0x21, 0x1f, 0x21) : G::Color(255, 0x10, 0x10, 0x12));
             G::Pen bp(G::Color(255, hov ? 0x4c : 0x30, hov ? 0x5a : 0x3b, hov ? 0x66 : 0x44), 1.5f);
             roundRect(g, (G::REAL)CAB_BTN_X, (G::REAL)CAB_BTN_Y, (G::REAL)CAB_BTN_W, (G::REAL)CAB_BTN_H,
@@ -8997,7 +9054,7 @@ static void paintWindow(HWND hwnd) {
                 MultiByteToWideChar(CP_ACP, 0, kCabNames[cmv], -1, wcn, 80);
                 swprintf_s(wcb, L"CAB: %s", wcn);
             } else wcscpy_s(wcb, L"CAB: ---");
-            const bool hov = mouseIn(CAB_SEL_X, CAB_SEL_Y, CAB_SEL_X + CAB_SEL_W, CAB_SEL_Y + CAB_SEL_H);
+            const bool hov = zoneHit(92);          // pill CAB
             G::SolidBrush bb(hov ? G::Color(0xff, 0x1c, 0x1b, 0x1d) : G::Color(0xff, 0x17, 0x16, 0x18));
             G::Pen bp(G::Color(255, hov ? 0x72 : 0x38, hov ? 0xa7 : 0x45, hov ? 0xd5 : 0x51), 1.5f);
             roundRect(g, (G::REAL)CAB_SEL_X, (G::REAL)CAB_SEL_Y, (G::REAL)CAB_SEL_W, (G::REAL)CAB_SEL_H,
@@ -9015,7 +9072,7 @@ static void paintWindow(HWND hwnd) {
             const WCHAR* micName = (micv == 1) ? L"MIC: RIBBON"
                                  : (micv == 2) ? L"MIC: COND"
                                                : L"MIC: DYN";
-            const bool hov = mouseIn(CAB_MIC_X, CAB_MIC_Y, CAB_MIC_X + CAB_MIC_W, CAB_MIC_Y + CAB_MIC_H);
+            const bool hov = zoneHit(77);          // pill MIC
             G::SolidBrush bb(hov ? G::Color(0xff, 0x1c, 0x1b, 0x1d) : G::Color(0xff, 0x17, 0x16, 0x18));
             G::Pen bp(G::Color(255, hov ? 0x72 : 0x38, hov ? 0xa7 : 0x45, hov ? 0xd5 : 0x51), 1.5f);
             roundRect(g, (G::REAL)CAB_MIC_X, (G::REAL)CAB_MIC_Y, (G::REAL)CAB_MIC_W, (G::REAL)CAB_MIC_H,
@@ -9033,7 +9090,7 @@ static void paintWindow(HWND hwnd) {
             const WCHAR* dName = (dsv == 0) ? L"DIST: NEAR"
                                 : (dsv == 2) ? L"DIST: FAR"
                                              : L"DIST: MID";
-            const bool hov = mouseIn(CAB_DST_X, CAB_DST_Y, CAB_DST_X + CAB_DST_W, CAB_DST_Y + CAB_DST_H);
+            const bool hov = zoneHit(93);          // pill DIST
             G::SolidBrush bb(hov ? G::Color(0xff, 0x1c, 0x1b, 0x1d) : G::Color(0xff, 0x17, 0x16, 0x18));
             G::Pen bp(G::Color(255, hov ? 0x72 : 0x38, hov ? 0xa7 : 0x45, hov ? 0xd5 : 0x51), 1.5f);
             roundRect(g, (G::REAL)CAB_DST_X, (G::REAL)CAB_DST_Y, (G::REAL)CAB_DST_W, (G::REAL)CAB_DST_H,
@@ -9049,7 +9106,7 @@ static void paintWindow(HWND hwnd) {
         // se enciende en verde con el modal abierto y el texto va a su derecha
         // (antes quedaba centrado encima del icono y se solapaban).
         {
-            const bool hov = mouseIn(TUNER_BTN_X, TUNER_BTN_Y, TUNER_BTN_X + TUNER_BTN_W, TUNER_BTN_Y + TUNER_BTN_H);
+            const bool hov = zoneHit(91);          // AFINADOR
             const bool on = g_tunerOpen.load();
             const G::REAL bx = (G::REAL)TUNER_BTN_X, by = (G::REAL)TUNER_BTN_Y;
             if (hov || on) {
@@ -9581,8 +9638,7 @@ static void paintWindow(HWND hwnd) {
         }
         const G::REAL tx = (G::REAL)MIX_SL_X + v01*(G::REAL)MIX_SL_W;
         const G::REAL ty = (G::REAL)MIX_SL_Y + (G::REAL)MIX_SL_H*0.5f;
-        const bool hov = mouseIn(MIX_SL_X - MIX_SL_PAD, MIX_SL_Y - 10,
-                                 MIX_SL_X + MIX_SL_W + MIX_SL_PAD, MIX_SL_Y + MIX_SL_H + 10);
+        const bool hov = zoneHit(101);         // slider MEZCLA
         // Thumb: disco blanco plano con aro negro de 2px; el aro pasa al acento
         // al pasar el raton o arrastrar. Sin sombra ni brillo (monocromo radical).
         const G::REAL th = (hov || g_mixDrag) ? 9.0f : 8.0f;
@@ -9610,7 +9666,7 @@ static void paintWindow(HWND hwnd) {
     {
         WCHAR pname[128];
         presetNameW(g_presetIdx, pname, 128);
-        if (mouseIn(24, BOT_BOX_Y, 330, BOT_BOX_Y + 44)) {
+        if (zoneHit(70)) {                     // preset inferior
             G::SolidBrush pb(G::Color(255, 0x10, 0x10, 0x12));
             G::Pen pp(G::Color(255, 0x18, 0x18, 0x1b), 1.0f);
             roundRect(g, 24, BOT_BOX_Y, 306, 44, 8, &pp, &pb);
@@ -9623,12 +9679,12 @@ static void paintWindow(HWND hwnd) {
             g.DrawString(pname, -1, &fPreset, G::RectF(38, BOT_BOX_Y, 250, 44), &sfL, &tb);
         }
 
-        G::Color acCol = mouseIn(334, BOT_BOX_Y + 4, 366, BOT_BOX_Y + 40) ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7);
-        G::Color acCol2 = mouseIn(370, BOT_BOX_Y + 4, 402, BOT_BOX_Y + 40) ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7);
+        G::Color acCol = zoneHit(71) ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7);
+        G::Color acCol2 = zoneHit(72) ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7);
         G::SolidBrush pb1(acCol), pb2(acCol2);
         g.DrawString(L"\x2039", -1, &fArrow, G::RectF(334, BOT_BOX_Y + 4, 32, 40), &sfC, &pb1);
         g.DrawString(L"\x203A", -1, &fArrow, G::RectF(370, BOT_BOX_Y + 4, 32, 40), &sfC, &pb2);
-        bool fhov = mouseIn(410, BOT_BOX_Y + 6, 444, BOT_BOX_Y + 42);
+        bool fhov = zoneHit(73);               // favorito
         G::SolidBrush hb(g_fav  ? kHot
                         : fhov  ? G::Color(0xff, 0xd8, 0x9c, 0x98)
                                 : G::Color(0xff, 0x82, 0x7d, 0x76));
@@ -10034,6 +10090,42 @@ static void updateDropTarget() {
 }
 
 // ---------------------------------------------------------------------------
+//  Tabla unica de zonas: se recalcula UNA vez por frame, antes de la capa
+//  dinamica. La pintura, hoverKey y el clic leen esto mismo, asi que no pueden
+//  discrepir. Con un modal abierto la tabla se queda vacia a proposito: la
+//  regla de un solo modal ya descarta todo lo que no sea del modal, y dejar
+//  zonas vivas detras invitaba a pulsar controles que no se ven.
+//  Los mandos (circulares, hitKnob) y el panel TONE3000 (t3kHit) tienen su
+//  propio hit-test y lo usan todos sus sitios: no hace falta duplicarlos.
+// ---------------------------------------------------------------------------
+static void buildZones() {
+    zoneBeginFrame();
+    if (g_t3kOpen || g_tunerOpen.load() || g_settingsOpen || g_addOpen) return;
+
+    // --- cabecera ---
+    zoneSetBox(4,  TOP_AUDIO_X, 14, 100, 40);                              // AUDIO ON/OFF
+    zoneSetBox(5,  TOP_GEAR_X,  14,  40, 40);                              // ajustes
+    zoneSetBox(6,  TOP_BOX_X,  TOP_BOX_Y,  TOP_BOX_W,  TOP_BOX_H);         // preset superior
+    zoneSetBox(74, TOP_SAVE_X,  14, 100, 40);                              // GUARDAR
+    zoneSetBox(75, TOP_REC_X,   14, 100, 40);                              // GRABAR
+
+    // --- columna de cabina ---
+    zoneSet   (91, TUNER_BTN_X, TUNER_BTN_Y, TUNER_BTN_X + TUNER_BTN_W, TUNER_BTN_Y + TUNER_BTN_H);
+    zoneSetBox(76, CAB_BTN_X, CAB_BTN_Y, CAB_BTN_W, CAB_BTN_H);            // CARGAR IR
+    zoneSetBox(92, CAB_SEL_X, CAB_SEL_Y, CAB_SEL_W, CAB_SEL_H);            // pill CAB
+    zoneSetBox(77, CAB_MIC_X, CAB_MIC_Y, CAB_MIC_W, CAB_MIC_H);            // pill MIC
+    zoneSetBox(93, CAB_DST_X, CAB_DST_Y, CAB_DST_W, CAB_DST_H);            // pill DIST
+    zoneSetBox(101, MIX_SL_X - MIX_SL_PAD, MIX_SL_Y - 10,
+                  MIX_SL_W + MIX_SL_PAD*2, MIX_SL_H + 20);                 // slider MEZCLA
+
+    // --- pie: preset y su navegacion ---
+    zoneSetBox(70, 24,  BOT_BOX_Y,     306, 44);                           // preset inferior
+    zoneSetBox(71, 334, BOT_BOX_Y + 4,  32, 36);                           // anterior
+    zoneSetBox(72, 370, BOT_BOX_Y + 4,  32, 36);                           // siguiente
+    zoneSetBox(73, 410, BOT_BOX_Y + 6,  34, 36);                           // favorito
+}
+
+// ---------------------------------------------------------------------------
 //  Clave de hover: que control esta bajo el raton. El WM_MOUSEMOVE solo
 //  repinta cuando esta clave cambia => sin tormentas de WM_PAINT al mover
 //  el cursor por zonas que no cambian visualmente.
@@ -10069,24 +10161,17 @@ static int hoverKey() {
         if (PtInRect(&cr, pt)) return 98;
         return 3;   // dentro del panel modal de anadido
     }
-    if (mouseIn(TOP_AUDIO_X, 14, TOP_AUDIO_X + 100, 54)) return 4; // boton AUDIO
-    if (mouseIn(TOP_GEAR_X, 14, TOP_GEAR_X + 40, 54)) return 5;    // gear
-    if (mouseIn(TOP_BOX_X, TOP_BOX_Y, TOP_BOX_X + TOP_BOX_W, TOP_BOX_Y + TOP_BOX_H)) return 6;  // preset superior
-    if (mouseIn(TOP_SAVE_X, 14, TOP_SAVE_X + 100, 54)) return 74;   // GUARDAR
-    if (mouseIn(TOP_REC_X, 14, TOP_REC_X + 100, 54))   return 75;   // GRABAR WAV
-    if (mouseIn(TUNER_BTN_X, TUNER_BTN_Y, TUNER_BTN_X + TUNER_BTN_W, TUNER_BTN_Y + TUNER_BTN_H))
-        return 91;                                                   // AFINADOR
-    if (mouseIn(CAB_BTN_X, CAB_BTN_Y, CAB_BTN_X + CAB_BTN_W, CAB_BTN_Y + CAB_BTN_H))
-        return 76;                                                   // CARGAR IR
-    if (mouseIn(CAB_SEL_X, CAB_SEL_Y, CAB_SEL_X + CAB_SEL_W, CAB_SEL_Y + CAB_SEL_H))
-        return 92;                                                   // pill CAB
-    if (mouseIn(CAB_MIC_X, CAB_MIC_Y, CAB_MIC_X + CAB_MIC_W, CAB_MIC_Y + CAB_MIC_H))
-        return 77;                                                   // pill MIC
-    if (mouseIn(CAB_DST_X, CAB_DST_Y, CAB_DST_X + CAB_DST_W, CAB_DST_Y + CAB_DST_H))
-        return 93;                                                   // pill DIST
-    if (mouseIn(MIX_SL_X - MIX_SL_PAD, MIX_SL_Y - 10,
-                MIX_SL_X + MIX_SL_W + MIX_SL_PAD, MIX_SL_Y + MIX_SL_H + 10))
-        return 101;                                                  // slider MEZCLA
+    if (zoneHit(4)) return 4;   // boton AUDIO
+    if (zoneHit(5)) return 5;    // gear
+    if (zoneHit(6)) return 6;    // preset superior
+    if (zoneHit(74)) return 74;   // GUARDAR
+    if (zoneHit(75)) return 75;   // GRABAR WAV
+    if (zoneHit(91)) return 91;   // AFINADOR
+    if (zoneHit(76)) return 76;   // CARGAR IR
+    if (zoneHit(92)) return 92;   // pill CAB
+    if (zoneHit(77)) return 77;   // pill MIC
+    if (zoneHit(93)) return 93;   // pill DIST
+    if (zoneHit(101)) return 101; // slider MEZCLA
     for (int row = 0; row < 2; ++row) {
         const std::vector<int>& ch = (row == 0) ? g_chainPre : g_chainPost;
         for (size_t i = 0; i < ch.size(); ++i) {
@@ -10106,10 +10191,10 @@ static int hoverKey() {
         int rr = g_knobs[i].r + 10;
         if (dx*dx + dy*dy <= rr*rr) return 50 + (int)i;
     }
-    if (mouseIn(24, BOT_BOX_Y, 330, BOT_BOX_Y + 44)) return 70; // preset inferior
-    if (mouseIn(334, BOT_BOX_Y + 4, 366, BOT_BOX_Y + 40)) return 71;
-    if (mouseIn(370, BOT_BOX_Y + 4, 402, BOT_BOX_Y + 40)) return 72;
-    if (mouseIn(410, BOT_BOX_Y + 6, 444, BOT_BOX_Y + 42)) return 73;
+    if (zoneHit(70)) return 70;   // preset inferior
+    if (zoneHit(71)) return 71;
+    if (zoneHit(72)) return 72;
+    if (zoneHit(73)) return 73;
     return 0;
 }
 // ---------------------------------------------------------------------------
@@ -10513,7 +10598,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         // Gear AJUSTES (siempre activo)
-        RECT gear = { TOP_GEAR_X, 14, TOP_GEAR_X + 40, 54 };
+        RECT gear = zoneRect(5);      // ajustes
         if (PtInRect(&gear, pt)) {
             if (!g_settingsOpen) modalCloseAll();   // un modal a la vez
             g_settingsOpen = !g_settingsOpen;
@@ -10592,7 +10677,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         // Boton AFINADOR (abre/cierra el modal)
-        RECT tunBtn = { TUNER_BTN_X, TUNER_BTN_Y, TUNER_BTN_X + TUNER_BTN_W, TUNER_BTN_Y + TUNER_BTN_H };
+        RECT tunBtn = zoneRect(91);   // AFINADOR
         if (PtInRect(&tunBtn, pt)) {
             if (!g_tunerOpen.load()) modalCloseAll();   // un modal a la vez
             g_tunerOpen.store(!g_tunerOpen.load());
@@ -10601,7 +10686,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         // CARGAR IR del cab (dialogo WAV) + pills CAB / MIC / DIST
-        RECT irBtn = { CAB_BTN_X, CAB_BTN_Y, CAB_BTN_X + CAB_BTN_W, CAB_BTN_Y + CAB_BTN_H };
+        RECT irBtn = zoneRect(76);    // CARGAR IR
         if (PtInRect(&irBtn, pt)) {
             wchar_t file[MAX_PATH] = L"";
             OPENFILENAMEW ofn = { sizeof(ofn) };
@@ -10621,7 +10706,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-        RECT selBtn = { CAB_SEL_X, CAB_SEL_Y, CAB_SEL_X + CAB_SEL_W, CAB_SEL_Y + CAB_SEL_H };
+        RECT selBtn = zoneRect(92);   // pill CAB
         if (PtInRect(&selBtn, pt)) {
             int cmv = g_params.cabModel.load() + 1;         // cicla 0..5 (6 = USER IR si hay)
             if (cmv > (g_userIRPtr ? 6 : 5)) cmv = 0;
@@ -10631,7 +10716,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-        RECT micBtn = { CAB_MIC_X, CAB_MIC_Y, CAB_MIC_X + CAB_MIC_W, CAB_MIC_Y + CAB_MIC_H };
+        RECT micBtn = zoneRect(77);   // pill MIC
         if (PtInRect(&micBtn, pt)) {
             const int micv = g_params.cabMic.load();
             g_params.cabMic.store(micv >= 2 ? 0 : micv + 1);   // DYN -> RIBBON -> COND
@@ -10640,7 +10725,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-        RECT dstBtn = { CAB_DST_X, CAB_DST_Y, CAB_DST_X + CAB_DST_W, CAB_DST_Y + CAB_DST_H };
+        RECT dstBtn = zoneRect(93);   // pill DIST
         if (PtInRect(&dstBtn, pt)) {
             const int dsv = g_params.cabDist.load();
             g_params.cabDist.store(dsv >= 2 ? 0 : dsv + 1);    // NEAR -> MID -> FAR
@@ -10651,7 +10736,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         // Boton global AUDIO ON/OFF
-        RECT audioBtn = { TOP_AUDIO_X, 14, TOP_AUDIO_X + 100, 54 };
+        RECT audioBtn = zoneRect(4);  // AUDIO ON/OFF
         if (PtInRect(&audioBtn, pt)) {
             g_audioEnabled.store(!g_audioEnabled.load());
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -10659,7 +10744,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         // GUARDAR preset de usuario
-        RECT saveBtn = { TOP_SAVE_X, 14, TOP_SAVE_X + 100, 54 };
+        RECT saveBtn = zoneRect(74);  // GUARDAR
         if (PtInRect(&saveBtn, pt)) {
             saveUserPreset();
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -10667,7 +10752,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         // GRABAR / PARAR WAV de la salida
-        RECT recBtn = { TOP_REC_X, 14, TOP_REC_X + 100, 54 };
+        RECT recBtn = zoneRect(75);   // GRABAR
         if (PtInRect(&recBtn, pt)) {
             if (g_recActive.load()) recStop(); else recStart();
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -10965,7 +11050,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         // Caja de preset superior -> siguiente preset
-        RECT pbox = { TOP_BOX_X, TOP_BOX_Y, TOP_BOX_X + TOP_BOX_W, TOP_BOX_Y + TOP_BOX_H };
+        RECT pbox = zoneRect(6);      // preset superior
         if (PtInRect(&pbox, pt)) {
             g_presetIdx = (g_presetIdx + 1) % presetTotal();
             applyPreset(g_presetIdx);
@@ -10976,7 +11061,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // Caja de preset del pie -> verlo en el navegador (pestana PRESETS).
         // Se pinta con hover y con velo de pulsacion, asi que TIENE que responder:
         // antes era un control pulsable que no hacia nada.
-        RECT fbox = { 24, BOT_BOX_Y, 330, BOT_BOX_Y + 44 };
+        RECT fbox = zoneRect(70);     // preset del pie
         if (PtInRect(&fbox, pt)) {
             if (g_leftTab != 1) { g_leftTab = 1; g_searchFocus = false; }
             g_listScroll = 0;
@@ -10987,9 +11072,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         // Preset prev / siguiente / favorito
-        RECT prevR = { 334, BOT_BOX_Y + 4,  366, BOT_BOX_Y + 40 };
-        RECT nextR  = { 370, BOT_BOX_Y + 4,  402, BOT_BOX_Y + 40 };
-        RECT heartR = { 410, BOT_BOX_Y + 6,  444, BOT_BOX_Y + 42 };
+        RECT prevR  = zoneRect(71);   // preset anterior
+        RECT nextR  = zoneRect(72);   // preset siguiente
+        RECT heartR = zoneRect(73);   // favorito
         if (PtInRect(&prevR, pt)) {
             g_presetIdx = (g_presetIdx + presetTotal() - 1) % presetTotal();
             applyPreset(g_presetIdx);
@@ -11015,8 +11100,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         // Slider MEZCLA: arrastre horizontal (coordenadas del clic, no el hover)
-        if (x >= MIX_SL_X - MIX_SL_PAD && x <= MIX_SL_X + MIX_SL_W + MIX_SL_PAD &&
-            y >= MIX_SL_Y - 10 && y <= MIX_SL_Y + MIX_SL_H + 10) {
+        if (zoneHitAt(101, x, y)) {   // slider MEZCLA
             g_mixDrag = true;
             float v = (float)(x - MIX_SL_X)*(100.0f/(float)MIX_SL_W);
             if (v < 0.0f) v = 0.0f;
@@ -12300,6 +12384,57 @@ static void hTestFlat() {
     G::GdiplusShutdown(tok);
 }
 
+// K: la tabla unica de zonas. Es lo que impide que el clic y el dibujo se
+// separen otra vez: se comprueba que las zonas existen donde deben, que caben
+// en el lienzo y que con un modal abierto NO queda ninguna viva (un clic a
+// ciegas sobre un control tapado por el modal es justo lo que la regla de un
+// solo modal evita).
+static void hTestZones() {
+    const bool sT3k = g_t3kOpen, sSet = g_settingsOpen, sAdd = g_addOpen;
+    const bool sTun = g_tunerOpen.load();
+
+    g_t3kOpen = false; g_settingsOpen = false; g_addOpen = false; g_tunerOpen.store(false);
+    buildZones();
+
+    static const int ids[15] = { 4, 5, 6, 74, 75, 91, 76, 92, 77, 93, 101, 70, 71, 72, 73 };
+    int faltan = 0, fuera = 0;
+    for (int i = 0; i < 15; ++i) {
+        const RECT r = zoneRect(ids[i]);
+        if (r.right - r.left <= 0 || r.bottom - r.top <= 0) ++faltan;
+        else if (r.left < 0 || r.top < 0 || r.right > WIN_W || r.bottom > WIN_H) ++fuera;
+    }
+    char d[200];
+    sprintf_s(d, "sin zona=%d, fuera del lienzo=%d", faltan, fuera);
+    hCheck(faltan == 0 && fuera == 0, "K1 las quince zonas existen y caben en el lienzo", d);
+
+    // el rectangulo de la tabla es el MISMO que documenta la constante: si
+    // alguien teclea mal un id en buildZones, esto lo caza
+    const RECT a = zoneRect(4);
+    const bool same4 = (a.left == TOP_AUDIO_X && a.top == 14 &&
+                        a.right == TOP_AUDIO_X + 100 && a.bottom == 54);
+    sprintf_s(d, "zona 4 = [%d,%d,%d,%d]", (int)a.left, (int)a.top, (int)a.right, (int)a.bottom);
+    hCheck(same4, "K2 la zona del boton AUDIO cae en su constante", d);
+
+    // clic y hover leen lo mismo: el centro de una zona SIEMPRE acierta
+    int cx = 0, cy = 0;
+    zoneCenter(6, cx, cy);
+    hCheck(zoneHitAt(6, cx, cy), "K3 el centro de una zona siempre responde",
+           zoneHitAt(6, cx, cy) ? "el centro acierta" : "el centro falla");
+
+    // con un modal abierto no queda ninguna zona viva
+    g_settingsOpen = true;
+    buildZones();
+    int vivas = 0;
+    for (int i = 0; i < 15; ++i) { const RECT r = zoneRect(ids[i]); if (r.right > r.left) ++vivas; }
+    g_settingsOpen = false;
+    sprintf_s(d, "zonas vivas con el panel de ajustes abierto = %d", vivas);
+    hCheck(vivas == 0, "K4 un modal abierto deja la tabla vacia", d);
+
+    // el estado original del proceso queda intacto
+    g_t3kOpen = sT3k; g_settingsOpen = sSet; g_addOpen = sAdd; g_tunerOpen.store(sTun);
+    buildZones();
+}
+
 static void hSelftest(int fs) {
     printf("\n== autotest de correcciones ==\n");
     hNamRejects();
@@ -12310,6 +12445,7 @@ static void hSelftest(int fs) {
     hTestStaticIR(fs);
     hTestPaste();
     hTestFlat();
+    hTestZones();
     hTestExtraLeak(fs);
     // P2 va al final: inyecta NaN en el motor y aunque prepare(false) lo deja
     // recuperable, el historial de las lineas de retardo queda con residuos que
