@@ -39,7 +39,7 @@ Requisitos: Visual Studio 2022 Build Tools (`cl`). Nada más.
 
 ```powershell
 # App
-.\_build.ps1                              # cl /O2 /EHsc /std:c++17, firma local
+.\_build.ps1                              # cl /utf-8 /O2 /EHsc /std:c++17, firma local
 # Banco offline del DSP (sin UI ni audio)
 .\native\_build_dsp.ps1
 .\native\_dsp_test.exe all                # respuesta, THD, aliasing, IR, WAV, FX, coste
@@ -47,7 +47,9 @@ Requisitos: Visual Studio 2022 Build Tools (`cl`). Nada más.
 .\native\_dsp_test.exe selftest           # autotest: sale != 0 si algo falla
 ```
 
-El ejecutable sale en `native\GuitarAmp.exe`.
+Los tres comandos valen **desde cualquier carpeta**: el banco ancla sus datos
+(`_nmaref/`, `perfiles/`, `_dsp_out/`) al directorio del ejecutable, no al
+directorio actual. El ejecutable sale en `native\GuitarAmp.exe`.
 
 ## Uso
 

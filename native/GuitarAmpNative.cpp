@@ -2386,11 +2386,11 @@ static void genProcCabs(float fs) {
         uint32_t rs = 0x9E3779B9u ^ (uint32_t)(c*2654435761u + 1013904223u);
         auto rnd = [&rs]() { rs = rs*1664525u + 1013904223u;
                              return (float)((rs >> 8) & 0xFFFFFF) / 16777216.0f; };
-        // Ataque menos "tick": realce directo con dispersiÃ³n de 2 taps
+        // Ataque menos "tick": realce directo con dispersión de 2 taps
         tt[1] += D.thru*0.35f*rnd();
         tt[2] += D.thru*0.18f*rnd();
         // Banco modal DENSO: 8 parciales incoherentes por ancla (40 por cab).
-        // Un IR de 5 sinusoides puras tenÃ­a espectro de peine: resonaba en 5
+        // Un IR de 5 sinusoides puras tenía espectro de peine: resonaba en 5
         // frecuencias exactas y sonaba a "zumbido"/robotico al convolucionar.
         // Jitter de frecuencia, amplitud, decaimiento y fase => densidad
         // modal realista (textura de gabinete, sin tonos puros).
@@ -9517,7 +9517,7 @@ static void paintWindow(HWND hwnd) {
             drawMeterFill(g, (G::REAL)MTR_GT_X, (G::REAL)BOT_MTR_Y, (G::REAL)MTR_GT_W, gr / 40.0f, g_pkHoldGr);
         }
         // LED de clip + etiqueta: bajo el medidor OUTPUT, centrado con su
-        // canal â€” lejos de los ticks del MASTER y de la etiqueta GATE
+        // canal — lejos de los ticks del MASTER y de la etiqueta GATE
         {
             static float hold = 0.0f;
             const float fl = g_clipFlag.exchange(0.0f);
@@ -12161,6 +12161,13 @@ int main(int argc, char** argv) {
     const int fs = 48000;
     const char* mode = (argc > 1) ? argv[1] : "all";
     if (const char* ce = getenv("CABENGINE")) g_cabEngine.store(atoi(ce) == 0 ? 0 : 1);
+    // Todo el banco trabaja con rutas relativas (_dsp_out/, _nmaref/, perfiles/).
+    // Se anclan al directorio del EXE para que los comandos del README funcionen
+    // igual lanzados desde la raiz del repo que desde native/: si no, la prueba
+    // E0 fallaba por el sitio desde el que se ejecutaba, no por el codigo, y el
+    // autotest salia con error teniendo todo en verde.
+    const std::wstring exeDir = exeDirW();
+    if (!exeDir.empty()) SetCurrentDirectoryW(exeDir.c_str());
     printf("[motor de gabinete: %s]\n", g_cabEngine.load() == 1 ? "IR fisica" : "biquads clasicos");
     system("if not exist _dsp_out mkdir _dsp_out");
     if (strcmp(mode, "nam2") == 0) {

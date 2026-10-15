@@ -53,6 +53,7 @@ native/_*.bin
 native/_*.f32
 native/_ga/
 native/_dsp_out/
+_dsp_out/
 native/__pycache__/
 *.prepolish
 native/_svgrender/node_modules/
