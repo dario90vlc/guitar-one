@@ -6757,10 +6757,7 @@ static void drawPedalSwitchKnob(G::Graphics& g, int t, G::REAL sx, G::REAL sy) {
     const G::REAL tx = sx + PED_TRK_X, ty = sy + PED_TRK_Y, tw = PED_TRK_W, th = PED_TRK_H;
     // LED de estado, a la izquierda del nombre
     {
-        if (on) {
-            G::SolidBrush g1(G::Color(90, ac.GetR(), ac.GetG(), ac.GetB()));
-            g.FillEllipse(&g1, sx + 5.4f, sy + 12.4f, 13.2f, 13.2f);
-        }
+        // Sin resplandor detras del LED: el lenguaje plano enciende un punto.
         const G::Color lit(on ? G::Color(255,
             (BYTE)(ac.GetR() + 50 > 255 ? 255 : ac.GetR() + 50),
             (BYTE)(ac.GetG() + 50 > 255 ? 255 : ac.GetG() + 50),
@@ -6771,15 +6768,7 @@ static void drawPedalSwitchKnob(G::Graphics& g, int t, G::REAL sx, G::REAL sy) {
     // mando: 12x10 que viaja por la pista
     const G::REAL kx = on ? (tx + tw - 14.0f) : (tx + 2.0f);
     const G::REAL ky = ty + 2.0f;
-    if (on) {
-        G::SolidBrush gl(G::Color(70, ac.GetR(), ac.GetG(), ac.GetB()));
-        roundRect(g, kx - 4.0f, ky - 4.0f, 20.0f, 18.0f, 8.0f, nullptr, &gl);
-    }
-    G::LinearGradientBrush kb(G::RectF(kx, ky, 12.0f, 10.0f),
-        on ? ac : G::Color(255, 0x76, 0x72, 0x6a),
-        on ? G::Color(255, (BYTE)(ac.GetR()*0.55f), (BYTE)(ac.GetG()*0.55f),
-                          (BYTE)(ac.GetB()*0.55f))
-           : G::Color(255, 0x45, 0x42, 0x3b), 90.0f);
+    G::SolidBrush kb(on ? ac : G::Color(255, 0x76, 0x72, 0x6a));
     roundRect(g, kx, ky, 12.0f, 10.0f, 3.5f, nullptr, &kb);
 }
 // Valor normalizado de una perilla de pedal (el WAH va de -80 a -20)
@@ -6831,10 +6820,10 @@ static void buildSlotTemplates() {
         //  estante: con el fondo en negro (el DIB nace a cero) cada pedal
         //  aparecia con un marco opaco que rompia el cristal de la unidad.
         {
-            const G::REAL f0 = (G::REAL)(PED_ROW_Y[0] - PED_TMPL_M - PRE_SHELF_Y)/(G::REAL)PED_SHELF_H;
-            const G::REAL f1 = (G::REAL)(PED_ROW_Y[0] + PED_SLOT_H + PED_TMPL_M - PRE_SHELF_Y)/(G::REAL)PED_SHELF_H;
-            G::LinearGradientBrush bgFill(G::RectF(0.0f, 0.0f, (G::REAL)PED_TMPL_W, (G::REAL)PED_TMPL_H),
-                                          glassBandAt(f0), glassBandAt(f1), 90.0f);
+            // El estante plano es UN tono: ya no hay banda que reproducir por
+            // altura (antes se interpolaba el cristal del estante en la franja
+            // que ocupa el modulo).
+            G::SolidBrush bgFill(glassBandAt(0.0f));
             g.FillRectangle(&bgFill, 0.0f, 0.0f, (G::REAL)PED_TMPL_W, (G::REAL)PED_TMPL_H);
         }
 
@@ -6956,23 +6945,15 @@ static void buildStaticScene(int W, int H) {
     //  sombra de contacto y su material), no el fondo: cuando el fondo hace
     //  de foco, todo lo que va encima parece una calcomania.
     {
-        G::SolidBrush bg(kBack);
+        G::SolidBrush bg(kFBg);
         g.FillRectangle(&bg, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
-        G::LinearGradientBrush wash(G::RectF(0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H*0.62f),
-                                    G::Color(16, 0xff, 0xff, 0xff),
-                                    G::Color(0, 0xff, 0xff, 0xff), 90.0f);
-        g.FillRectangle(&wash, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H*0.62f);
     }
 
-    // ---- CABECERA: la banda de cristal por la que entra la luz de la escena ---
+    // ---- CABECERA: una banda plana. La separacion la da el TONO, no la luz. ---
     {
-        G::LinearGradientBrush hb(G::RectF(0.0f, 0.0f, (G::REAL)WIN_W, 72.0f),
-                                  kGlassTop, kGlassBot, 90.0f);
+        G::SolidBrush hb(kFSurf);
         g.FillRectangle(&hb, 0.0f, 0.0f, (G::REAL)WIN_W, 72.0f);
-        G::LinearGradientBrush hl(G::RectF(0.0f, 0.0f, (G::REAL)WIN_W, 26.0f),
-                                  kEdgeTopHi, G::Color(0, 0xff, 0xff, 0xff), 90.0f);
-        g.FillRectangle(&hl, 0.0f, 0.0f, (G::REAL)WIN_W, 26.0f);
-        G::Pen rule(kSurfLn, 1.0f);
+        G::Pen rule(kFLine, 1.0f);
         g.DrawLine(&rule, 0.0f, 71.5f, (G::REAL)WIN_W, 71.5f);
     }
     // ---- MARCA: wordmark en marfil, con el cuadro ambar de la casa ----------
@@ -7438,21 +7419,14 @@ static void buildStaticScene(int W, int H) {
         // banda de la cadena de senal: el hueco que aloja los chips del
         // recorrido del sonido y el boton AFINADOR
         glassWell(g, (G::REAL)ART_X, (G::REAL)CHAIN_Y, (G::REAL)ART_W, (G::REAL)CHAIN_H, kRWell);
-        // base del boton AFINADOR: cuerpo con degradado y brillo de bisel;
-        // diapason, texto y hover/estado viven en la capa dinamica (el icono
-        // se enciende en verde cuando el modal esta abierto)
+        // base del boton AFINADOR: pastilla plana. El diapason, el texto y el
+        // hover/estado viven en la capa dinamica (el icono se enciende en verde
+        // cuando el modal esta abierto).
         {
-            softShadow(g, (G::REAL)TUNER_BTN_X, (G::REAL)TUNER_BTN_Y,
-                       (G::REAL)TUNER_BTN_W, (G::REAL)TUNER_BTN_H, 8, 48);
-            G::LinearGradientBrush bg(G::RectF((G::REAL)TUNER_BTN_X, (G::REAL)TUNER_BTN_Y,
-                                               (G::REAL)TUNER_BTN_W, (G::REAL)TUNER_BTN_H),
-                                      kBtnBg, kBtnBgL, 90.0f);   // era azul marino
-            G::Pen tp3(kBtnLn, 1.0f);
+            G::SolidBrush bg(kFSurf2);
+            G::Pen tp3(kFLine, 1.0f);
             roundRect(g, (G::REAL)TUNER_BTN_X, (G::REAL)TUNER_BTN_Y,
                       (G::REAL)TUNER_BTN_W, (G::REAL)TUNER_BTN_H, 8, &tp3, &bg);
-            G::SolidBrush hl(G::Color(36, 0x9c, 0x98, 0x90));
-            roundRect(g, (G::REAL)TUNER_BTN_X + 6.0f, (G::REAL)TUNER_BTN_Y + 2.0f,
-                      (G::REAL)TUNER_BTN_W - 12.0f, 2.0f, 1.0f, nullptr, &hl);
         }
     }
 
@@ -8361,11 +8335,9 @@ static void t3kDraw(G::Graphics& g)
         const bool hov = t3kHit(g_mouseX, g_mouseY) == (T3K_HIT_CARD0 + i);
         const bool sel = (g_t3kSel == i);
         const G::Color ac = t3kAccent(it.gear.c_str());
-        G::LinearGradientBrush cb(G::RectF(cx, cy, (G::REAL)T3K_CARD_W, (G::REAL)T3K_CARD_H),
-                                  hov ? G::Color(0xff, 0x17, 0x16, 0x18) : G::Color(255, 0x12, 0x16, 0x1c),
-                                  G::Color(255, 0x0c, 0x0f, 0x13), 90.0f);
-        G::Pen cp((hov || sel) ? G::Color(255, ac.GetR(), ac.GetG(), ac.GetB()) : G::Color(0xff, 0x1c, 0x1b, 0x1d),
-                  (hov || sel) ? 1.8f : 1.2f);
+        G::SolidBrush cb(hov ? kFSurf3 : kFSurf2);
+        G::Pen cp((hov || sel) ? G::Color(255, ac.GetR(), ac.GetG(), ac.GetB()) : kFLine,
+                  (hov || sel) ? 1.6f : 1.0f);
         roundRect(g, cx, cy, (G::REAL)T3K_CARD_W, (G::REAL)T3K_CARD_H, 10.0f, &cp, &cb);
         // foto (recorte cuadrado centrado)
         G::SolidBrush phb(G::Color(255, 0x18, 0x1c, 0x22));
@@ -9348,12 +9320,10 @@ static void paintWindow(HWND hwnd) {
             const bool inCh = chainHas(t);
             const bool hov = !inCh && mouseIn((int)tx, (int)ty, (int)(tx + PAL_TILE_W), (int)(ty + PAL_TILE_H));
             G::Color ac = colFx(t);
-            G::LinearGradientBrush tb(G::RectF(tx, ty, PAL_TILE_W, PAL_TILE_H),
-                hov ? G::Color(0xff, 0x1c, 0x1b, 0x1d) : G::Color(0xff, 0x17, 0x16, 0x18),
-                G::Color(255, 0x10, 0x16, 0x1b), 90.0f);
-            G::Pen tp(inCh ? G::Color(0xff, 0x21, 0x1f, 0x21)
+            G::SolidBrush tb(hov ? kFSurf3 : kFSurf2);
+            G::Pen tp(inCh ? kFLine
                      : hov  ? G::Color(255, ac.GetR(), ac.GetG(), ac.GetB())
-                            : G::Color(255, 0x18, 0x18, 0x1b), 1.6f);
+                            : kFLine, 1.6f);
             roundRect(g, tx, ty, PAL_TILE_W, PAL_TILE_H, 9, &tp, &tb);
             drawFxGlyph(g, t, tx + 32.0f, ty + 34.0f, 22.0f,
                         inCh ? G::Color(0xff, 0x5a, 0x56, 0x51)
@@ -9736,15 +9706,11 @@ static void paintWindow(HWND hwnd) {
             bool ah = mouseIn(g_panelApply.left, g_panelApply.top, g_panelApply.right, g_panelApply.bottom);
             bool ch = mouseIn(g_panelCancel.left, g_panelCancel.top, g_panelCancel.right, g_panelCancel.bottom);
             {
-                G::LinearGradientBrush abr(G::RectF((G::REAL)g_panelApply.left, (G::REAL)g_panelApply.top, 180, 40),
-                                           ah ? kTxtMd : kAcc,
-                                           ah ? G::Color(0xff, 0x82, 0x7d, 0x76) : G::Color(0xff, 0x48, 0x45, 0x41), 90.0f);
-                G::Pen appn(G::Color(90, 255, 255, 255), 1.0f);
+                G::SolidBrush abr(ah ? kTxtMd : kAcc);
+                G::Pen appn(ah ? kFLine : kAccGlb, 1.0f);
                 roundRect(g, (G::REAL)g_panelApply.left, (G::REAL)g_panelApply.top, 180, 40, 8, &appn, &abr);
-                G::LinearGradientBrush cbr(G::RectF((G::REAL)g_panelCancel.left, (G::REAL)g_panelCancel.top, 180, 40),
-                                           ch ? kBtnBgH : kBtnBg,
-                                           ch ? G::Color(0xff, 0x17, 0x16, 0x18) : G::Color(0xff, 0x12, 0x11, 0x13), 90.0f);
-                G::Pen cbp(ch ? G::Color(255, 0x24, 0x24, 0x28) : kBtnLn, 1.0f);
+                G::SolidBrush cbr(ch ? kFSurf3 : kFSurf2);
+                G::Pen cbp(kFLine, 1.0f);
                 roundRect(g, (G::REAL)g_panelCancel.left, (G::REAL)g_panelCancel.top, 180, 40, 8, &cbp, &cbr);
             }
             G::SolidBrush tb(G::Color(255, 255, 255, 255));
@@ -9887,11 +9853,8 @@ static void paintWindow(HWND hwnd) {
         g.MeasureString(g_toast, -1, &fTo, G::RectF(0, 0, 1200.0f, 60.0f), nullptr, &tbx);
         const G::REAL tw = tbx.Width + 44.0f, th = 36.0f;
         const G::REAL txx = ((G::REAL)WIN_W - tw)*0.5f, tyy = 84.0f;
-        softShadow(g, txx, tyy, tw, th, 8.0f, 170);
-        G::LinearGradientBrush tbg(G::RectF(txx, tyy, tw, th),
-                                   G::Color(255, 0x22, 0x22, 0x28),
-                                   G::Color(255, 0x14, 0x14, 0x18), 90.0f);
-        G::Pen tpen(G::Color(255, kAcc.GetR(), kAcc.GetG(), kAcc.GetB()), 1.4f);
+        G::SolidBrush tbg(kFSurf2);
+        G::Pen tpen(kAcc, 1.0f);
         roundRect(g, txx, tyy, tw, th, 8.0f, &tpen, &tbg);
         G::SolidBrush ttx(kTxtHi);
         g.DrawString(g_toast, -1, &fTo, G::RectF(txx, tyy, tw, th), &sfC, &ttx);
