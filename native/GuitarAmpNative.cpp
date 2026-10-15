@@ -7106,24 +7106,10 @@ static void buildStaticScene(int W, int H) {
                     // los tres botones abajo, dibujados a trazo (nitidos a ese tamano).
                     G::SolidBrush lb2(on ? kAcc : G::Color(255, 0x44, 0x44, 0x4a));
                     g.FillEllipse(&lb2, bx + 8.0f, ry + 9.0f, 10.0f, 10.0f);
-                    // badge de tipo (lenguaje TONE3000), arriba a la derecha
+                    // Sin badge de tipo: la celda respira. El tipo (AMP/NAM) ya lo
+                    // dice la fila de chips de la pantalla del PERFIL y lo implica el
+                    // nombre; aqui solo estorbanda. sm vive para la linea de datos.
                     nam::Model* sm = snap[i]->model ? snap[i]->model.get() : nullptr;
-                    {
-                        std::wstring gt = (sm && !sm->gearType.empty())
-                            ? std::wstring(sm->gearType.begin(), sm->gearType.end()) : L"";
-                        if (gt.empty()) gt = L"NAM";
-                        else { std::transform(gt.begin(), gt.end(), gt.begin(), ::towupper); }
-                        if (gt.size() > 7) gt.resize(7);
-                        if (sm && sm->a2 && gt != L"NAM") gt += L"2";
-                        G::Font fB(L"Segoe UI", 7.0f, G::FontStyleBold);
-                        const G::REAL bwg = measureSpaced(g, gt.c_str(), fB, 0.3f) + 12.0f;
-                        const G::REAL bxg = bx + (G::REAL)NAM_BLK_W - bwg - 8.0f;
-                        const G::REAL byg = ry + 8.0f;
-                        G::SolidBrush bb2(G::Color(255, 0x10, 0x10, 0x12));
-                        G::Pen bpe(G::Color(0xff, 0x27, 0x25, 0x27), 1.0f);
-                        roundRect(g, bxg, byg, bwg, 12.0f, 6.0f, &bpe, &bb2);
-                        drawSpaced(g, gt.c_str(), fB, on ? kAcc : G::Color(0xc8, 0x82, 0x7d, 0x76), bxg + 6.0f, byg + 1.5f, 0.3f);
-                    }
                     // nombre del fichero: una linea medida + una segunda con el
                     // material y el autor, que es lo que identifica la captura.
                     drawSpacedFit(g, snap[i]->name.c_str(), G::FontStyleBold,
