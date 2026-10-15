@@ -163,6 +163,20 @@ static const G::Color kEdgeTopLo  ( 18, 0xff, 0xff, 0xff);  // luz que se apaga
 static const G::Color kEdgeBot    ( 12, 0x00, 0x00, 0x00);  // canto inferior
 static const G::Color kAmbShadow  (110, 0x00, 0x00, 0x00);  // sombra ambiental
 
+// --- Lenguaje plano (v3): el lenguaje ACTUAL -------------------------------
+// Un tono por superficie y un filete de 1px. Sin degradados, sin sombras, sin
+// bandas de luz: la profundidad la da el TONO y la unica luz de la interfaz es
+// el acento. (El cristal de arriba queda solo como referencia de lo que habia.)
+static const G::Color kFBg   (255, 0x17, 0x17, 0x1a);   // lienzo
+static const G::Color kFSurf (255, 0x1f, 0x1f, 0x23);   // placa
+static const G::Color kFSurf2(255, 0x26, 0x26, 0x2b);   // control, pastilla, ranura
+static const G::Color kFSurf3(255, 0x2e, 0x2e, 0x34);   // superficie alta (hover/activo)
+static const G::Color kFLine (255, 0x2a, 0x2a, 0x30);   // filete de placa
+static const G::Color kFTxt  (255, 0xf2, 0xf1, 0xee);
+static const G::Color kFTxt2 (255, 0xa6, 0xa3, 0x9d);
+static const G::Color kFTxt3 (255, 0x6f, 0x6c, 0x67);
+static const G::Color kFHot  (255, 0xff, 0x5f, 0x57);
+
 // --- Radios y aire ----------------------------------------------------------
 static const G::REAL kRPanel = 12.0f;   // paneles y unidades
 static const G::REAL kRCard  = 10.0f;   // tarjetas y modulos
@@ -5725,18 +5739,12 @@ static G::Bitmap* scaledStripFrame(G::Image* strip, int d, int fr) {
     return bm;
 }
 
-// Sombra proyectada, emulada con capas concentricas (GDI+ no tiene blur).
-// Direccional hacia abajo-derecha (luz arriba-izquierda), que es lo que hace
-// que un panel se lea como una placa apoyada y no como un rectangulo pintado.
+// Sombra proyectada. El lenguaje plano NO proyecta sombras: la profundidad la da
+// el tono. La funcion se queda con su firma (y sin cuerpo) para no tener que
+// tocar los sitios que la llaman ni las piezas que la reciben por parametro.
 static void softShadow(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
                        G::REAL r, BYTE baseAlpha = 120) {
-    for (int i = 4; i >= 1; --i) {
-        const G::REAL grow = (G::REAL)i*3.0f;
-        const BYTE a = (BYTE)(baseAlpha/(i + 2));
-        G::SolidBrush b(G::Color(a, 0, 0, 0));
-        roundRect(g, x - grow + 2.0f, y - grow + 5.0f, w + grow*2.0f, h + grow*2.0f,
-                  r + grow, nullptr, &b);
-    }
+    (void)g; (void)x; (void)y; (void)w; (void)h; (void)r; (void)baseAlpha;
 }
 
 // ---------------------------------------------------------------------------
@@ -5759,79 +5767,43 @@ static void pressVeil(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h
 }
 
 // ---------------------------------------------------------------------------
-//  Piezas de CRISTAL (lenguaje v2). panelBase/wellBase se conservan como
-//  envoltorios finos durante la migracion; a partir del lote 2 toda superficie
-//  visible pasa por aqui.
+//  SUPERFICIES. El lenguaje plano (v3) es el ACTUAL desde el rediseno. Estas
+//  funciones conservan su nombre y su FIRMA originales para no tocar los ~40
+//  sitios que las llaman, pero ya delegan en las piezas planas: UNA sola
+//  implementacion de cada superficie, la que el autotest verifica con pixeles
+//  en J1..J6 y que este rediseno no puede degradar sin que salte el banco.
+//  `shadow` se acepta y se ignora: el lenguaje plano no proyecta sombras.
 // ---------------------------------------------------------------------------
-// PLACA DE CRISTAL: el caballo de batalla del rediseno.
-//   sombra ambiental ancha ->  flota sobre el lienzo, no pegada a el
-//   dos paradas translucidas  ->  el fondo se intuye por debajo
-//   banda superior iluminada  ->  la unica luz del sistema
-//   filete vivo arriba, nada abajo  ->  una arista, no un marco
-// El degradado es de dos paradas y el borde lleva un solo filete: cualquier
-// superficie con mas que esto se lee como bisel, y el bisel es lo que el
-// lenguaje v2 ha venido a quitar.
+// Las piezas planas viven en su seccion, mas abajo; se declaran aqui para que
+// estas puedan delegar en ellas. (La definicion trae los argumentos por defecto.)
+static void flatPanel(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
+                      G::REAL r, bool border);
+static void flatWell(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, G::REAL r);
+static void flatPillBody(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
+                         bool hov, bool lit, G::Color litCol);
+
+// PLACA: un tono y un filete de 1px. La usan casi todos los paneles de la app,
+// asi que el cambio a plano se ve de golpe en toda la ventana.
 static void glassPanel(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
                        G::REAL r, bool shadow = true) {
-    if (shadow) softShadow(g, x, y, w, h, r, 130);
-    {
-        G::LinearGradientBrush bg(G::RectF(x, y, w, h), kGlassTop, kGlassBot, 90.0f);
-        G::Pen bp(kSurfLn, 1.0f);
-        roundRect(g, x, y, w, h, r, &bp, &bg);
-    }
-    {   // luz que nace en el canto superior y se apaga antes de llegar al medio
-        G::LinearGradientBrush gl(G::RectF(x + 1.0f, y + 1.0f, w - 2.0f, h*0.5f),
-                                  kEdgeTopHi, G::Color(0, 0xff, 0xff, 0xff), 90.0f);
-        roundRect(g, x + 1.0f, y + 1.0f, w - 2.0f, h*0.5f, r - 1.0f, nullptr, &gl);
-    }
-    G::Pen hi(kEdgeTopLo, 1.0f);
-    g.DrawLine(&hi, x + r + 1.0f, y + 1.0f, x + w - r - 1.0f, y + 1.0f);
-    // el canto inferior se apoya: una sombra de 1px en lugar de un filete claro
-    G::Pen lo(kEdgeBot, 1.0f);
-    g.DrawLine(&lo, x + r*0.5f, y + h - 1.0f, x + w - r*0.5f, y + h - 1.0f);
+    (void)shadow;
+    flatPanel(g, x, y, w, h, r, true);
 }
 
-// El color que tendria glassPanel a una altura relativa f de un panel, ya
-// compuesto sobre el lienzo. Lo usa la plantilla de pedales: se blitea OPACA,
-// asi que los 6px de margen tienen que traer cocido el tono del cristal de la
-// unidad. Sin esto, cada pedal lucia un marco opaco sobre el estante.
+// El tono del estante de pedales. Lo usa la plantilla de pedales: se blitea
+// OPACA, asi que los 6px de margen tienen que traer cocido el tono de la unidad
+// sobre la que se apoya. Sin esto, cada pedal lucia un marco opaco sobre el
+// estante. (Con el estante plano el tono ya no depende de la altura.)
 static G::Color glassBandAt(G::REAL f) {
-    if (f < 0.0f) f = 0.0f;
-    if (f > 1.0f) f = 1.0f;
-    const int ta[3] = { kGlassTop.GetR(), kGlassTop.GetG(), kGlassTop.GetB() };
-    const int tb[3] = { kGlassBot.GetR(), kGlassBot.GetG(), kGlassBot.GetB() };
-    const int back[3] = { kBack.GetR(), kBack.GetG(), kBack.GetB() };
-    const G::REAL a = (kGlassTop.GetA() +
-                      ((G::REAL)kGlassBot.GetA() - kGlassTop.GetA())*f)/255.0f;
-    G::REAL out[3];
-    for (int i = 0; i < 3; ++i) {
-        const G::REAL c = ta[i] + (tb[i] - ta[i])*f;
-        out[i] = c*a + (G::REAL)back[i]*(1.0f - a);
-    }
-    // y la banda de luz superior de glassPanel, que llega hasta la mitad
-    if (f < 0.5f) {
-        const G::REAL la = (kEdgeTopHi.GetA()/255.0f)*(1.0f - f*2.0f);
-        for (int i = 0; i < 3; ++i) out[i] = 255.0f*la + out[i]*(1.0f - la);
-    }
-    return G::Color(255, (BYTE)(out[0] + 0.5f), (BYTE)(out[1] + 0.5f), (BYTE)(out[2] + 0.5f));
+    (void)f;
+    return kFSurf;   // el estante plano es un solo tono: no hay banda que seguir
 }
 
-// POZO DE CRISTAL: la superficie hundida del sistema (visualizadores, canales de// medidor, ranuras). La profundidad la da la sombra interior de arriba, que es
-// la misma luz de glassPanel entrando en el hueco.
+// POZO: la superficie hundida del sistema (visualizadores, canales de medidor,
+// ranuras). El pozo plano se distingue por el TONO (el del lienzo), no por una
+// sombra interior.
 static void glassWell(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, G::REAL r) {
-    {
-        G::SolidBrush bg(kWellA);
-        roundRect(g, x, y, w, h, r, nullptr, &bg);
-    }
-    {   // sombra que cae desde el borde superior: el pozo se abre hacia abajo
-        G::LinearGradientBrush sh(G::RectF(x + 1.0f, y + 1.0f, w - 2.0f, r*2.4f),
-                                  G::Color(150, 0, 0, 0), G::Color(0, 0, 0, 0), 90.0f);
-        roundRect(g, x + 1.0f, y + 1.0f, w - 2.0f, r*2.4f, r - 1.0f, nullptr, &sh);
-    }
-    G::Pen bp(kWellLn, 1.0f);
-    roundRect(g, x, y, w, h, r, &bp, nullptr);
-    G::Pen gl(G::Color(26, 0xff, 0xff, 0xff), 1.0f);
-    g.DrawLine(&gl, x + r + 1.0f, y + 1.0f, x + w - r - 1.0f, y + 1.0f);
+    flatWell(g, x, y, w, h, r);
 }
 
 // LAVADO: el apoyo comun de hover, seleccion y foco. Se pinta DENTRO de la caja
@@ -5842,39 +5814,16 @@ static void glassWash(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h
     roundRect(g, x + 1.0f, y + 1.0f, w - 2.0f, h - 2.0f, r - 1.0f, nullptr, &b);
 }
 
-// PASTILLA DE CRISTAL: boton de accion. Tres estados y un solo cambio de luz:
-// reposo = cristal con el lienzo debajo; hover = luz que pasa; activo = ambar,
+// PASTILLA: boton de accion. Los estados cambian de TONO, nunca de luz:
+// reposo = superficie media; hover = un escalon mas claro; activo = ambar,
 // porque el ambar sigue significando "esto suena" y no "esto es importante".
 // El CUERPO de la pastilla, sin el velo de pulsacion: lo comparten los botones
 // que se pintan enteros cada frame y los que tienen la base cacheada en la
 // escena estatica (esos no pueden coger pressVeil: congelaria el estado).
 static void glassPillBody(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
                           bool hov, bool lit, G::Color litCol, bool shadow = true) {
-    const G::REAL r = kRPill;
-    if (lit) {   // el piloto manda: la pastilla entera se tiende de el
-        G::SolidBrush gl(G::Color(26, litCol.GetR(), litCol.GetG(), litCol.GetB()));
-        g.FillEllipse(&gl, x + w*0.5f - 24.0f, y + h*0.5f - 24.0f, 48.0f, 48.0f);
-    }
-    if (shadow) softShadow(g, x, y, w, h, r, 100);
-    {
-        G::LinearGradientBrush bg(G::RectF(x, y, w, h),
-                                  lit  ? G::Color(255, 0x2b, 0x24, 0x18)
-                                       : (hov ? kBtnBgH : kBtnBg),
-                                  lit  ? G::Color(255, 0x1a, 0x15, 0x0e) : kBtnBgL,
-                                  90.0f);
-        G::Pen bp(lit ? G::Color(190, litCol.GetR(), litCol.GetG(), litCol.GetB()) : kBtnLn, 1.0f);
-        roundRect(g, x, y, w, h, r, &bp, &bg);
-    }
-    {   // la luz del canto superior: la firma del sistema, en todas las pastillas
-        G::LinearGradientBrush gl(G::RectF(x + 1.0f, y + 1.0f, w - 2.0f, h*0.5f),
-                                  G::Color(lit ? 44 : 28, 0xff, 0xff, 0xff),
-                                  G::Color(0, 0xff, 0xff, 0xff), 90.0f);
-        roundRect(g, x + 1.0f, y + 1.0f, w - 2.0f, h*0.5f, r - 1.0f, nullptr, &gl);
-    }
-    if (lit) {   // LED propio, sin halo: el brillo es del piloto
-        G::SolidBrush l2(G::Color(255, 0xff, 0xdd, 0x9a));
-        g.FillEllipse(&l2, x + 9.0f, y + h*0.5f - 2.0f, 4.0f, 4.0f);
-    }
+    (void)shadow;
+    flatPillBody(g, x, y, w, h, hov, lit, litCol);
 }
 
 static void glassPill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
@@ -5894,15 +5843,8 @@ static void glassPill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h
 //  y se enchufan zona a zona: mientras un panel siga pintando con las viejas,
 //  el resto no se mueve. El ambar NO cambia: es la marca del producto.
 // ============================================================================
-static const G::Color kFBg   (255, 0x17, 0x17, 0x1a);   // lienzo
-static const G::Color kFSurf (255, 0x1f, 0x1f, 0x23);   // placa
-static const G::Color kFSurf2(255, 0x26, 0x26, 0x2b);   // control, pastilla, ranura
-static const G::Color kFSurf3(255, 0x2e, 0x2e, 0x34);   // superficie alta (hover/activo)
-static const G::Color kFLine (255, 0x2a, 0x2a, 0x30);   // filete de placa
-static const G::Color kFTxt  (255, 0xf2, 0xf1, 0xee);
-static const G::Color kFTxt2 (255, 0xa6, 0xa3, 0x9d);
-static const G::Color kFTxt3 (255, 0x6f, 0x6c, 0x67);
-static const G::Color kFHot  (255, 0xff, 0x5f, 0x57);
+// Los tokens del lenguaje plano viven arriba, con los demas: los necesita
+// glassBandAt, que se define antes de esta seccion.
 
 // Mezcla de un color sobre otro. Evita el "tinte a ojo" repartido por el codigo.
 static G::Color flatTint(G::Color base, G::Color tint, G::REAL k) {
@@ -6020,14 +5962,11 @@ static void flatMeterFill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w,
 // que suena y la unidad activa es la que suena.
 static void sectionHeader(G::Graphics& g, const WCHAR* s, G::REAL x, G::REAL y,
                           G::REAL w, bool active, G::Color txt) {
-    if (active) {   // la regla nace encendida y se apaga hacia la derecha
-        G::Pen p(kSurfLn, 1.0f);
-        g.DrawLine(&p, x, y, x + w*0.58f, y);
-        G::LinearGradientBrush gl(G::RectF(x, y, w*0.42f, 1.0f),
-                                  accA(230), G::Color(0, 0xff, 0xa5, 0x1f), 0.0f);
-        g.FillRectangle(&gl, x, y, w*0.42f, 1.0f);
+    if (active) {   // la unidad activa lleva la regla en el acento: marca lo que suena
+        G::Pen p(kAcc, 1.0f);
+        g.DrawLine(&p, x, y, x + w, y);
     } else {
-        G::Pen p(kSurfLn, 1.0f);
+        G::Pen p(kFLine, 1.0f);
         g.DrawLine(&p, x, y, x + w, y);
     }
     drawSpacedFit(g, s, G::FontStyleBold, txt, x + 2.0f, y + 5.0f, 1.6f,
@@ -6046,47 +5985,19 @@ static void rackUnit(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h)
                     x + w - 14.0f, y + (G::REAL)UNIT_HDR_H + 1.0f);
 }
 
-// BOTON de la cabecera: pastilla de cristal con piloto. Ya no lleva gloss ni
-// bisel -eran las dos marcas de "plastico pulido" del lenguaje viejo-: lleva la
-// misma luz desde arriba que todo lo demas, y el estado lo dice el piloto.
+// BOTON de la cabecera: pastilla plana con piloto. Ya no lleva gloss, bisel ni
+// luz de canto -las tres marcas de "plastico pulido" del lenguaje viejo-: el
+// estado lo dice el TONO (reposo/hover/activo) y el piloto.
 static void topBtn(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
                    const WCHAR* label, G::Font& f, bool hov, bool lit, G::Color litCol) {
-    const G::REAL r = kRBtn;
-    if (lit) {   // el piloto se tiende sobre el cristal: estado, no adorno
-        G::SolidBrush gl(G::Color(26, litCol.GetR(), litCol.GetG(), litCol.GetB()));
-        g.FillEllipse(&gl, x + w*0.5f - 26.0f, y + h*0.5f - 26.0f, 52.0f, 52.0f);
-    }
-    softShadow(g, x, y, w, h, r, 110);
-    {
-        G::LinearGradientBrush bg(G::RectF(x, y, w, h),
-                                  lit  ? G::Color(255, 0x2c, 0x24, 0x18)
-                                       : (hov ? kBtnBgH : kBtnBg),
-                                  lit  ? G::Color(255, 0x1a, 0x14, 0x0c) : kBtnBgL,
-                                  90.0f);
-        G::Pen bp(lit ? G::Color(190, litCol.GetR(), litCol.GetG(), litCol.GetB()) : kBtnLn, 1.0f);
-        roundRect(g, x, y, w, h, r, &bp, &bg);
-    }
-    {   // la luz del canto superior, la misma de todo el sistema
-        G::LinearGradientBrush gl(G::RectF(x + 1.0f, y + 1.0f, w - 2.0f, h*0.5f),
-                                  G::Color(lit ? 46 : 30, 0xff, 0xff, 0xff),
-                                  G::Color(0, 0xff, 0xff, 0xff), 90.0f);
-        roundRect(g, x + 1.0f, y + 1.0f, w - 2.0f, h*0.5f, r - 1.0f, nullptr, &gl);
-    }
-    if (lit) {   // piloto (sin halo: el brillo es del LED, no un adorno)
-        const G::REAL lx = x + 9.0f, ly = y + h*0.5f;
-        G::SolidBrush l2(G::Color(255,
-            (BYTE)(litCol.GetR() + 60 > 255 ? 255 : litCol.GetR() + 60),
-            (BYTE)(litCol.GetG() + 60 > 255 ? 255 : litCol.GetG() + 60),
-            (BYTE)(litCol.GetB() + 60 > 255 ? 255 : litCol.GetB() + 60)));
-        g.FillEllipse(&l2, lx - 2.0f, ly - 2.0f, 4.0f, 4.0f);
-    }
+    flatPillBody(g, x, y, w, h, hov, lit, litCol);
     G::StringFormat sfB;
     sfB.SetAlignment(G::StringAlignmentCenter);
     sfB.SetLineAlignment(G::StringAlignmentCenter);
     sfB.SetFormatFlags(G::StringFormatFlagsNoWrap | G::StringFormatFlagsNoClip);
-    G::SolidBrush tb(lit ? kTxtHi : (hov ? kTxtHi : kTxtMd));
+    G::SolidBrush tb(lit || hov ? kFTxt : kFTxt2);
     g.DrawString(label, -1, &f, G::RectF(x, y, w, h), &sfB, &tb);
-    pressVeil(g, x, y, w, h, r);
+    pressVeil(g, x, y, w, h, kRPill);
 }
 
 // Cuna (chevron) de la cadena de senal: vectorial, para no depender de fuentes
@@ -6096,14 +6007,11 @@ static void chevron(G::Graphics& g, G::REAL x, G::REAL y, G::REAL h, G::Color c)
     g.DrawLine(&p, x + h*0.40f, y + h*0.5f, x, y + h);
 }
 
-// Separador horizontal que se desvanece en los dos extremos
+// Separador horizontal: una linea de 1px. El desvanecido en los extremos era
+// una luz decorativa del lenguaje viejo (y ademas costaba dos pinceles).
 static void hairSep(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, BYTE a) {
-    const G::Color c0(0xe6e3dc), c1(a, 0xd6, 0xe6, 0xf5);
-    const G::REAL half = w*0.5f;
-    G::LinearGradientBrush lg(G::RectF(x, y, half + 1.0f, 1.0f), c0, c1, 0.0f);
-    g.FillRectangle(&lg, x, y, half, 1.0f);
-    G::LinearGradientBrush rg(G::RectF(x + half, y, half + 1.0f, 1.0f), c1, c0, 0.0f);
-    g.FillRectangle(&rg, x + half, y, w - half, 1.0f);
+    G::Pen p(G::Color(a, 0xff, 0xff, 0xff), 1.0f);
+    g.DrawLine(&p, x, y, x + w, y);
 }
 
 // Hash determinista: la textura de tolex no parpadea entre frames
@@ -6176,75 +6084,15 @@ static void drawAmpBox(G::Graphics& g, G::REAL bx, G::REAL by, G::REAL bw, G::RE
 // amp activo un punto de color sin repintar nada mas.
 static void drawKnobBody(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r,
                          G::Color tint = G::Color(0xff, 0x6e, 0x69, 0x63)) {
-    // Sombra proyectada: la perilla se apoya sobre la placa del panel.
-    softShadow(g, cx - r, cy - r, r*2, r*2, r, 120);
-    // Aro cromado exterior: es lo que convierte el disco en el mando de un
-    // equipo de verdad. El degradado va claro-arriba / oscuro-abajo y se gira
-    // un poco para que el brillo caiga a la izquierda, como la luz de la sala.
-    {
-        G::REAL orr = r*1.16f;
-        G::GraphicsPath op;
-        op.AddEllipse(cx - orr, cy - orr, orr*2, orr*2);
-        G::PathGradientBrush ob(&op);
-        ob.SetCenterColor(G::Color(255, 0x7c, 0x78, 0x70));
-        G::Color osur(255, 0x1a, 0x19, 0x17);
-        INT oc = 1;
-        ob.SetSurroundColors(&osur, &oc);
-        ob.SetCenterPoint(G::PointF(cx - orr*0.55f, cy - orr*0.65f));
-        g.FillPath(&ob, &op);
-        G::Pen oe(G::Color(255, 0x2a, 0x29, 0x26), 1.0f);
-        g.DrawEllipse(&oe, cx - orr, cy - orr, orr*2, orr*2);
-        G::Pen ol(G::Color(70, 0xff, 0xff, 0xff), 1.0f);
-        g.DrawArc(&ol, cx - orr + 1, cy - orr + 1, orr*2 - 2, orr*2 - 2, 200.0f, 140.0f);
-    }
-    // Cuerpo con degradado radial: la luz viene de arriba-izquierda.
-    {
-        G::GraphicsPath path;
-        path.AddEllipse(cx - r, cy - r, r*2, r*2);
-        G::PathGradientBrush pbr(&path);
-        pbr.SetCenterColor(tint);
-        G::Color sur(255, 0x14, 0x14, 0x13);
-        INT cnt = 1;
-        pbr.SetSurroundColors(&sur, &cnt);
-        pbr.SetCenterPoint(G::PointF(cx - r*0.30f, cy - r*0.40f));
-        g.FillPath(&pbr, &path);
-        G::Pen bp(G::Color(255, 0x0a, 0x0a, 0x09), 1.6f);
-        g.DrawEllipse(&bp, cx - r, cy - r, r*2, r*2);
-    }
-    // Brillo del domo (luz cenital).
-    {
-        G::GraphicsPath dome;
-        dome.AddPie(cx - r, cy - r, r*2, r*2, 190.0f, 160.0f);
-        G::PathGradientBrush dbr(&dome);
-        dbr.SetCenterColor(G::Color(70, 255, 255, 255));
-        G::Color ds(0, 255, 255, 255);
-        INT cnt = 1;
-        dbr.SetSurroundColors(&ds, &cnt);
-        dbr.SetCenterPoint(G::PointF(cx, cy - r*0.55f));
-        g.FillPath(&dbr, &dome);
-    }
-    // Tapa central fresada con muescas y su propio filo de luz.
-    {
-        G::REAL cr = r*0.44f;
-        G::GraphicsPath cp;
-        cp.AddEllipse(cx - cr, cy - cr, cr*2, cr*2);
-        G::PathGradientBrush cpb(&cp);
-        cpb.SetCenterColor(G::Color(255, 0x4a, 0x47, 0x3f));
-        G::Color cs(255, 0x1b, 0x1a, 0x19);
-        INT ccnt = 1;
-        cpb.SetSurroundColors(&cs, &ccnt);
-        g.FillPath(&cpb, &cp);
-        G::Pen ce(G::Color(255, 0x0d, 0x0d, 0x0c), 1.0f);
-        g.DrawEllipse(&ce, cx - cr, cy - cr, cr*2, cr*2);
-        G::Pen knurl(G::Color(120, 0, 0, 0), 1.0f);
-        for (int i = 0; i < 12; ++i) {
-            const G::REAL a = (G::REAL)i*(G::REAL)M_PI/6.0f;
-            const G::REAL s = (G::REAL)std::sin((double)a), c = (G::REAL)std::cos((double)a);
-            g.DrawLine(&knurl, cx + s*cr*0.72f, cy - c*cr*0.72f, cx + s*cr*0.98f, cy - c*cr*0.98f);
-        }
-        G::SolidBrush hl(G::Color(90, 255, 255, 255));
-        g.FillEllipse(&hl, cx - cr*0.55f, cy - cr*0.80f, cr*0.75f, cr*0.45f);
-    }
+    // Disco plano: un tono y un filete. Ni aro cromado, ni domo, ni tapa
+    // fresada: el mando del sistema plano es un disco, y el valor lo dice el
+    // arco de drawKnobDetail. `tint` se conserva en la firma (los sitios que
+    // llaman lo pasan) pero el lenguaje plano no tine el cuerpo del mando.
+    (void)tint;
+    G::SolidBrush bg(kFSurf2);
+    G::Pen bp(kFLine, 1.0f);
+    g.FillEllipse(&bg, cx - r, cy - r, r*2, r*2);
+    g.DrawEllipse(&bp, cx - r, cy - r, r*2, r*2);
 }
 
 // Detalle del knob (dinamico): aro de escala, arco de valor, puntero, borde de estado
@@ -6262,16 +6110,16 @@ static void drawKnobDetail(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, fl
     const bool mini = (r < 18.0f);   // (no usar 'small': es macro de rpcndr.h)
     const G::REAL ar = r + (mini ? 2.6f : 3.4f);    // radio del aro de valor
     {
-        G::Pen track(G::Color(34, 0xe6, 0xe3, 0xdc), mini ? 1.1f : 1.4f);
+        G::Pen track(kFSurf3, mini ? 2.4f : 3.0f);
         track.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
         g.DrawArc(&track, cx - ar, cy - ar, ar*2, ar*2, 135.0f, 270.0f);
         if (v01 > 0.002f) {
             G::REAL sweep = 270.0f*v01;
             if (sweep < 9.0f) sweep = 9.0f;  // el minimo sigue leyendose como arco
-            G::Pen glow(G::Color(34, accent.GetR(), accent.GetG(), accent.GetB()), mini ? 3.2f : 4.2f);
-            glow.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
-            g.DrawArc(&glow, cx - ar, cy - ar, ar*2, ar*2, 135.0f, sweep);
-            G::Pen arc(G::Color(255, accent.GetR(), accent.GetG(), accent.GetB()), mini ? 1.6f : 2.0f);
+            // Sin halo: el arco es una linea de valor, no un tubo de neon. Es el
+            // unico sitio del mando donde el acento aparece, y es porque el mando
+            // ES lo que suena (o lo que se esta ajustando).
+            G::Pen arc(accent, mini ? 2.4f : 3.0f);
             arc.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
             g.DrawArc(&arc, cx - ar, cy - ar, ar*2, ar*2, 135.0f, sweep);
         }
@@ -6289,20 +6137,16 @@ static void drawKnobDetail(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, fl
             g.DrawLine(p, cx + s*r0, cy - c*r0, cx + s*r1, cy - c*r1);
         }
     }
-    // borde de estado por encima del neutro
-    if (hover || active) {
-        G::Color bc = active ? G::Color(255, accent.GetR(), accent.GetG(), accent.GetB())
-                             : G::Color(255, 0x6b, 0x68, 0x61);
-        G::Pen bp(bc, active ? 2.2f : 1.8f);
+    // borde de estado: solo el acento cuando el mando esta ACTIVO (ajustandose).
+    // El hover no se marca con un aro neutro: el mando ya tiene el arco.
+    if (active) {
+        G::Pen bp(accent, 1.5f);
         g.DrawEllipse(&bp, cx - r, cy - r, r*2, r*2);
     }
-    // puntero (capsula blanca con punta redondeada)
+    // puntero (capsula clara, sin sombra proyectada)
     G::REAL ang = (-135.0f + 270.0f*v01)*(float)M_PI/180.0f;
     G::REAL s = std::sin(ang), c = std::cos(ang);
-    G::Pen sh(G::Color(90, 0, 0, 0), 3.4f);
-    sh.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
-    g.DrawLine(&sh, cx + s*r*0.20f, cy - c*r*0.20f + 1.0f, cx + s*r*0.78f, cy - c*r*0.78f + 1.0f);
-    G::Pen pp(G::Color(255, 0xf8, 0xf5, 0xee), 2.6f);
+    G::Pen pp(kFTxt, 2.6f);
     pp.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
     g.DrawLine(&pp, cx + s*r*0.20f, cy - c*r*0.20f, cx + s*r*0.78f, cy - c*r*0.78f);
 }
@@ -6650,56 +6494,14 @@ static void drawSwitch(G::Graphics& g, G::REAL x, G::REAL y, bool on) {
 // escala. Ya no es una caja con marcas cruzadas: es una ranura de instrumento.
 static void drawMeterTrack(G::Graphics& g, G::Font& fLbl, const WCHAR* label,
                            G::REAL x, G::REAL y, G::REAL w) {
-    G::SolidBrush tb(kTxtLo);
-    G::StringFormat sfM;
-    sfM.SetAlignment(G::StringAlignmentFar);   // etiqueta pegada al canal, sin invadirlo
-    g.DrawString(label, -1, &fLbl, G::RectF(x - 90, y - 8, 84, 26), &sfM, &tb);
-    // Canal: pozo de cristal. La luz entra por arriba, asi que el canto VIVO va
-    // abajo; al reves el canal se lee como una barra pegada encima del panel.
-    G::SolidBrush bg(kGlassWell);
-    roundRect(g, x, y, w, 9.0f, 3.0f, nullptr, &bg);
-    G::Pen bp(kWellLn, 1.0f);
-    roundRect(g, x, y, w, 9.0f, 3.0f, &bp, nullptr);
-    G::Pen tk(G::Color(70, kTxtLo.GetR(), kTxtLo.GetG(), kTxtLo.GetB()), 1.0f);
-    for (int i = 1; i < 4; ++i) {
-        G::REAL tx = x + w*i/4.0f;
-        g.DrawLine(&tk, tx, y + 2.0f, tx, y + 6.5f);
-    }
-    G::Pen gl(G::Color(34, 0xff, 0xff, 0xff), 1.0f);
-    g.DrawLine(&gl, x + 4.0f, y + 8.0f, x + w - 4.0f, y + 8.0f);
+    flatMeterTrack(g, fLbl, label, x, y, w);
 }
 
-// Relleno del medidor (dinamico): un traje CONTINUO de tres paradas (marfil ->
-// ambar -> techo) en vez de un arbol de LEDs. Los 24 segmentos de antes se
-// leian como un juguete, y el corte de color saltaba de golpe en el borde; con
-// el degradado la rampa se lee igual y no hay filos entre segmentos. La cabeza
-// del relleno lleva un filete claro para que no acabe en filo seco.
+// Relleno del medidor (dinamico): la rampa marfil -> ambar -> techo en un solo
+// pincel. Se conserva porque es INFORMACION (donde empieza a recortar), no
+// adorno: es el unico degradado que el lenguaje plano mantiene a proposito.
 static void drawMeterFill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, float v, float hold) {
-    if (v < 0) v = 0;
-    if (v > 1) v = 1;
-    const G::REAL ix = x + 1.0f, iy = y + 1.0f, iw = w - 2.0f, ih = 7.0f;
-    if (v > 0.002f) {
-        const G::REAL fw = iw*v;
-        G::LinearGradientBrush grad(G::RectF(ix, iy, iw, ih), kTxtMd, kHot,
-                                    G::LinearGradientModeHorizontal);
-        const G::Color stops[3] = { kTxtMd, kAcc, kHot };
-        const G::REAL  pos[3]   = { 0.0f, 0.70f, 0.92f };
-        grad.SetInterpolationColors(stops, pos, 3);
-        G::GraphicsPath clip;
-        clip.AddRectangle(G::RectF(ix, iy, fw, ih));
-        G::GraphicsState st = g.Save();
-        g.SetClip(&clip, G::CombineModeReplace);
-        g.FillRectangle(&grad, ix, iy, iw, ih);
-        g.Restore(st);
-        // cabeza del relleno: borde claro (la "punta" de la aguja)
-        G::SolidBrush hd(G::Color(190, kAccGlb.GetR(), kAccGlb.GetG(), kAccGlb.GetB()));
-        g.FillRectangle(&hd, ix + fw - 1.5f, iy, 1.5f, ih);
-    }
-    if (hold > 0.02f && hold <= 1.0f) {
-        const G::REAL hx = x + 1.0f + iw*hold;
-        G::SolidBrush hp(kTxtHi);
-        g.FillRectangle(&hp, hx - 1.0f, y - 1.5f, 1.0f, 12.0f);
-    }
+    flatMeterFill(g, x, y, w, v, hold);
 }
 
 // --- Lectura de valor (pop): UNA receta para el mando y para el slider MEZCLA.
