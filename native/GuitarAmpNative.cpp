@@ -4837,7 +4837,7 @@ static const int NAMROW_H   = 100;   // altura de la celda: estado, nombre y bot
 static const int NAMROW_Y   = NAM_BAY_Y + (NAM_BAY_H - NAMROW_H)/2;          // 498
 static const int NAM_ADD_X  = RACK_X + 8;                     // 348, como las plazas
 static const int NAM_ADD_W  = 130;
-static const int NAM_BLK_W = 104, NAM_BLK_GAP = 6;   // 4 celdas caben en la fila
+static const int NAM_BLK_W = 140, NAM_BLK_GAP = 6;   // 3 celdas caben en la fila (mas aire por celda)
 // Fila de capturas del PERFIL: + ANADIR | T3K | bloques. La geometria vive aqui
 // y la leen el dibujo y el raton: separarla fue el fallo (el chip T3K caia
 // justo encima del primer bloque y desaparecia debajo de el).
@@ -7114,7 +7114,7 @@ static void buildStaticScene(int W, int H) {
                     // material y el autor, que es lo que identifica la captura.
                     drawSpacedFit(g, snap[i]->name.c_str(), G::FontStyleBold,
                                   on ? G::Color(255, 0xdc, 0xd8, 0xd0) : G::Color(130, 0x9a, 0x96, 0x92),
-                                  bx + 8.0f, ry + 30.0f, 0.4f, (G::REAL)NAM_BLK_W - 16.0f, 10.5f, 8.5f);
+                                  bx + 8.0f, ry + 30.0f, 0.3f, (G::REAL)NAM_BLK_W - 16.0f, 9.5f, 8.5f);
                     if (sm) {
                         std::wstring sub;
                         if (!sm->gearMake.empty() || !sm->gearModel.empty()) {
