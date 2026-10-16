@@ -5334,6 +5334,9 @@ static const int TOP_DIV_X   = 356;
 static const int TOP_ARROW_X = 358;
 static const int TOP_SAVE_X  = WIN_W - 402;
 static const int TOP_REC_X   = WIN_W - 286;
+// El boton del NAVEGADOR de presets (paso 18): pegado a la caja del preset, que
+// es de quien abre la ventana. Deja el mismo aire (10px) que hay antes de GUARDAR.
+static const int TOP_BRW_X   = TOP_BOX_X + TOP_BOX_W + 8;
 // Filete de 1px que separa la accion que cambia el documento (GUARDAR) de los
 // dos conmutadores de estado (GRABAR, AUDIO): dos grupos, no tres botones
 // sueltos. Vive entre los dos, con el mismo aire a cada lado.
@@ -5698,6 +5701,7 @@ static int  g_dragPedalRow = -1, g_dragPedalIdx = -1, g_dragPedalType = -1;
 static int  g_dropRow = -1, g_dropIdx = -1;             // insercion valida
 static bool g_addOpen = false;                          // panel "anadir pedal"
 static int  g_addRow = 0;                               // fila destino del anadido
+static bool g_brwOpen = false;                          // navegador de presets (paso 18)
 
 // Un solo modal a la vez. Cada apertura solo ponia SU flag, asi que podian
 // coexistir AJUSTES + AFINADOR o TONE3000 + RENOMBRAR: el orden de pintado
@@ -5707,6 +5711,7 @@ static void modalCloseAll() {
     g_settingsOpen = false;
     g_addOpen      = false;
     g_t3kOpen      = false;
+    g_brwOpen      = false;
     g_tunerOpen.store(false);
     g_renameOpen   = false;
     g_renameSave   = false;
@@ -8774,6 +8779,404 @@ static void t3kDraw(G::Graphics& g)
     if (g_t3kConnOpen) t3kDrawSheet(g);
 }
 
+// ============================================================================
+//  Navegador de presets (paso 18): la ventana superpuesta
+//  Un solo sitio decide la geometria (brwLayout) y la leen el pintado y el clic,
+//  para que no puedan desalinearse. El estado de filtros y orden vive arriba,
+//  junto a browseOrder, con el resto del modelo del navegador.
+// ============================================================================
+static int  g_brwSel    = -1;      // preset resaltado en la lista (indice global)
+static int  g_brwScroll = 0;
+static bool g_brwFocus  = false;   // el buscador tiene el foco
+
+static const int BRW_W = 1200, BRW_H = 720;
+static const int BRW_X = (WIN_W - BRW_W) / 2;
+static const int BRW_Y = (WIN_H - BRW_H) / 2;
+static const int BRW_ROW_H = 44;
+static const int BRW_FILT_W = 210;
+static const int BRW_LIST_X = BRW_X + 24 + BRW_FILT_W + 20;
+static const int BRW_LIST_W = 600;
+static const int BRW_INFO_X = BRW_LIST_X + BRW_LIST_W + 20;
+static const int BRW_INFO_W = BRW_W - 24 - (BRW_INFO_X - BRW_X);
+
+static const WCHAR* kBrwSortNames[5] = { L"CURADO", L"A-Z", L"Z-A", L"AMPLI", L"RECIENTES" };
+static const WCHAR* kBrwFavNames[kFavColors] = { L"SIN COLOR", L"AMBAR", L"ROJO", L"AZUL", L"VERDE" };
+static const WCHAR* kBrwOrgNames[3] = { L"TODOS", L"FABRICA", L"MIOS" };
+
+struct BrwBox {
+    RECT fav[kFavColors], org[3], chr[kCharCount], amp[kAmpCount], ord[5];
+    RECT search, hdr, list, close, info;
+    int  lblFav, lblOrg, lblChr, lblAmp;
+};
+static BrwBox g_brw;
+
+// El nombre del caracter que el navegador ENSENA para un preset: el suyo, y si
+// no tiene etiqueta (un preset del usuario recien guardado) lo dice asi.
+static const WCHAR* presetCharLabel(int idx) {
+    const unsigned int t = presetTags(idx);
+    for (int c = 0; c < kCharCount; ++c) if (t & (1u << c)) return kCharNames[c];
+    return L"SIN ETIQUETA";
+}
+
+static void brwLayout() {
+    const int x0 = BRW_X + 24;
+    int y = BRW_Y + 76;
+    g_brw.lblFav = y; y += 20;
+    for (int i = 0; i < kFavColors; ++i) { g_brw.fav[i] = RECT{ x0, y, x0 + BRW_FILT_W, y + 26 }; y += 26; }
+    y += 6;
+    g_brw.lblOrg = y; y += 20;
+    for (int i = 0; i < 3; ++i) { g_brw.org[i] = RECT{ x0, y, x0 + BRW_FILT_W, y + 26 }; y += 26; }
+    y += 6;
+    const int cwid = (BRW_FILT_W - 8) / 2;
+    g_brw.lblChr = y; y += 20;
+    for (int i = 0; i < kCharCount; ++i) {
+        const int col = i % 2, row = i / 2;
+        const int bx = x0 + col*(cwid + 8), by = y + row*28;
+        g_brw.chr[i] = RECT{ bx, by, bx + cwid, by + 26 };
+    }
+    y += ((kCharCount + 1)/2)*28 + 6;
+    g_brw.lblAmp = y; y += 20;
+    for (int i = 0; i < kAmpCount; ++i) {
+        const int col = i % 2, row = i / 2;
+        const int bx = x0 + col*(cwid + 8), by = y + row*28;
+        g_brw.amp[i] = RECT{ bx, by, bx + cwid, by + 26 };
+    }
+    const int cx = BRW_LIST_X, cw = BRW_LIST_W;
+    g_brw.search = RECT{ cx, BRW_Y + 78, cx + cw, BRW_Y + 78 + 34 };
+    const int sy = BRW_Y + 124;
+    for (int i = 0; i < 5; ++i) {
+        const int sw = 96;
+        g_brw.ord[i] = RECT{ cx + i*(sw + 6), sy, cx + i*(sw + 6) + sw, sy + 26 };
+    }
+    const int hy = sy + 36;
+    g_brw.hdr  = RECT{ cx, hy, cx + cw, hy + 22 };
+    g_brw.list = RECT{ cx, hy + 26, cx + cw, BRW_Y + BRW_H - 52 };
+    g_brw.close = RECT{ BRW_X + BRW_W - 52, BRW_Y + 14, BRW_X + BRW_W - 20, BRW_Y + 46 };
+    g_brw.info  = RECT{ BRW_INFO_X, BRW_Y + 78, BRW_INFO_X + BRW_INFO_W, BRW_Y + BRW_H - 52 };
+}
+static RECT brwRowRect(int vi) {
+    RECT r = g_brw.list;
+    r.top += vi*BRW_ROW_H; r.bottom = r.top + BRW_ROW_H;
+    return r;
+}
+static int brwVisRows() { return (g_brw.list.bottom - g_brw.list.top) / BRW_ROW_H; }
+// La cajita del punto de favorito de una fila: ahi el clic cicla el COLOR en vez
+// de cargar el preset (es el gesto de las colecciones de Guitar Rig).
+static RECT brwRowDot(const RECT& r) {
+    return RECT{ r.left + 6, r.top + 10, r.left + 30, r.top + 34 };
+}
+
+// Texto de una caja, centrado en vertical por la medida de su papel.
+static void brwTextIn(G::Graphics& g, const RECT& r, const WCHAR* s, G::FontStyle st,
+                      G::Color c, TxRole role, G::REAL sp = 0.6f, G::REAL pad = 8.0f) {
+    const G::REAL y = (G::REAL)r.top + ((G::REAL)(r.bottom - r.top) - kTx[role].pt) * 0.5f;
+    drawTxFit(g, s, st, c, (G::REAL)r.left + pad, y, sp, (G::REAL)(r.right - r.left) - 2.0f*pad, role);
+}
+// Una pastilla de filtro: encendida = ambar (esta pulsada), apagada = tono liso.
+static void brwChip(G::Graphics& g, const RECT& r, const WCHAR* label, bool on) {
+    const G::REAL w = (G::REAL)(r.right - r.left), h = (G::REAL)(r.bottom - r.top);
+    const bool hov = rectHas(r, g_mouseX, g_mouseY);
+    if (on || hov) {
+        flatPillBody(g, (G::REAL)r.left, (G::REAL)r.top, w, h, hov && !on, on, kAcc);
+    } else {
+        G::SolidBrush bg(kFSurf2); G::Pen bp(kFLine, 1.0f);
+        roundRect(g, (G::REAL)r.left, (G::REAL)r.top, w, h, kRPill, &bp, &bg);
+    }
+    brwTextIn(g, r, label, G::FontStyleBold, (on || hov) ? kFTxt : kFTxt2, TxRotulo, 0.4f, 4.0f);
+}
+// Una fila de la columna de filtros (con punto de color opcional).
+static void brwFilterRow(G::Graphics& g, const RECT& r, const WCHAR* label, bool on, int dot) {
+    const G::REAL w = (G::REAL)(r.right - r.left), h = (G::REAL)(r.bottom - r.top);
+    const bool hov = rectHas(r, g_mouseX, g_mouseY);
+    if (on || hov) {
+        G::SolidBrush bg(on ? kFSurf3 : kFSurf2);
+        G::Pen bp(kFLine, 1.0f);
+        roundRect(g, (G::REAL)r.left, (G::REAL)r.top, w, h, 6.0f, on ? &bp : nullptr, &bg);
+    }
+    G::REAL tx = (G::REAL)(r.left + 10);
+    if (dot >= 0) {
+        const G::REAL cy = (G::REAL)(r.top + (r.bottom - r.top)/2);
+        if (dot == 0) {                       // sin color: circulo hueco
+            G::Pen dp(kFTxt3, 1.2f);
+            g.DrawEllipse(&dp, (G::REAL)(r.left + 9), cy - 4.5f, 9.0f, 9.0f);
+        } else {
+            G::SolidBrush db(favColorAt(dot));
+            g.FillEllipse(&db, (G::REAL)(r.left + 9), cy - 4.5f, 9.0f, 9.0f);
+        }
+        tx = (G::REAL)(r.left + 26);
+    }
+    brwTextIn(g, r, label, G::FontStyleBold, on ? kFTxt : kFTxt2, TxRotulo, 0.6f, tx - r.left);
+}
+
+static void brwPaint(G::Graphics& g) {
+    brwLayout();
+    int ord[kMaxListEntries];
+    const int n = browseOrder(ord);
+    const int vis = brwVisRows();
+    if (g_brwScroll > n - vis) g_brwScroll = (n > vis) ? n - vis : 0;
+    if (g_brwScroll < 0) g_brwScroll = 0;
+
+    G::SolidBrush dim(G::Color((BYTE)(kVeil.GetA()*g_anim.modal), 0, 0, 0));
+    g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
+    flatPanel(g, (G::REAL)BRW_X, (G::REAL)BRW_Y, (G::REAL)BRW_W, (G::REAL)BRW_H, kRModal, true);
+
+    // --- cabecera ---
+    drawTxFit(g, L"PRESETS", G::FontStyleBold, kFTxt, (G::REAL)(BRW_X + 30), (G::REAL)(BRW_Y + 16), 1.4f, 220.0f, TxMarca);
+    {
+        WCHAR sub[80];
+        swprintf_s(sub, L"NAVEGADOR  \x00b7  %d DE %d", n, presetTotal());
+        drawTxFit(g, sub, G::FontStyleRegular, kFTxt3, (G::REAL)(BRW_X + 30 + 148), (G::REAL)(BRW_Y + 23), 0.8f, 420.0f, TxRotulo);
+    }
+    { G::Pen ul(kFLine, 1.0f); g.DrawLine(&ul, (G::REAL)(BRW_X + 30), (G::REAL)(BRW_Y + 56), (G::REAL)(BRW_X + BRW_W - 30), (G::REAL)(BRW_Y + 56)); }
+    {
+        const bool hov = rectHas(g_brw.close, g_mouseX, g_mouseY);
+        icClose(g, (G::REAL)(g_brw.close.left + 16), (G::REAL)(g_brw.close.top + 16), 8.0f, hov ? kFTxt : kFTxt3);
+    }
+
+    // --- columna FILTROS ---
+    drawTxFit(g, L"FAVORITO", G::FontStyleBold, kFTxt3, (G::REAL)(BRW_X + 24), (G::REAL)g_brw.lblFav, 1.0f, 200.0f, TxRotulo);
+    for (int i = 0; i < kFavColors; ++i)
+        brwFilterRow(g, g_brw.fav[i], kBrwFavNames[i], g_brwColor == (i == 0 ? -1 : i), i);
+    drawTxFit(g, L"ORIGEN", G::FontStyleBold, kFTxt3, (G::REAL)(BRW_X + 24), (G::REAL)g_brw.lblOrg, 1.0f, 200.0f, TxRotulo);
+    for (int i = 0; i < 3; ++i)
+        brwFilterRow(g, g_brw.org[i], kBrwOrgNames[i], g_brwOrigin == i - 1, -1);
+    drawTxFit(g, L"CARACTER", G::FontStyleBold, kFTxt3, (G::REAL)(BRW_X + 24), (G::REAL)g_brw.lblChr, 1.0f, 200.0f, TxRotulo);
+    for (int i = 0; i < kCharCount; ++i)
+        brwChip(g, g_brw.chr[i], kCharNames[i], (g_brwChar & (1u << i)) != 0);
+    drawTxFit(g, L"AMPLIFICADOR", G::FontStyleBold, kFTxt3, (G::REAL)(BRW_X + 24), (G::REAL)g_brw.lblAmp, 1.0f, 200.0f, TxRotulo);
+    for (int i = 0; i < kAmpCount; ++i)
+        brwChip(g, g_brw.amp[i], kAmpNames[i], (g_brwAmp & (1u << i)) != 0);
+
+    // --- columna RESULTADOS ---
+    {
+        const RECT& sr = g_brw.search;
+        G::SolidBrush bg(kFBg);
+        G::Pen bp(g_brwFocus ? kAcc : kFLine, 1.0f);
+        roundRect(g, (G::REAL)sr.left, (G::REAL)sr.top, (G::REAL)(sr.right - sr.left), (G::REAL)(sr.bottom - sr.top), 8.0f, &bp, &bg);
+        const WCHAR* ph = g_brwText[0] ? g_brwText : L"Buscar por nombre, ampli, etiqueta o autor";
+        drawTxFit(g, ph, G::FontStyleRegular, g_brwText[0] ? kFTxt : kFTxt3,
+                  (G::REAL)sr.left + 12, (G::REAL)sr.top + 8, 0.5f, (G::REAL)(sr.right - sr.left) - 44.0f, TxCuerpo);
+        if (g_brwFocus) {   // cursor
+            G::REAL pt, sp;
+            WCHAR t[64]; wcsncpy_s(t, ph, _TRUNCATE);
+            fitSpacedFont(g, t, G::FontStyleRegular, 0.5f, 100000.0f, kTx[TxCuerpo].pt, kTx[TxCuerpo].min, pt, sp, kTx[TxCuerpo].fam);
+            G::Font ff(kTx[TxCuerpo].fam, pt, G::FontStyleRegular);
+            const G::REAL cxp = (G::REAL)sr.left + 12.0f + measureSpaced(g, t, ff, sp) + 1.0f;
+            G::Pen cp(kAcc, 1.2f);
+            g.DrawLine(&cp, cxp, (G::REAL)sr.top + 8.0f, cxp, (G::REAL)(sr.bottom) - 8.0f);
+        }
+    }
+    for (int i = 0; i < 5; ++i) brwChip(g, g_brw.ord[i], kBrwSortNames[i], g_brwSort == i);
+    {
+        // cabecera de columnas
+        const RECT& hr = g_brw.hdr;
+        G::Pen hp(kFLine, 1.0f);
+        g.DrawLine(&hp, (G::REAL)hr.left, (G::REAL)(hr.bottom - 1), (G::REAL)hr.right, (G::REAL)(hr.bottom - 1));
+        brwTextIn(g, hr, L"PRESET", G::FontStyleBold, kFTxt3, TxRotulo, 0.8f, 30.0f);
+        {
+            G::REAL y = (G::REAL)hr.top + ((G::REAL)(hr.bottom - hr.top) - kTx[TxRotulo].pt) * 0.5f;
+            drawTxFit(g, L"AMPLIFICADOR", G::FontStyleBold, kFTxt3, (G::REAL)hr.right - 260.0f, y, 0.8f, 160.0f, TxRotulo);
+            drawTxFit(g, L"ORIGEN", G::FontStyleBold, kFTxt3, (G::REAL)hr.right - 90.0f, y, 0.8f, 80.0f, TxRotulo);
+        }
+    }
+    for (int vi = 0; vi < vis; ++vi) {
+        const int k = g_brwScroll + vi;
+        if (k >= n) break;
+        const int idx = ord[k];
+        const RECT r = brwRowRect(vi);
+        const bool sel = (idx == g_brwSel);
+        const bool hov = rectHas(r, g_mouseX, g_mouseY);
+        const bool user = isUserPreset(idx);
+        if (sel || hov) {
+            G::SolidBrush bg(kFSurf2);
+            g.FillRectangle(&bg, (G::REAL)r.left, (G::REAL)r.top, (G::REAL)(r.right - r.left), (G::REAL)BRW_ROW_H);
+        }
+        if (sel) {
+            G::SolidBrush ab(kAcc);
+            g.FillRectangle(&ab, (G::REAL)r.left, (G::REAL)r.top, 2.0f, (G::REAL)BRW_ROW_H);
+        }
+        { G::Pen sp(kFLine, 1.0f); g.DrawLine(&sp, (G::REAL)r.left, (G::REAL)(r.bottom - 1), (G::REAL)r.right, (G::REAL)(r.bottom - 1)); }
+        // punto de favorito (el clic aqui cicla el color)
+        {
+            const int fc = presetFavColor(idx);
+            const G::REAL dx = (G::REAL)r.left + 12, dy = (G::REAL)r.top + 17;
+            if (fc) { G::SolidBrush db(favColorAt(fc)); g.FillEllipse(&db, dx, dy, 10.0f, 10.0f); }
+            else    { G::Pen dp(G::Color(88, 0x8b, 0x87, 0x81), 1.2f); g.DrawEllipse(&dp, dx, dy, 10.0f, 10.0f); }
+        }
+        WCHAR nm[128]; presetNameW(idx, nm, 128);
+        drawTxFit(g, nm, G::FontStyleBold, kFTxt, (G::REAL)r.left + 30, (G::REAL)r.top + 5, 0.6f, (G::REAL)(r.right - r.left) - 320.0f, TxNombre);
+        WCHAR sub[160];
+        const int gp = presetGroup(idx);
+        swprintf_s(sub, L"%s  \x00b7  %s", (gp >= 0) ? kAmpNames[gp] : L"SIN AMPLI", presetCharLabel(idx));
+        drawTxFit(g, sub, G::FontStyleRegular, kFTxt3, (G::REAL)r.left + 30, (G::REAL)r.top + 25, 0.4f, (G::REAL)(r.right - r.left) - 320.0f, TxRotulo);
+        {
+            G::REAL y = (G::REAL)r.top + ((G::REAL)BRW_ROW_H - kTx[TxRotulo].pt) * 0.5f;
+            drawTxFit(g, (gp >= 0) ? kAmpNames[gp] : L"\x2014", G::FontStyleRegular, kFTxt2, (G::REAL)r.right - 260.0f, y, 0.4f, 160.0f, TxRotulo);
+        }
+        // pastilla de origen
+        {
+            RECT br = { r.right - 74, r.top + 12, r.right - 12, r.top + 32 };
+            const WCHAR* lbl = user ? L"MIO" : L"FABRICA";
+            G::SolidBrush bg(kFSurf3); G::Pen bp(kFLine, 1.0f);
+            roundRect(g, (G::REAL)br.left, (G::REAL)br.top, (G::REAL)(br.right - br.left), (G::REAL)(br.bottom - br.top), 5.0f, &bp, &bg);
+            brwTextIn(g, br, lbl, G::FontStyleBold, kFTxt2, TxRotulo, 0.6f, 0.0f);
+        }
+    }
+    if (n == 0) {
+        brwTextIn(g, g_brw.list, L"NINGUN PRESET CUMPLE LOS FILTROS", G::FontStyleBold, kFTxt3, TxCuerpo, 0.6f, 12.0f);
+    }
+
+    // --- columna INFORMACION ---
+    {
+        const RECT& ir = g_brw.info;
+        const int idx = (g_brwSel >= 0) ? g_brwSel : g_presetIdx;
+        const bool user = isUserPreset(idx);
+        G::REAL y = (G::REAL)ir.top;
+        drawTxFit(g, L"INFORMACION", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, y, 1.0f, 200.0f, TxRotulo);
+        y += 22.0f;
+        WCHAR nm[128]; presetNameW(idx, nm, 128);
+        drawTxFit(g, nm, G::FontStyleBold, kFTxt, (G::REAL)ir.left, y, 0.8f, (G::REAL)(ir.right - ir.left), TxNombre);
+        y += 28.0f;
+        {
+            WCHAR sub[160];
+            const int gp = presetGroup(idx);
+            swprintf_s(sub, L"%s  \x00b7  %s  \x00b7  %s",
+                       (gp >= 0) ? kAmpNames[gp] : L"SIN AMPLI", presetCharLabel(idx),
+                       user ? L"PRESET MIO" : L"DE FABRICA");
+            drawTxFit(g, sub, G::FontStyleRegular, kFTxt3, (G::REAL)ir.left, y, 0.4f, (G::REAL)(ir.right - ir.left), TxRotulo);
+            y += 26.0f;
+        }
+        { G::Pen sp(kFLine, 1.0f); g.DrawLine(&sp, (G::REAL)ir.left, y, (G::REAL)ir.right, y); y += 14.0f; }
+        // autor
+        drawTxFit(g, L"AUTOR", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, y, 1.0f, 120.0f, TxRotulo); y += 20.0f;
+        drawTxFit(g, (user && presetAuthor(idx)[0]) ? presetAuthor(idx) : L"\x2014",
+                  G::FontStyleRegular, kFTxt2, (G::REAL)ir.left, y, 0.5f, (G::REAL)(ir.right - ir.left), TxCuerpo);
+        y += 30.0f;
+        // comentario
+        drawTxFit(g, L"COMENTARIO", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, y, 1.0f, 160.0f, TxRotulo); y += 20.0f;
+        {
+            G::Font fc(kFontUI, kTCuerpo);
+            G::SolidBrush cb(kFTxt2);
+            G::StringFormat sfw;
+            const WCHAR* cm = (user && presetComment(idx)[0]) ? presetComment(idx) : L"\x2014";
+            G::RectF rr((G::REAL)ir.left, y, (G::REAL)(ir.right - ir.left), 120.0f);
+            g.DrawString(cm, -1, &fc, rr, &sfw, &cb);
+            y += 96.0f;
+        }
+        { G::Pen sp(kFLine, 1.0f); g.DrawLine(&sp, (G::REAL)ir.left, y, (G::REAL)ir.right, y); y += 14.0f; }
+        // etiquetas
+        drawTxFit(g, L"ETIQUETAS", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, y, 1.0f, 160.0f, TxRotulo); y += 22.0f;
+        {
+            const unsigned int t = presetTags(idx);
+            G::REAL cx = (G::REAL)ir.left;
+            for (int c = 0; c < kCharCount; ++c) {
+                if (!(t & (1u << c))) continue;
+                const G::REAL w = 12.0f + measureSpaced(g, kCharNames[c], G::Font(kFontTec, kTx[TxRotulo].pt, G::FontStyleBold), 0.4f);
+                if (cx + w > (G::REAL)ir.right) { cx = (G::REAL)ir.left; y += 32.0f; }
+                RECT cr = { (LONG)cx, (LONG)y, (LONG)(cx + w), (LONG)(y + 26) };
+                G::SolidBrush bg(kFSurf3); G::Pen bp(kFLine, 1.0f);
+                roundRect(g, cx, y, w, 26.0f, kRPill, &bp, &bg);
+                brwTextIn(g, cr, kCharNames[c], G::FontStyleBold, kFTxt2, TxRotulo, 0.4f, 6.0f);
+                cx += w + 6.0f;
+            }
+            if (!t) drawTxFit(g, L"\x2014", G::FontStyleRegular, kFTxt2, cx, y + 5.0f, 0.5f, 60.0f, TxCuerpo);
+            y += 34.0f;
+        }
+        // favorito
+        drawTxFit(g, L"FAVORITO", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, y, 1.0f, 160.0f, TxRotulo); y += 22.0f;
+        {
+            const int fc = presetFavColor(idx);
+            if (fc) { G::SolidBrush db(favColorAt(fc)); g.FillEllipse(&db, (G::REAL)ir.left, y + 2.0f, 12.0f, 12.0f); }
+            else    { G::Pen dp(kFTxt3, 1.2f); g.DrawEllipse(&dp, (G::REAL)ir.left, y + 2.0f, 12.0f, 12.0f); }
+            drawTxFit(g, kBrwFavNames[fc], G::FontStyleRegular, kFTxt2, (G::REAL)ir.left + 20.0f, y, 0.5f, 200.0f, TxCuerpo);
+        }
+        if (!user) {
+            drawTxFit(g, L"los presets de fabrica no se editan", G::FontStyleRegular, kFTxt3,
+                      (G::REAL)ir.left, (G::REAL)ir.bottom - 20.0f, 0.4f, (G::REAL)(ir.right - ir.left), TxRotulo);
+        }
+    }
+    // --- pie: el atajo de cierre ---
+    brwTextIn(g, RECT{ BRW_X + 24, BRW_Y + BRW_H - 40, BRW_X + BRW_W - 24, BRW_Y + BRW_H - 16 },
+              L"ESC CIERRA   \x00b7   UN CLIC CARGA EL PRESET   \x00b7   EL PUNTO DE COLOR MARCA EL FAVORITO",
+              G::FontStyleRegular, kFTxt3, TxRotulo, 0.6f, 6.0f);
+}
+
+// Abre el navegador sobre el preset que suena y con los filtros limpios.
+static void brwOpen() {
+    modalCloseAll();
+    g_brwOpen = true;
+    g_brwSel  = (g_presetIdx >= 0 && g_presetIdx < presetTotal()) ? g_presetIdx : -1;
+    g_brwScroll = 0;
+    g_brwFocus = false;
+    g_searchFocus = false;
+    // Deja a la vista el preset que suena (si cabe en la lista, claro).
+    brwLayout();
+    int ord[kMaxListEntries];
+    const int n = browseOrder(ord);
+    const int vis = brwVisRows();
+    for (int i = 0; i < n; ++i) if (ord[i] == g_brwSel) {
+        if (i >= vis) g_brwScroll = i - vis + 1;
+        if (g_brwScroll > n - vis) g_brwScroll = (n > vis) ? n - vis : 0;
+        break;
+    }
+}
+// Un clic dentro de la ventana. Fuera del panel cierra (como el resto de modales).
+static void brwClick(int x, int y) {
+    POINT pt = { x, y };
+    const RECT panel = { BRW_X, BRW_Y, BRW_X + BRW_W, BRW_Y + BRW_H };
+    if (!PtInRect(&panel, pt)) { g_brwOpen = false; g_brwFocus = false; return; }
+    brwLayout();
+    if (PtInRect(&g_brw.close, pt)) { g_brwOpen = false; g_brwFocus = false; return; }
+    for (int i = 0; i < 5; ++i) if (PtInRect(&g_brw.ord[i], pt)) { g_brwSort = i; g_brwScroll = 0; return; }
+    for (int i = 0; i < kFavColors; ++i)
+        if (PtInRect(&g_brw.fav[i], pt)) { g_brwColor = (i == 0) ? -1 : i; g_brwScroll = 0; return; }
+    for (int i = 0; i < 3; ++i)
+        if (PtInRect(&g_brw.org[i], pt)) { g_brwOrigin = i - 1; g_brwScroll = 0; return; }
+    for (int i = 0; i < kCharCount; ++i)
+        if (PtInRect(&g_brw.chr[i], pt)) { g_brwChar ^= (1u << i); g_brwScroll = 0; return; }
+    for (int i = 0; i < kAmpCount; ++i)
+        if (PtInRect(&g_brw.amp[i], pt)) { g_brwAmp ^= (1u << i); g_brwScroll = 0; return; }
+    if (PtInRect(&g_brw.search, pt)) { g_brwFocus = true; g_searchFocus = false; return; }
+    g_brwFocus = false;
+    if (PtInRect(&g_brw.list, pt)) {
+        int ord[kMaxListEntries];
+        const int n = browseOrder(ord);
+        const int vi = (y - g_brw.list.top) / BRW_ROW_H;
+        const int k = g_brwScroll + vi;
+        if (k >= 0 && k < n) {
+            const int idx = ord[k];
+            const RECT r = brwRowRect(vi);
+            const RECT rd = brwRowDot(r);
+            if (PtInRect(&rd, pt)) {   // el punto: cicla el color de favorito
+                presetFavSet(idx, (presetFavColor(idx) + 1) % kFavColors);
+                g_brwSel = idx;
+                saveIni();
+                g_sceneDirty.store(true);
+            } else {                             // el resto de la fila: carga el preset
+                g_brwSel = idx;
+                g_presetIdx = idx;
+                applyPreset(idx);
+                g_sceneDirty.store(true);
+            }
+        }
+        return;
+    }
+}
+// La rueda dentro de la lista. Devuelve true si el navegador la consume.
+static bool brwWheel(int delta) {
+    if (!g_brwOpen) return false;
+    brwLayout();
+    POINT mp = { g_mouseX, g_mouseY };
+    if (!PtInRect(&g_brw.list, mp)) return true;   // modal: se traga la rueda
+    int ord[kMaxListEntries];
+    const int n = browseOrder(ord);
+    const int vis = brwVisRows();
+    g_brwScroll += (delta > 0) ? -3 : 3;
+    if (g_brwScroll > n - vis) g_brwScroll = (n > vis) ? n - vis : 0;
+    if (g_brwScroll < 0) g_brwScroll = 0;
+    return true;
+}
+
 static void paintWindow(HWND hwnd) {
     LARGE_INTEGER pf0; QueryPerformanceCounter(&pf0);
     PAINTSTRUCT ps;
@@ -8954,6 +9357,13 @@ static void paintWindow(HWND hwnd) {
         {
             G::Pen vp(kFLine, 1.0f);
             g.DrawLine(&vp, (G::REAL)TOP_SEP_X, 22.0f, (G::REAL)TOP_SEP_X, 46.0f);
+        }
+        {
+            // NAVEGADOR de presets (paso 18): abre la ventana superpuesta. Es un
+            // conmutador: encendido mientras la ventana esta abierta.
+            const bool hov = zoneHit(79);
+            topBtn(g, (G::REAL)TOP_BRW_X, 14.0f, 100.0f, 40.0f, L"PRESETS", fTop,
+                   hov, g_brwOpen, kAcc);
         }
         {
             // GUARDAR sobre un preset del usuario lo pisa; delante de un lote de
@@ -10241,6 +10651,10 @@ static void paintWindow(HWND hwnd) {
         pressVeil(g, (G::REAL)REN_OK_X, (G::REAL)REN_OK_Y, (G::REAL)REN_OK_W, (G::REAL)REN_OK_H, 6.0f);
     }
 
+    // --- Navegador de presets (paso 18): la ventana superpuesta, encima de todo
+    // menos el aviso efimero ---
+    if (g_brwOpen) brwPaint(g);
+
     // --- Aviso efimero (toast): arriba y centrado, sobre todo lo demas ---
     if (toastVisible()) {
         G::Font fTo(kFontTec, kTRotulo, G::FontStyleBold);
@@ -10302,12 +10716,13 @@ static void updateDropTarget() {
 // ---------------------------------------------------------------------------
 static void buildZones() {
     zoneBeginFrame();
-    if (g_t3kOpen || g_tunerOpen.load() || g_settingsOpen || g_addOpen) return;
+    if (g_t3kOpen || g_tunerOpen.load() || g_settingsOpen || g_addOpen || g_brwOpen) return;
 
     // --- cabecera ---
     zoneSetBox(4,  TOP_AUDIO_X, 14, 100, 40);                              // AUDIO ON/OFF
     zoneSetBox(5,  TOP_GEAR_X,  14,  40, 40);                              // ajustes
     zoneSetBox(6,  TOP_BOX_X,  TOP_BOX_Y,  TOP_BOX_W,  TOP_BOX_H);         // preset superior
+    zoneSetBox(79, TOP_BRW_X,   14, 100, 40);                              // NAVEGADOR de presets
     zoneSetBox(74, TOP_SAVE_X,  14, 100, 40);                              // GUARDAR
     zoneSetBox(75, TOP_REC_X,   14, 100, 40);                              // GRABAR
 
@@ -10334,6 +10749,20 @@ static void buildZones() {
 // ---------------------------------------------------------------------------
 static int hoverKey() {
     POINT pt = { g_mouseX, g_mouseY };
+    if (g_brwOpen) {
+        // El navegador manda su propio hit-test: una clave por elemento bajo el
+        // raton, para que el hover se repinte al cambiar de fila o de filtro.
+        brwLayout();
+        for (int i = 0; i < kFavColors; ++i) if (PtInRect(&g_brw.fav[i], pt)) return 400 + i;
+        for (int i = 0; i < 3; ++i) if (PtInRect(&g_brw.org[i], pt)) return 410 + i;
+        for (int i = 0; i < kCharCount; ++i) if (PtInRect(&g_brw.chr[i], pt)) return 420 + i;
+        for (int i = 0; i < kAmpCount; ++i) if (PtInRect(&g_brw.amp[i], pt)) return 440 + i;
+        for (int i = 0; i < 5; ++i) if (PtInRect(&g_brw.ord[i], pt)) return 460 + i;
+        if (PtInRect(&g_brw.close, pt)) return 470;
+        if (PtInRect(&g_brw.search, pt)) return 471;
+        if (PtInRect(&g_brw.list, pt)) return 480 + (g_mouseY - g_brw.list.top) / BRW_ROW_H;
+        return 479;
+    }
     if (g_t3kOpen) {                     // panel TONE3000: manda su propio hit-test
         const int k = t3kHit(g_mouseX, g_mouseY);
         return (k > 0) ? (220 + k) : 297;
@@ -10666,6 +11095,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int x = uiX(GET_X_LPARAM(lp)), y = uiY(GET_Y_LPARAM(lp));
         POINT pt = { x, y };
 
+        // --- Modal NAVEGADOR de presets (paso 18): manda su propio hit-test ---
+        if (g_brwOpen) {
+            brwClick(x, y);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
         // --- Modal AFINADOR: se cierra con su boton CERRAR o pulsando FUERA del
         // cuadro, igual que los demas modales. Antes cualquier clic lo cerraba,
         // incluido dentro del propio panel, y su boton CERRAR no hacia nada
@@ -10949,6 +11385,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         RECT audioBtn = zoneRect(4);  // AUDIO ON/OFF
         if (PtInRect(&audioBtn, pt)) {
             g_audioEnabled.store(!g_audioEnabled.load());
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        // NAVEGADOR de presets (paso 18): abre o cierra la ventana superpuesta
+        RECT brwBtn = zoneRect(79);   // PRESETS
+        if (PtInRect(&brwBtn, pt)) {
+            if (g_brwOpen) { g_brwOpen = false; g_brwFocus = false; }
+            else           { brwOpen(); }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -11489,6 +11934,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_MOUSEWHEEL: {
+        if (g_brwOpen) {   // el navegador consume la rueda (su lista se desplaza)
+            const int wd = GET_WHEEL_DELTA_WPARAM(wp) / 120;
+            if (wd != 0) brwWheel(wd);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         if (g_settingsOpen) return 0;
         if (g_t3kOpen) {   // rueda sobre la rejilla: pasar de pagina
             const int wd = GET_WHEEL_DELTA_WPARAM(wp) / 120;
@@ -11571,6 +12022,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 else { g_t3kOpen = false; g_t3kFocus = 0; t3kImgFree(); }
             }
             else if (g_renameOpen) { g_renameOpen = false; g_renameSave = false; g_renameIdx = -1; }
+            else if (g_brwOpen) { g_brwOpen = false; g_brwFocus = false; }
             else if (g_searchFocus) g_searchFocus = false;
             else if (g_tunerOpen.load()) g_tunerOpen.store(false);
             else if (g_addOpen) g_addOpen = false;
@@ -11584,6 +12036,36 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (((GetKeyState(VK_CONTROL) & 0x8000) && (wp == 'V' || wp == 'v')) ||
             ((GetKeyState(VK_SHIFT)   & 0x8000) && wp == VK_INSERT)) {
             if (pasteIntoFocusedField()) InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        if (g_brwOpen) {
+            // El navegador es un modal: las flechas mueven el resaltado por la
+            // lista filtrada y ENTER carga ese preset. El resto de teclas no
+            // disparan los atajos globales; las letras las recoge WM_CHAR en el
+            // buscador cuando tiene el foco.
+            brwLayout();
+            if (wp == VK_DOWN || wp == VK_UP) {
+                int ord[kMaxListEntries];
+                const int n = browseOrder(ord);
+                if (n > 0) {
+                    int cur = 0;
+                    for (int i = 0; i < n; ++i) if (ord[i] == g_brwSel) { cur = i; break; }
+                    int nx = cur + ((wp == VK_DOWN) ? 1 : -1);
+                    if (nx < 0) nx = n - 1;
+                    if (nx >= n) nx = 0;
+                    g_brwSel = ord[nx];
+                    const int vis = brwVisRows();
+                    if (nx < g_brwScroll) g_brwScroll = nx;
+                    if (nx >= g_brwScroll + vis) g_brwScroll = nx - vis + 1;
+                }
+            } else if (wp == VK_RETURN) {
+                if (g_brwSel >= 0) {
+                    g_presetIdx = g_brwSel;
+                    applyPreset(g_brwSel);
+                    g_sceneDirty.store(true);
+                }
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
         if (g_tunerOpen.load() || g_addOpen || g_settingsOpen || g_t3kOpen || g_renameOpen)
@@ -11656,6 +12138,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             } else {
                 return 0;
             }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        // Escritura en el buscador del navegador de presets (paso 18). El
+        // navegador es modal: si esta abierto y su buscador NO tiene el foco, la
+        // tecla se queda en el (no cae al buscador de la lista izquierda).
+        if (g_brwOpen) {
+            if (!g_brwFocus) return 0;
+            const size_t nb = wcslen(g_brwText);
+            if (wp == L'\b') {
+                if (nb) g_brwText[nb - 1] = 0;
+            } else if (wp == L'\r' || wp == L'\n') {
+                g_brwFocus = false;
+            } else if (wp >= 32 && wp != 127 && nb < 39) {
+                g_brwText[nb]     = (WCHAR)wp;
+                g_brwText[nb + 1] = 0;
+            } else {
+                return 0;
+            }
+            g_brwScroll = 0;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -13216,6 +13718,66 @@ static void hTestBrowse() {
         wcsncpy_s(g_brwText, bt, _TRUNCATE);
         g_userPresets = bak;
     }
+
+    // T6: la geometria del navegador cabe en su panel y no pisa el pie. El
+    // defecto que caza: la rejilla de amplificadores se salia por abajo y el
+    // ultimo chip se dibujaba encima del pie.
+    {
+        brwLayout();
+        const int pieY = BRW_Y + BRW_H - 40;
+        int fuera = 0, pisa = 0;
+        RECT all[5 + kFavColors + 3 + kCharCount + kAmpCount + 5];
+        int m = 0;
+        all[m++] = g_brw.search; all[m++] = g_brw.hdr; all[m++] = g_brw.list;
+        all[m++] = g_brw.close;  all[m++] = g_brw.info;
+        for (int i = 0; i < kFavColors; ++i) all[m++] = g_brw.fav[i];
+        for (int i = 0; i < 3; ++i)          all[m++] = g_brw.org[i];
+        for (int i = 0; i < kCharCount; ++i) all[m++] = g_brw.chr[i];
+        for (int i = 0; i < kAmpCount; ++i)  all[m++] = g_brw.amp[i];
+        for (int i = 0; i < 5; ++i)          all[m++] = g_brw.ord[i];
+        for (int i = 0; i < m; ++i) {
+            const RECT& r = all[i];
+            if (r.left < BRW_X || r.right > BRW_X + BRW_W ||
+                r.top < BRW_Y || r.bottom > BRW_Y + BRW_H) ++fuera;
+            if (r.bottom > pieY) ++pisa;
+        }
+        sprintf_s(d, "%d de %d cajas fuera del panel, %d pisando el pie (y=%d)", fuera, m, pisa, pieY);
+        hCheck(fuera == 0 && pisa == 0, "T6 la geometria del navegador cabe en su panel", d);
+    }
+
+    // T7: el clic cae donde el pintado puso la caja. Se pulsa el centro de un
+    // chip de caracter, uno de amplificador, una pastilla de orden, un color de
+    // favorito y un origen, y el estado cambia como si pintado y hit-test fueran
+    // la misma tabla (que es justo lo que garantiza brwLayout).
+    {
+        const int bs = g_brwSort, bc = g_brwColor, bo = g_brwOrigin;
+        const unsigned int bch = g_brwChar, bam = g_brwAmp;
+        g_brwOpen = true;
+        g_brwSort = 0; g_brwColor = -1; g_brwOrigin = -1; g_brwChar = 0; g_brwAmp = 0;
+        brwLayout();
+        const RECT& rc = g_brw.chr[2];       // LEAD
+        brwClick((rc.left + rc.right)/2, (rc.top + rc.bottom)/2);
+        const bool c1 = (g_brwChar == (1u << 2));
+        const RECT& ra = g_brw.amp[7];
+        brwClick((ra.left + ra.right)/2, (ra.top + ra.bottom)/2);
+        const bool c2 = (g_brwAmp == (1u << 7));
+        const RECT& ro = g_brw.ord[3];       // orden AMPLI
+        brwClick((ro.left + ro.right)/2, (ro.top + ro.bottom)/2);
+        const bool c3 = (g_brwSort == 3);
+        const RECT& rf = g_brw.fav[2];       // favorito ROJO
+        brwClick((rf.left + rf.right)/2, (rf.top + rf.bottom)/2);
+        const bool c4 = (g_brwColor == 2);
+        const RECT& rg = g_brw.org[1];       // origen FABRICA
+        brwClick((rg.left + rg.right)/2, (rg.top + rg.bottom)/2);
+        const bool c5 = (g_brwOrigin == 0);
+        sprintf_s(d, "caracter=%d ampli=%d orden=%d favorito=%d origen=%d",
+                  (int)c1, (int)c2, (int)c3, (int)c4, (int)c5);
+        hCheck(c1 && c2 && c3 && c4 && c5,
+               "T7 el clic del navegador cae donde el pintado puso la caja", d);
+        g_brwOpen = false;
+        g_brwSort = bs; g_brwColor = bc; g_brwOrigin = bo;
+        g_brwChar = bch; g_brwAmp = bam;
+    }
 }
 
 // Puesta en escena de la interfaz: los mismos pasos que da WinMain, sin hilos ni
@@ -13625,6 +14187,23 @@ static int hRender(const char* outPath, const char* state, int winW, int winH) {
         else if (strcmp(state, "tuner") == 0)    g_tunerOpen.store(true);
         else if (strcmp(state, "settings") == 0) g_settingsOpen = true;
         else if (strcmp(state, "presets") == 0)  g_leftTab = 1;
+        else if (strcmp(state, "browser") == 0)  { brwOpen(); g_brwSel = 0; }   // navegador (paso 18)
+        else if (strcmp(state, "browser_mio") == 0) {   // con presets mios y metadatos
+            brwOpen();
+            UserPreset u = {};
+            wcsncpy_s(u.name, L"MI CRUNCH 800", _TRUNCATE);
+            u.model = 4; u.favColor = 2;
+            wcsncpy_s(u.author, L"YO", _TRUNCATE);
+            wcsncpy_s(u.comment, L"Cuerpo del 800 con brillo y el delay de la sala.", _TRUNCATE);
+            u.tags = (1u << 1) | (1u << 3);
+            u.created = 1700000000; u.used = 1700000123;
+            g_userPresets.push_back(u);
+            UserPreset v = {};
+            wcsncpy_s(v.name, L"AMBIENTE AZUL", _TRUNCATE);
+            v.model = 8; v.favColor = 3; v.tags = (1u << 3);
+            g_userPresets.push_back(v);
+            g_brwSel = kNumPresets;
+        }
         else if (strcmp(state, "dirty") == 0) {          // el punto de MODIFICADO
             g_leftTab = 1;
             const int mm = g_params.model.load();
