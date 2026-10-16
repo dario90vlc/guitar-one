@@ -4124,7 +4124,20 @@ static void savePresetAs(const WCHAR* nm) {
     if (!nm || !nm[0]) { toast(L"EL PRESET NECESITA UN NOMBRE"); return; }
     const int slot = (int)g_userPresets.size();
     if (slot >= kMaxUserPresets) { toast(L"SIN ESPACIO: BORRA UN PRESET"); return; }
-    if (writeUserPreset(slot, nm)) toast(L"PRESET GUARDADO");
+    // GUARDAR CON METADATOS: el preset nuevo nace con el CARACTER del que se
+    // estaba oyendo (y su color de favorito), para que se pueda encontrar por la
+    // etiqueta en el navegador. Antes nacia sin ninguna etiqueta y solo
+    // aparecia en "sin etiqueta".
+    const int src = g_presetIdx;
+    if (writeUserPreset(slot, nm)) {
+        if (src >= 0 && src < presetTotal() && src != kNumPresets + slot) {
+            g_userPresets[slot].tags     = presetTags(src) & ((1u << kCharCount) - 1);
+            g_userPresets[slot].favColor = (unsigned char)presetFavColor(src);
+            wcsncpy_s(g_userPresets[slot].author, presetAuthor(src), _TRUNCATE);
+            saveIni();
+        }
+        toast(L"PRESET GUARDADO");
+    }
 }
 
 // Renombra un preset de usuario (el modal de la lista llama aqui)
@@ -7984,28 +7997,18 @@ static void presetTagW(int idx, WCHAR* out, int n) {
 static const WCHAR* searchHint() {
     return (g_leftTab == 1) ? L"Buscar preset..." : L"Buscar amplificador...";
 }
-// La ranura de ENCABEZADO: en un arreglo de ranuras, el valor que no es una
-// entrada (no se selecciona ni se pulsa) sino el rotulo del grupo que empieza.
-static const int NavHeader = -1;
-// Las RANURAS de la lista, en orden de pintado: las entradas de listFilterIdx
-// (que es lo que seleccionan el clic y las flechas) mas una ranura de
-// ENCABEZADO delante de cada grupo de presets. El encabezado sale del
-// contenido -se inserta donde el ampli cambia respecto de la entrada anterior-,
-// asi que no puede desincronizarse de los presets que rotula. Devuelve cuantas.
+// Las RANURAS de la lista, en orden de pintado: una por entrada de listFilterIdx
+// (que es lo que seleccionan el clic y las flechas). La lista es PLANA en las dos
+// pestanas (paso 18.9): antes la pestana de PRESETS intercalaba un ENCABEZADO por
+// ampli, y con el navegador superpuesto las dos listas contaban lo mismo y se
+// estorbaban (ademas el encabezado no era pegajoso y se iba con el scroll). El
+// ampli y su caracter viajan ahora en el SUBTITULO de cada fila (groupLabelW),
+// como en las filas del navegador.
 static int navRows(int* out) {
     int idx[kMaxListEntries], cnt = 0;
     listFilterIdx(idx, &cnt);
-    if (g_leftTab != 1) {              // amplificadores: sin encabezados
-        for (int i = 0; i < cnt; ++i) out[i] = idx[i];
-        return cnt;
-    }
-    int n = 0, last = -2;
-    for (int i = 0; i < cnt; ++i) {
-        const int g = presetGroup(idx[i]);
-        if (g != last) { out[n++] = NavHeader; last = g; }
-        out[n++] = idx[i];
-    }
-    return n;
+    for (int i = 0; i < cnt; ++i) out[i] = idx[i];
+    return cnt;
 }
 static int listScrollMax();
 // Deja la fila `a` a la vista (la lista la seguiria con el raton; con el teclado
@@ -8788,6 +8791,12 @@ static void t3kDraw(G::Graphics& g)
 static int  g_brwSel    = -1;      // preset resaltado en la lista (indice global)
 static int  g_brwScroll = 0;
 static bool g_brwFocus  = false;   // el buscador tiene el foco
+// La edicion de metadatos del Info pane (paso 18.7): que campo se esta
+// escribiendo (0 ninguno) y su borrador. Los tres campos del preset mio son el
+// nombre, el autor y el comentario; las etiquetas y el color se pulsan, no se
+// escriben.
+static int   g_brwEdit    = 0;     // 0 ninguno, 1 nombre, 2 autor, 3 comentario
+static WCHAR g_brwEditBuf[192] = L"";
 
 static const int BRW_W = 1200, BRW_H = 720;
 static const int BRW_X = (WIN_W - BRW_W) / 2;
@@ -8806,6 +8815,9 @@ static const WCHAR* kBrwOrgNames[3] = { L"TODOS", L"FABRICA", L"MIOS" };
 struct BrwBox {
     RECT fav[kFavColors], org[3], chr[kCharCount], amp[kAmpCount], ord[5];
     RECT search, hdr, list, close, info;
+    // El Info pane (paso 18.7): las cajas que se PULSAN. Se calculan aqui, con
+    // el resto de la geometria, y las leen el pintado y el clic.
+    RECT iName, iAuthor, iComment, iTags[kCharCount], iFav;
     int  lblFav, lblOrg, lblChr, lblAmp;
 };
 static BrwBox g_brw;
@@ -8853,6 +8865,32 @@ static void brwLayout() {
     g_brw.list = RECT{ cx, hy + 26, cx + cw, BRW_Y + BRW_H - 52 };
     g_brw.close = RECT{ BRW_X + BRW_W - 52, BRW_Y + 14, BRW_X + BRW_W - 20, BRW_Y + 46 };
     g_brw.info  = RECT{ BRW_INFO_X, BRW_Y + 78, BRW_INFO_X + BRW_INFO_W, BRW_Y + BRW_H - 52 };
+    // El Info pane, de arriba abajo, en el mismo orden en que se pinta: el
+    // rotulo, el nombre, la linea de ampli/caracter/origen, el autor, el
+    // comentario, las etiquetas y el color de favorito. Las cajas que se pulsan
+    // salen de esta misma cuenta.
+    {
+        const int il = g_brw.info.left, ir = g_brw.info.right;
+        int y = g_brw.info.top + 22;                       // debajo de "INFORMACION"
+        g_brw.iName    = RECT{ il, y, ir, y + 26 }; y += 32;
+        y += 26;                                           // la linea de ampli/caracter/origen
+        y += 14;                                           // el filete
+        y += 20;                                           // "AUTOR"
+        g_brw.iAuthor  = RECT{ il, y, ir, y + 24 }; y += 32;
+        y += 20;                                           // "COMENTARIO"
+        g_brw.iComment = RECT{ il, y, ir, y + 66 }; y += 82;
+        y += 14;                                           // el filete
+        y += 22;                                           // "ETIQUETAS"
+        const int tw = (ir - il - 6) / 2;
+        for (int c = 0; c < kCharCount; ++c) {
+            const int col = c % 2, row = c / 2;
+            const int bx = il + col*(tw + 6), by = y + row*30;
+            g_brw.iTags[c] = RECT{ bx, by, bx + tw, by + 26 };
+        }
+        y += ((kCharCount + 1)/2)*30 + 6;
+        y += 22;                                           // "FAVORITO"
+        g_brw.iFav = RECT{ il, y, ir, y + 24 };
+    }
 }
 static RECT brwRowRect(int vi) {
     RECT r = g_brw.list;
@@ -8906,6 +8944,34 @@ static void brwFilterRow(G::Graphics& g, const RECT& r, const WCHAR* label, bool
         tx = (G::REAL)(r.left + 26);
     }
     brwTextIn(g, r, label, G::FontStyleBold, on ? kFTxt : kFTxt2, TxRotulo, 0.6f, tx - r.left);
+}
+
+// Un campo de texto del Info pane. Si se esta escribiendo (g_brwEdit == que) se
+// pinta el borrador sobre un tono liso con su cursor; si no, el valor, y con el
+// raton encima un tono mas. Solo los presets del usuario tienen ficha donde
+// escribirlo: en los de fabrica el campo esta de lectura.
+static void brwField(G::Graphics& g, const RECT& r, const WCHAR* val, int que, bool user) {
+    const bool editing = (g_brwEdit == que);
+    const bool hov = user && rectHas(r, g_mouseX, g_mouseY);
+    if (editing) {
+        G::SolidBrush bg(kFBg); G::Pen bp(kAcc, 1.0f);
+        roundRect(g, (G::REAL)r.left, (G::REAL)r.top, (G::REAL)(r.right - r.left),
+                  (G::REAL)(r.bottom - r.top), 6.0f, &bp, &bg);
+    } else if (hov) {
+        G::SolidBrush hb(kFSurf2);
+        roundRect(g, (G::REAL)r.left, (G::REAL)r.top, (G::REAL)(r.right - r.left),
+                  (G::REAL)(r.bottom - r.top), 6.0f, nullptr, &hb);
+    }
+    const bool has = (val && val[0]);
+    const WCHAR* show = editing ? g_brwEditBuf : (has ? val : L"\x2014");
+    const G::Color c = editing ? kFTxt : (has ? kFTxt2 : kFTxt3);
+    const G::REAL y = (G::REAL)r.top + ((G::REAL)(r.bottom - r.top) - kTx[TxCuerpo].pt)*0.5f;
+    const G::REAL end = drawTxFit(g, show, G::FontStyleRegular, c, (G::REAL)r.left + 6.0f, y, 0.5f,
+                                  (G::REAL)(r.right - r.left) - 14.0f, TxCuerpo);
+    if (editing) {
+        G::Pen cp(kAcc, 1.2f);
+        g.DrawLine(&cp, end + 2.0f, (G::REAL)r.top + 5.0f, end + 2.0f, (G::REAL)r.bottom - 5.0f);
+    }
 }
 
 static void brwPaint(G::Graphics& g) {
@@ -9031,74 +9097,148 @@ static void brwPaint(G::Graphics& g) {
         const RECT& ir = g_brw.info;
         const int idx = (g_brwSel >= 0) ? g_brwSel : g_presetIdx;
         const bool user = isUserPreset(idx);
-        G::REAL y = (G::REAL)ir.top;
-        drawTxFit(g, L"INFORMACION", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, y, 1.0f, 200.0f, TxRotulo);
-        y += 22.0f;
-        WCHAR nm[128]; presetNameW(idx, nm, 128);
-        drawTxFit(g, nm, G::FontStyleBold, kFTxt, (G::REAL)ir.left, y, 0.8f, (G::REAL)(ir.right - ir.left), TxNombre);
-        y += 28.0f;
+        drawTxFit(g, L"INFORMACION", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, (G::REAL)ir.top, 1.0f, 200.0f, TxRotulo);
+        // el nombre (editable)
+        {
+            WCHAR nm[128]; presetNameW(idx, nm, 128);
+            if (g_brwEdit == 1) brwField(g, g_brw.iName, nm, 1, user);
+            else {
+                const bool hov = user && rectHas(g_brw.iName, g_mouseX, g_mouseY);
+                if (hov) {
+                    G::SolidBrush hb(kFSurf2);
+                    roundRect(g, (G::REAL)g_brw.iName.left, (G::REAL)g_brw.iName.top,
+                              (G::REAL)(g_brw.iName.right - g_brw.iName.left),
+                              (G::REAL)(g_brw.iName.bottom - g_brw.iName.top), 6.0f, nullptr, &hb);
+                }
+                drawTxFit(g, nm, G::FontStyleBold, kFTxt, (G::REAL)ir.left + 6, (G::REAL)g_brw.iName.top + 3, 0.8f,
+                          (G::REAL)(ir.right - ir.left) - 14.0f, TxNombre);
+            }
+        }
+        // ampli · caracter · origen
         {
             WCHAR sub[160];
             const int gp = presetGroup(idx);
             swprintf_s(sub, L"%s  \x00b7  %s  \x00b7  %s",
                        (gp >= 0) ? kAmpNames[gp] : L"SIN AMPLI", presetCharLabel(idx),
                        user ? L"PRESET MIO" : L"DE FABRICA");
-            drawTxFit(g, sub, G::FontStyleRegular, kFTxt3, (G::REAL)ir.left, y, 0.4f, (G::REAL)(ir.right - ir.left), TxRotulo);
-            y += 26.0f;
+            drawTxFit(g, sub, G::FontStyleRegular, kFTxt3, (G::REAL)ir.left, (G::REAL)g_brw.iName.bottom + 4.0f, 0.4f,
+                      (G::REAL)(ir.right - ir.left), TxRotulo);
         }
-        { G::Pen sp(kFLine, 1.0f); g.DrawLine(&sp, (G::REAL)ir.left, y, (G::REAL)ir.right, y); y += 14.0f; }
-        // autor
-        drawTxFit(g, L"AUTOR", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, y, 1.0f, 120.0f, TxRotulo); y += 20.0f;
-        drawTxFit(g, (user && presetAuthor(idx)[0]) ? presetAuthor(idx) : L"\x2014",
-                  G::FontStyleRegular, kFTxt2, (G::REAL)ir.left, y, 0.5f, (G::REAL)(ir.right - ir.left), TxCuerpo);
-        y += 30.0f;
-        // comentario
-        drawTxFit(g, L"COMENTARIO", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, y, 1.0f, 160.0f, TxRotulo); y += 20.0f;
         {
-            G::Font fc(kFontUI, kTCuerpo);
-            G::SolidBrush cb(kFTxt2);
-            G::StringFormat sfw;
-            const WCHAR* cm = (user && presetComment(idx)[0]) ? presetComment(idx) : L"\x2014";
-            G::RectF rr((G::REAL)ir.left, y, (G::REAL)(ir.right - ir.left), 120.0f);
-            g.DrawString(cm, -1, &fc, rr, &sfw, &cb);
-            y += 96.0f;
+            G::REAL sy = (G::REAL)g_brw.iAuthor.top - 8.0f;
+            G::Pen sp(kFLine, 1.0f); g.DrawLine(&sp, (G::REAL)ir.left, sy, (G::REAL)ir.right, sy);
         }
-        { G::Pen sp(kFLine, 1.0f); g.DrawLine(&sp, (G::REAL)ir.left, y, (G::REAL)ir.right, y); y += 14.0f; }
-        // etiquetas
-        drawTxFit(g, L"ETIQUETAS", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, y, 1.0f, 160.0f, TxRotulo); y += 22.0f;
+        // autor (editable)
+        drawTxFit(g, L"AUTOR", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, (G::REAL)g_brw.iAuthor.top - 19.0f, 1.0f, 120.0f, TxRotulo);
+        brwField(g, g_brw.iAuthor, user ? presetAuthor(idx) : L"", 2, user);
+        // comentario (editable)
+        drawTxFit(g, L"COMENTARIO", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, (G::REAL)g_brw.iComment.top - 19.0f, 1.0f, 160.0f, TxRotulo);
+        {
+            const RECT& cr = g_brw.iComment;
+            const WCHAR* cm = user ? presetComment(idx) : L"";
+            if (g_brwEdit == 3) {
+                brwField(g, cr, cm, 3, user);
+            } else {
+                const bool hov = user && rectHas(cr, g_mouseX, g_mouseY);
+                if (hov) {
+                    G::SolidBrush hb(kFSurf2);
+                    roundRect(g, (G::REAL)cr.left, (G::REAL)cr.top, (G::REAL)(cr.right - cr.left),
+                              (G::REAL)(cr.bottom - cr.top), 6.0f, nullptr, &hb);
+                }
+                G::Font fc(kFontUI, kTCuerpo);
+                G::SolidBrush cb(cm[0] ? kFTxt2 : kFTxt3);
+                G::StringFormat sfw;
+                g.DrawString(cm[0] ? cm : L"\x2014", -1, &fc,
+                             G::RectF((G::REAL)cr.left + 6, (G::REAL)cr.top + 2, (G::REAL)(cr.right - cr.left) - 12, (G::REAL)(cr.bottom - cr.top) - 4),
+                             &sfw, &cb);
+            }
+        }
+        {
+            G::REAL sy = (G::REAL)g_brw.iTags[0].top - 8.0f;
+            G::Pen sp(kFLine, 1.0f); g.DrawLine(&sp, (G::REAL)ir.left, sy, (G::REAL)ir.right, sy);
+        }
+        // etiquetas: las seis del vocabulario, encendidas las que lleva. En un
+        // preset mio se PULSAN (un clic enciende o apaga esa etiqueta).
+        drawTxFit(g, L"ETIQUETAS", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, (G::REAL)g_brw.iTags[0].top - 19.0f, 1.0f, 160.0f, TxRotulo);
         {
             const unsigned int t = presetTags(idx);
-            G::REAL cx = (G::REAL)ir.left;
             for (int c = 0; c < kCharCount; ++c) {
-                if (!(t & (1u << c))) continue;
-                const G::REAL w = 12.0f + measureSpaced(g, kCharNames[c], G::Font(kFontTec, kTx[TxRotulo].pt, G::FontStyleBold), 0.4f);
-                if (cx + w > (G::REAL)ir.right) { cx = (G::REAL)ir.left; y += 32.0f; }
-                RECT cr = { (LONG)cx, (LONG)y, (LONG)(cx + w), (LONG)(y + 26) };
-                G::SolidBrush bg(kFSurf3); G::Pen bp(kFLine, 1.0f);
-                roundRect(g, cx, y, w, 26.0f, kRPill, &bp, &bg);
-                brwTextIn(g, cr, kCharNames[c], G::FontStyleBold, kFTxt2, TxRotulo, 0.4f, 6.0f);
-                cx += w + 6.0f;
+                const bool on = (t & (1u << c)) != 0;
+                if (user) brwChip(g, g_brw.iTags[c], kCharNames[c], on);
+                else if (on) {
+                    G::SolidBrush bg(kFSurf3); G::Pen bp(kFLine, 1.0f);
+                    roundRect(g, (G::REAL)g_brw.iTags[c].left, (G::REAL)g_brw.iTags[c].top,
+                              (G::REAL)(g_brw.iTags[c].right - g_brw.iTags[c].left),
+                              (G::REAL)(g_brw.iTags[c].bottom - g_brw.iTags[c].top), kRPill, &bp, &bg);
+                    brwTextIn(g, g_brw.iTags[c], kCharNames[c], G::FontStyleBold, kFTxt2, TxRotulo, 0.4f, 6.0f);
+                }
             }
-            if (!t) drawTxFit(g, L"\x2014", G::FontStyleRegular, kFTxt2, cx, y + 5.0f, 0.5f, 60.0f, TxCuerpo);
-            y += 34.0f;
         }
-        // favorito
-        drawTxFit(g, L"FAVORITO", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, y, 1.0f, 160.0f, TxRotulo); y += 22.0f;
+        // color de favorito: se PULSA (recorre los cinco)
+        drawTxFit(g, L"FAVORITO", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, (G::REAL)g_brw.iFav.top - 19.0f, 1.0f, 160.0f, TxRotulo);
         {
+            const RECT& fr = g_brw.iFav;
+            const bool hov = user && rectHas(fr, g_mouseX, g_mouseY);
+            if (hov) {
+                G::SolidBrush hb(kFSurf2);
+                roundRect(g, (G::REAL)fr.left, (G::REAL)fr.top, (G::REAL)(fr.right - fr.left), (G::REAL)(fr.bottom - fr.top), 6.0f, nullptr, &hb);
+            }
             const int fc = presetFavColor(idx);
-            if (fc) { G::SolidBrush db(favColorAt(fc)); g.FillEllipse(&db, (G::REAL)ir.left, y + 2.0f, 12.0f, 12.0f); }
-            else    { G::Pen dp(kFTxt3, 1.2f); g.DrawEllipse(&dp, (G::REAL)ir.left, y + 2.0f, 12.0f, 12.0f); }
-            drawTxFit(g, kBrwFavNames[fc], G::FontStyleRegular, kFTxt2, (G::REAL)ir.left + 20.0f, y, 0.5f, 200.0f, TxCuerpo);
+            const G::REAL dx = (G::REAL)fr.left + 8.0f, dy = (G::REAL)fr.top + 6.0f;
+            if (fc) { G::SolidBrush db(favColorAt(fc)); g.FillEllipse(&db, dx, dy, 12.0f, 12.0f); }
+            else    { G::Pen dp(kFTxt3, 1.2f); g.DrawEllipse(&dp, dx, dy, 12.0f, 12.0f); }
+            drawTxFit(g, kBrwFavNames[fc], G::FontStyleRegular, kFTxt2, dx + 20.0f, (G::REAL)fr.top + 4.0f, 0.5f, 200.0f, TxCuerpo);
         }
         if (!user) {
-            drawTxFit(g, L"los presets de fabrica no se editan", G::FontStyleRegular, kFTxt3,
-                      (G::REAL)ir.left, (G::REAL)ir.bottom - 20.0f, 0.4f, (G::REAL)(ir.right - ir.left), TxRotulo);
+            drawTxFit(g, L"los presets de fabrica no se editan: guarda una copia para tocar sus metadatos",
+                      G::FontStyleRegular, kFTxt3, (G::REAL)ir.left, (G::REAL)ir.bottom - 20.0f, 0.4f,
+                      (G::REAL)(ir.right - ir.left), TxRotulo);
         }
     }
-    // --- pie: el atajo de cierre ---
+    // --- pie: los atajos ---
     brwTextIn(g, RECT{ BRW_X + 24, BRW_Y + BRW_H - 40, BRW_X + BRW_W - 24, BRW_Y + BRW_H - 16 },
-              L"ESC CIERRA   \x00b7   UN CLIC CARGA EL PRESET   \x00b7   EL PUNTO DE COLOR MARCA EL FAVORITO",
+              L"ESC CIERRA   \x00b7   UN CLIC CARGA EL PRESET   \x00b7   EL PUNTO DE COLOR ES EL FAVORITO   \x00b7   EN UN PRESET MIO, LOS CAMPOS DEL INFO PANE SE ESCRIBEN",
               G::FontStyleRegular, kFTxt3, TxRotulo, 0.6f, 6.0f);
+}
+
+// --- Los metadatos del Info pane (paso 18.7) ---------------------------------
+// Guarda lo que se estaba escribiendo en la ficha del preset mio. El nombre, el
+// autor y el comentario viven en la misma ficha que las etiquetas y el color, y
+// los tres se persisten al instante (saveIni), como el resto del navegador.
+static void brwCommitEdit() {
+    if (g_brwEdit == 0) return;
+    const int idx = (g_brwSel >= 0) ? g_brwSel : g_presetIdx;
+    if (isUserPreset(idx)) {
+        UserPreset& u = g_userPresets[idx - kNumPresets];
+        if      (g_brwEdit == 1) wcsncpy_s(u.name,    g_brwEditBuf, _TRUNCATE);
+        else if (g_brwEdit == 2) wcsncpy_s(u.author,  g_brwEditBuf, _TRUNCATE);
+        else if (g_brwEdit == 3) wcsncpy_s(u.comment, g_brwEditBuf, _TRUNCATE);
+        saveIni();
+        g_sceneDirty.store(true);
+        toast(L"METADATOS GUARDADOS");
+    }
+    g_brwEdit = 0;
+    g_brwEditBuf[0] = 0;
+}
+// Abre la escritura de un campo con lo que el campo ya dice.
+static void brwBeginEdit(int que, const WCHAR* val) {
+    g_brwEdit = que;
+    wcsncpy_s(g_brwEditBuf, (val && val[0]) ? val : L"", _TRUNCATE);
+    g_brwFocus = false;
+}
+// Enciende o apaga una etiqueta de la ficha del preset mio.
+static void brwToggleTag(int idx, int c) {
+    if (!isUserPreset(idx) || c < 0 || c >= kCharCount) return;
+    g_userPresets[idx - kNumPresets].tags ^= (1u << c);
+    saveIni();
+    g_sceneDirty.store(true);
+}
+// Recorre el color de favorito del preset (el mismo gesto que en la lista).
+static void brwCycleFav(int idx) {
+    if (idx < 0 || idx >= presetTotal()) return;
+    presetFavSet(idx, (presetFavColor(idx) + 1) % kFavColors);
+    saveIni();
+    g_sceneDirty.store(true);
 }
 
 // Abre el navegador sobre el preset que suena y con los filtros limpios.
@@ -9124,6 +9264,14 @@ static void brwOpen() {
 static void brwClick(int x, int y) {
     POINT pt = { x, y };
     const RECT panel = { BRW_X, BRW_Y, BRW_X + BRW_W, BRW_Y + BRW_H };
+    // Si se estaba escribiendo un campo y el clic no cae en EL MISMO campo, se
+    // guarda lo escrito antes de seguir (como cualquier formulario).
+    if (g_brwEdit != 0) {
+        brwLayout();
+        const RECT* er = (g_brwEdit == 1) ? &g_brw.iName
+                       : (g_brwEdit == 2) ? &g_brw.iAuthor : &g_brw.iComment;
+        if (!PtInRect(er, pt)) brwCommitEdit();
+    }
     if (!PtInRect(&panel, pt)) { g_brwOpen = false; g_brwFocus = false; return; }
     brwLayout();
     if (PtInRect(&g_brw.close, pt)) { g_brwOpen = false; g_brwFocus = false; return; }
@@ -9160,6 +9308,19 @@ static void brwClick(int x, int y) {
             }
         }
         return;
+    }
+    // --- Info pane: los metadatos del preset mio ---
+    {
+        const int idx = (g_brwSel >= 0) ? g_brwSel : g_presetIdx;
+        const bool user = isUserPreset(idx);
+        if (user) {
+            if (PtInRect(&g_brw.iName, pt))    { WCHAR nm[128]; presetNameW(idx, nm, 128); brwBeginEdit(1, nm); return; }
+            if (PtInRect(&g_brw.iAuthor, pt))  { brwBeginEdit(2, presetAuthor(idx));  return; }
+            if (PtInRect(&g_brw.iComment, pt)) { brwBeginEdit(3, presetComment(idx)); return; }
+            for (int c = 0; c < kCharCount; ++c)
+                if (PtInRect(&g_brw.iTags[c], pt)) { brwToggleTag(idx, c); return; }
+            if (PtInRect(&g_brw.iFav, pt)) { brwCycleFav(idx); return; }
+        }
     }
 }
 // La rueda dentro de la lista. Devuelve true si el navegador la consume.
@@ -9789,9 +9950,6 @@ static void paintWindow(HWND hwnd) {
         }
         G::Font fRowN(kFontUI, kTNombre, G::FontStyleBold);
         G::Font fRowS(kFontTec, kTPico);
-        G::StringFormat sfNum;
-        sfNum.SetAlignment(G::StringAlignmentFar);
-        sfNum.SetLineAlignment(G::StringAlignmentCenter);
         const int cur = g_params.model.load();
         const bool dirty = presetDirty();
         for (int vi = 0; vi < vis; ++vi) {
@@ -9801,18 +9959,6 @@ static void paintWindow(HWND hwnd) {
             const RECT rp = navRowPaintRect(vi);    // la fila, de UNA definicion
             const int rx = rp.left, ry = rp.top;
             const int rw = rp.right - rp.left, rh = rp.bottom - rp.top;
-            if (a == NavHeader) {
-                // ENCABEZADO del grupo: el ampli del que son los presets que
-                // vienen debajo. Ocupa su propia ranura (todas miden lo mismo,
-                // asi que la fila, el clic y el hover no cambian de formula) y
-                // sale del contenido: es el ampli de la entrada que le sigue.
-                WCHAR hdr[96];
-                groupLabelW(presetGroup(rows[gi + 1]), hdr, 96);
-                drawTxFit(g, hdr, G::FontStyleBold, kFTxt3,
-                          (G::REAL)(rx + 40), (G::REAL)(ry + 18), 1.1f,
-                          (G::REAL)(rw - 52), TxRotulo);
-                continue;      // no se selecciona ni se pulsa
-            }
             const bool sel = (g_leftTab == 0) ? (a == cur) : (a == g_presetIdx);
             const bool hov = rectHas(rp, g_mouseX, g_mouseY);
             // el hover entra/sale en kRampHover ms: la luz se vana/recupera sola,
@@ -9877,29 +10023,30 @@ static void paintWindow(HWND hwnd) {
                 const bool user  = isUserPreset(a);
                 const bool armed = (user && g_delArm == a);
                 const bool psel  = (a == g_presetIdx);
-                // LA VARIANTE: el numero del lote DENTRO de su ampli (1..6), no
-                // el indice global. El 31 de 78 no le decia nada a nadie; el 3 de
-                // 6 lo pone el encabezado del grupo justo encima.
-                WCHAR wi[8];
-                swprintf_s(wi, L"%d", presetInGroup(a));
-                G::SolidBrush ib2(kFTxt2);
-                g.DrawString(wi, -1, &fRowS,
-                             G::RectF((G::REAL)(rx + 6), (G::REAL)ry + 4.0f, 26.0f, (G::REAL)rh - 4.0f),
-                             &sfNum, &ib2);
                 // El nombre se mide y se ajusta (Regla del Rotulo Encajado): con
                 // DrawString sin formato un nombre largo del usuario envolvia a la
-                // segunda linea, y esa linea caia fuera de la fila (fila de 48px,
-                // caja de 22px) sobre la fila siguiente. La caja reserva la
-                // columna del aspa cuando el preset es del usuario (tres chapas).
+                // segunda linea, y esa linea caia fuera de la fila sobre la fila
+                // siguiente. La caja reserva la columna de las tres chapas cuando
+                // el preset es del usuario.
                 const G::REAL nameEnd =
                     drawTxFit(g, pn, G::FontStyleBold, sel ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7),
-                              (G::REAL)(rx + 40), (G::REAL)(ry + 18), 0.5f,
-                              (G::REAL)(rw - (user ? 143 : 52)), TxNombre);
+                              (G::REAL)(rx + 12), (G::REAL)(ry + 8), 0.5f,
+                              (G::REAL)(rw - (user ? 115 : 24)), TxNombre);
+                // EL SUBTITULO: el ampli y su caracter. Antes esto lo ponia el
+                // ENCABEZADO del grupo, que ya no existe; ahora viaja en la fila,
+                // como en el navegador (misma funcion, groupLabelW).
+                {
+                    WCHAR sub[96];
+                    groupLabelW(presetGroup(a), sub, 96);
+                    drawTxFit(g, sub, G::FontStyleRegular, kFTxt3,
+                              (G::REAL)(rx + 12), (G::REAL)(ry + 30), 0.3f,
+                              (G::REAL)(rw - (user ? 115 : 24)), TxPico);
+                }
                 // El PUNTO de MODIFICADO: el rig de ahora no es el del preset que
                 // suena (ver presetDirty). Va pegado al nombre, donde se mira.
                 if (dirty && psel) {
                     G::SolidBrush db(kFTxt);
-                    g.FillEllipse(&db, nameEnd + 8.0f, (G::REAL)(ry + 26), 6.0f, 6.0f);
+                    g.FillEllipse(&db, nameEnd + 8.0f, (G::REAL)(ry + 15), 6.0f, 6.0f);
                 }
                 // LA ESTRELLA de favoritos del preset: la misma columna del canto
                 // que en AMPLIFICADORES. Debajo el lapiz (renombrar) y el aspa
@@ -11514,10 +11661,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 const int gi = g_listScroll + vi;
                 if (vi >= 0 && vi < vis && gi >= 0 && gi < cnt) {
                     const int a = rows[gi];
-                    if (a == NavHeader) {   // el encabezado de un grupo no se pulsa
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                        return 0;
-                    }
                     if (g_leftTab == 0) {
                         // estrella de favoritos (esquina derecha de la fila)
                         const RECT fr = navBadgeRect(vi, true);   // estrella
@@ -12022,6 +12165,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 else { g_t3kOpen = false; g_t3kFocus = 0; t3kImgFree(); }
             }
             else if (g_renameOpen) { g_renameOpen = false; g_renameSave = false; g_renameIdx = -1; }
+            else if (g_brwEdit) { g_brwEdit = 0; g_brwEditBuf[0] = 0; }   // suelta el campo, no la ventana
             else if (g_brwOpen) { g_brwOpen = false; g_brwFocus = false; }
             else if (g_searchFocus) g_searchFocus = false;
             else if (g_tunerOpen.load()) g_tunerOpen.store(false);
@@ -12044,6 +12188,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // disparan los atajos globales; las letras las recoge WM_CHAR en el
             // buscador cuando tiene el foco.
             brwLayout();
+            if (g_brwEdit != 0) {
+                // Escribiendo un campo del Info pane: ENTER lo guarda y ESC lo
+                // suelta (el ESC lo trata la rama de arriba). Nada mas viaja.
+                if (wp == VK_RETURN) brwCommitEdit();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             if (wp == VK_DOWN || wp == VK_UP) {
                 int ord[kMaxListEntries];
                 const int n = browseOrder(ord);
@@ -12145,6 +12296,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // navegador es modal: si esta abierto y su buscador NO tiene el foco, la
         // tecla se queda en el (no cae al buscador de la lista izquierda).
         if (g_brwOpen) {
+            if (g_brwEdit != 0) {          // un campo del Info pane (nombre/autor/comentario)
+                const size_t ne = wcslen(g_brwEditBuf);
+                if (wp == L'\b') {
+                    if (ne) g_brwEditBuf[ne - 1] = 0;
+                } else if (wp == L'\r' || wp == L'\n') {
+                    brwCommitEdit();
+                } else if (wp >= 32 && wp != 127 && ne < 60) {
+                    g_brwEditBuf[ne]     = (WCHAR)wp;
+                    g_brwEditBuf[ne + 1] = 0;
+                } else {
+                    return 0;
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             if (!g_brwFocus) return 0;
             const size_t nb = wcslen(g_brwText);
             if (wp == L'\b') {
@@ -13419,35 +13585,33 @@ static void hTestPresets() {
     hCheck(nord == presetTotal() && dup == 0 && in5 && in5b && in12,
            "Q2 la lista ordena por ampli y mete los del usuario con los suyos", d);
 
-    // Q3: las RANURAS: un encabezado por grupo, justo delante de sus presets, y
-    // ninguno suelto (el encabezado sale del contenido, no de una tabla aparte).
+    // Q3: la lista es PLANA (paso 18.9): una fila por entrada y NINGUN
+    // encabezado intercalado. El ampli y su caracter viajan en el subtitulo de
+    // cada fila (groupLabelW), que es lo que pinta la fila. El defecto que caza:
+    // volver a meter encabezados y que la lista ensene dos veces lo mismo.
     int rows[kMaxNavRows];
     const int nr = navRows(rows);
-    int heads = 0, entradas = 0, sueltos = 0;
+    int heads = 0, entradas = 0, sinRotulo = 0;
     for (int i = 0; i < nr; ++i) {
-        if (rows[i] == NavHeader) {
-            ++heads;
-            if (i + 1 >= nr || rows[i + 1] == NavHeader) ++sueltos;   // encabezado sin presets
-        } else ++entradas;
+        if (rows[i] == -1) ++heads;
+        else ++entradas;
+        if (rows[i] != -1) {
+            WCHAR sub[96];
+            groupLabelW(presetGroup(rows[i]), sub, 96);   // el subtitulo que pinta la fila
+            if (!sub[0]) ++sinRotulo;
+        }
     }
-    int grupos = 0, lastG = -2;
-    for (int i = 0; i < nr; ++i) {
-        if (rows[i] == NavHeader) continue;
-        const int g = presetGroup(rows[i]);
-        if (g != lastG) { ++grupos; lastG = g; }
-    }
-    // y en AMPLIFICADORES no hay encabezados: la lista es la de amps, sin rotulos
+    // y en AMPLIFICADORES tampoco: las dos pestanas son la misma lista plana
     g_leftTab = 0;
     int arows[kMaxNavRows];
     const int anr = navRows(arows);
     int aHead = 0;
-    for (int i = 0; i < anr; ++i) if (arows[i] == NavHeader) ++aHead;
+    for (int i = 0; i < anr; ++i) if (arows[i] == -1) ++aHead;
     g_leftTab = 1;
-    sprintf_s(d, "%d ranuras = %d encabezados + %d entradas; grupos %d, encabezados sueltos %d; en AMPLIFICADORES %d encabezados (de %d filas)",
-              nr, heads, entradas, grupos, sueltos, aHead, anr);
-    hCheck(nr == heads + entradas && entradas == presetTotal() &&
-           heads == grupos && sueltos == 0 && aHead == 0,
-           "Q3 cada grupo lleva su encabezado delante de sus presets", d);
+    sprintf_s(d, "%d filas = %d entradas + %d encabezados; en AMPLIFICADORES %d de %d filas; %d sin subtitulo",
+              nr, entradas, heads, aHead, anr, sinRotulo);
+    hCheck(heads == 0 && aHead == 0 && entradas == presetTotal() && nr == entradas && sinRotulo == 0,
+           "Q3 la lista es plana: el ampli va en el subtitulo de la fila, no en un encabezado", d);
 
     // Q4: favoritos POR PRESET, con COLOR, y el filtro. Se marcan dos de distinto
     // tipo y de distinto color; el filtro deja exactamente esos dos, y cada uno
@@ -13777,6 +13941,126 @@ static void hTestBrowse() {
         g_brwOpen = false;
         g_brwSort = bs; g_brwColor = bc; g_brwOrigin = bo;
         g_brwChar = bch; g_brwAmp = bam;
+    }
+
+    // T8: el Info pane edita la FICHA del preset mio. Se abre la escritura de
+    // cada campo, se teclean letras y se cierra: lo escrito tiene que quedar en
+    // la ficha (y pasar por el .ini, que es de donde vuelve al arrancar). El
+    // defecto que caza: un campo que se pinta pero no escribe en ninguna parte.
+    {
+        const std::wstring tmpDir = exeDirW() + L"\\_dsp_out";
+        CreateDirectoryW(tmpDir.c_str(), nullptr);
+        const std::wstring tmp = tmpDir + L"\\browse_edit.txt";
+        const std::wstring realPath = g_iniPath;
+        const std::vector<UserPreset> bak = g_userPresets;
+        const int bakSel = g_brwSel, bakIdx = g_presetIdx, bakEdit = g_brwEdit;
+        DeleteFileW(tmp.c_str());
+        g_iniPath = tmp;
+
+        g_userPresets.clear();
+        { UserPreset u = {}; wcsncpy_s(u.name, L"VIEJO", _TRUNCATE); u.model = 5; g_userPresets.push_back(u); }
+        g_brwOpen = true;
+        g_brwSel  = kNumPresets;
+
+        brwBeginEdit(2, presetAuthor(kNumPresets));            // AUTOR
+        const WCHAR* who = L"YO MISMO";
+        for (const WCHAR* p = who; *p; ++p) {
+            const size_t n = wcslen(g_brwEditBuf);
+            g_brwEditBuf[n] = *p; g_brwEditBuf[n + 1] = 0;
+        }
+        brwCommitEdit();
+        const bool aOk = (wcscmp(presetAuthor(kNumPresets), L"YO MISMO") == 0);
+
+        brwBeginEdit(3, presetComment(kNumPresets));           // COMENTARIO
+        const WCHAR* cm = L"del puente y con sala";
+        for (const WCHAR* p = cm; *p; ++p) {
+            const size_t n = wcslen(g_brwEditBuf);
+            g_brwEditBuf[n] = *p; g_brwEditBuf[n + 1] = 0;
+        }
+        brwCommitEdit();
+        const bool cOk = (wcscmp(presetComment(kNumPresets), L"del puente y con sala") == 0);
+
+        brwBeginEdit(1, L"VIEJO");                             // NOMBRE
+        const bool loadOk = (wcscmp(g_brwEditBuf, L"VIEJO") == 0);   // el campo abre con lo que dice
+        g_brwEditBuf[0] = 0;                                   // se borra lo viejo (como al teclear)
+        const WCHAR* nm = L"MI 800";
+        for (const WCHAR* p = nm; *p; ++p) {
+            const size_t n = wcslen(g_brwEditBuf);
+            g_brwEditBuf[n] = *p; g_brwEditBuf[n + 1] = 0;
+        }
+        brwCommitEdit();
+        WCHAR got[128]; presetNameW(kNumPresets, got, 128);
+        const bool nOk = (wcscmp(got, L"MI 800") == 0);
+
+        // las etiquetas se PULSAN (enciende/apaga) y el color recorre los cinco
+        brwToggleTag(kNumPresets, 2);
+        const bool tOk1 = (presetTags(kNumPresets) == (1u << 2));
+        brwToggleTag(kNumPresets, 2);
+        const bool tOk2 = (presetTags(kNumPresets) == 0);
+        brwCycleFav(kNumPresets);
+        const bool fOk = (presetFavColor(kNumPresets) == 1);
+
+        // y todo tiene que VOLVER del .ini
+        g_userPresets.clear();
+        userPresetsLoadFromIni();
+        bool rt = (g_userPresets.size() == 1);
+        if (rt) {
+            const UserPreset& r = g_userPresets[0];
+            rt = wcscmp(r.name, L"MI 800") == 0 &&
+                 wcscmp(r.author, L"YO MISMO") == 0 &&
+                 wcscmp(r.comment, L"del puente y con sala") == 0 &&
+                 r.tags == 0 && r.favColor == 1;
+        }
+        sprintf_s(d, "autor=%d comentario=%d nombre=%d (abre=%d) etiquetas=%d/%d color=%d vuelta=%d",
+                  (int)aOk, (int)cOk, (int)nOk, (int)loadOk, (int)tOk1, (int)tOk2, (int)fOk, (int)rt);
+        hCheck(aOk && cOk && nOk && loadOk && tOk1 && tOk2 && fOk && rt,
+               "T8 el Info pane escribe la ficha del preset mio y la ficha vuelve", d);
+
+        g_brwEdit = bakEdit; g_brwEditBuf[0] = 0;
+        g_brwOpen = false;
+        g_brwSel = bakSel; g_presetIdx = bakIdx;
+        g_userPresets = bak;
+        g_iniPath = realPath;
+        DeleteFileW(tmp.c_str());
+    }
+
+    // T9: GUARDAR COMO hereda los metadatos del preset que sonaba. El defecto que
+    // caza: el preset nuevo nacia SIN etiqueta (solo salia en "sin etiqueta") y
+    // habia que etiquetarlo a mano para poder encontrarlo.
+    {
+        const std::wstring tmpDir = exeDirW() + L"\\_dsp_out";
+        CreateDirectoryW(tmpDir.c_str(), nullptr);
+        const std::wstring tmp = tmpDir + L"\\browse_saveas.txt";
+        const std::wstring realPath = g_iniPath;
+        const std::vector<UserPreset> bak = g_userPresets;
+        const int bakIdx = g_presetIdx;
+        DeleteFileW(tmp.c_str());
+        g_iniPath = tmp;
+
+        g_userPresets.clear();
+        // slot 2 de fabrica = CRUNCH (bySlot { 0,0,1,2,3,5 }); se le pone color 3
+        // para ver que el color tambien viaja.
+        g_favPreset[2] = 3;
+        g_presetIdx = 2;
+        const int before = (int)g_userPresets.size();
+        savePresetAs(L"COPIA DEL CRUNCH");
+        const int after = (int)g_userPresets.size();
+        const bool ok = (after == before + 1) &&
+                        (g_userPresets[after - 1].tags == presetTags(2)) &&
+                        (g_userPresets[after - 1].tags == (1u << 1)) &&
+                        (g_userPresets[after - 1].favColor == 3) &&
+                        (g_userPresets[after - 1].created != 0);
+        sprintf_s(d, "n=%d->%d etiquetas=%u (esperado %u) color=%d",
+                  before, after,
+                  (unsigned)g_userPresets[after - 1].tags, (unsigned)presetTags(2),
+                  (int)g_userPresets[after - 1].favColor);
+        hCheck(ok, "T9 GUARDAR COMO hereda el caracter y el color del que sonaba", d);
+
+        g_favPreset[2] = 0;
+        g_userPresets = bak;
+        g_presetIdx = bakIdx;
+        g_iniPath = realPath;
+        DeleteFileW(tmp.c_str());
     }
 }
 
@@ -14203,6 +14487,20 @@ static int hRender(const char* outPath, const char* state, int winW, int winH) {
             v.model = 8; v.favColor = 3; v.tags = (1u << 3);
             g_userPresets.push_back(v);
             g_brwSel = kNumPresets;
+        }
+        else if (strcmp(state, "browser_edit") == 0) {   // el Info pane escribiendo
+            brwOpen();
+            UserPreset u = {};
+            wcsncpy_s(u.name, L"MI CRUNCH 800", _TRUNCATE);
+            u.model = 4; u.favColor = 2;
+            wcsncpy_s(u.author, L"YO", _TRUNCATE);
+            wcsncpy_s(u.comment, L"Cuerpo del 800 con brillo y el delay de la sala.", _TRUNCATE);
+            u.tags = (1u << 1) | (1u << 3);
+            u.created = 1700000000; u.used = 1700000123;
+            g_userPresets.push_back(u);
+            g_brwSel = kNumPresets;
+            brwLayout();
+            brwBeginEdit(3, presetComment(kNumPresets));
         }
         else if (strcmp(state, "dirty") == 0) {          // el punto de MODIFICADO
             g_leftTab = 1;
