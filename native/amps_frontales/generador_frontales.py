@@ -198,28 +198,53 @@ def patterns(a):
     return "".join(p)
 
 
+def ctrl_geo(a):
+    """Posiciones y radio de las perillas. La MISMA cuenta manda en el fondo y
+    en la tira, o el hueco impreso y la perilla que pinta la app no casan.
+    Las posiciones (x) no se tocan: van clavadas en amp_frontales_data.h."""
+    n = len(a["ctrl"])
+    x0, x1 = a.get("ctrl_x") or ((200, 1000) if n >= 5 else (330, 870))
+    if n <= 3 and not a.get("ctrl_x"): x0, x1 = 380, 820
+    xs = [x0 + (x1 - x0) * i / (n - 1) for i in range(n)]
+    sp = (x1 - x0) / (n - 1) if n > 1 else 400.0
+    # en un hueco apretado la perilla y su escala encogen con la separacion
+    kr = 27.0 if sp >= 104 else 27.0 * sp / 104.0
+    return xs, sp, kr
+
+
 def knob(x, y, r, ang, a, mode="all"):
     k = a["knob"]
     o = []
+    r0 = r * 1.22 + 5
+    lng, sht = (8, 5) if r > 24 else (7, 4)
     for i in range(11 if mode != "body" else 0):
         t = math.radians(-135 + 27 * i)
-        r1, r2 = r * 1.22 + 6, r * 1.22 + (13 if i % 5 == 0 else 10)
-        o.append(f'<line x1="{x+r1*math.sin(t):.1f}" y1="{y-r1*math.cos(t):.1f}" x2="{x+r2*math.sin(t):.1f}" y2="{y-r2*math.cos(t):.1f}" stroke="{a["tick"]}" stroke-width="{2 if i%5==0 else 1.3}" stroke-linecap="round" opacity=".85"/>')
-    # escala numerica 0-10 en el panel (Fender/Marshall/Mesa)
-    if mode != "body" and k in ("round", "skirt", "chunky"):
-        # Escala: 0..10 de serie. Un amp con las perillas juntas pide una escala
-        # corta (0/5/10) o las de dos perillas vecinas se pisan entre si.
+        r2 = r0 + (lng if i % 5 == 0 else sht)
+        o.append(f'<line x1="{x+r0*math.sin(t):.1f}" y1="{y-r0*math.cos(t):.1f}" x2="{x+r2*math.sin(t):.1f}" y2="{y-r2*math.cos(t):.1f}" stroke="{a["tick"]}" stroke-width="{2 if i%5==0 else 1.3}" stroke-linecap="round" opacity=".8"/>')
+    # escala numerica 0-10 en el panel (Fender/Marshall/Mesa). El radio lo fija
+    # build() para que las escalas de dos perillas vecinas no se pisen; si ni
+    # asi cabe (_num = False), la escala se omite.
+    if mode != "body" and k in ("round", "skirt", "chunky") and a.get("_num", True):
         step = a.get("scale_step", 1)
+        rn = a.get("_numr", r * 1.22 + 23)
+        fs = a.get("_numfs", 10)
         for i in range(0, 11, step):
             t = math.radians(-135 + 27 * i)
-            rn = r * 1.22 + 23
-            o.append(f'<text x="{x+rn*math.sin(t):.1f}" y="{y-rn*math.cos(t)+4.4:.1f}" text-anchor="middle" font-family="{SANS}" font-size="10" font-weight="700" fill="{_emb(a["tick"])}" opacity=".4">{i}</text>')
-            o.append(f'<text x="{x+rn*math.sin(t):.1f}" y="{y-rn*math.cos(t)+3.4:.1f}" text-anchor="middle" font-family="{SANS}" font-size="10" font-weight="700" fill="{a["tick"]}" opacity=".85">{i}</text>')
+            o.append(f'<text x="{x+rn*math.sin(t):.1f}" y="{y-rn*math.cos(t)+fs*0.44:.1f}" text-anchor="middle" font-family="{SANS}" font-size="{fs}" font-weight="700" fill="{_emb(a["tick"])}" opacity=".36">{i}</text>')
+            o.append(f'<text x="{x+rn*math.sin(t):.1f}" y="{y-rn*math.cos(t)+fs*0.34:.1f}" text-anchor="middle" font-family="{SANS}" font-size="{fs}" font-weight="700" fill="{a["tick"]}" opacity=".8">{i}</text>')
     if mode == "ticks":
         return "".join(o)
-    o.append(f'<ellipse cx="{x+3}" cy="{y+6}" rx="{r*1.3:.1f}" ry="{r*1.22:.1f}" fill="#000" opacity=".4"/>')
+    # sombra de contacto: la perilla se apoya en la chapa. Antes era una elipse
+    # dura de un paso; ahora es una sombra blanda de tres, que es lo que la
+    # asienta en el panel en vez de dejarla flotando.
+    o.append(f'<ellipse cx="{x+2}" cy="{y+7}" rx="{r*1.36:.1f}" ry="{r*1.26:.1f}" fill="#000" opacity=".14"/>')
+    o.append(f'<ellipse cx="{x+2}" cy="{y+5}" rx="{r*1.27:.1f}" ry="{r*1.19:.1f}" fill="#000" opacity=".16"/>')
+    o.append(f'<ellipse cx="{x+1}" cy="{y+3}" rx="{r*1.17:.1f}" ry="{r*1.11:.1f}" fill="#000" opacity=".18"/>')
     rr = r * (1.3 if k in ("chunky", "skirt", "knurl") else 1.18)
     o.append(f'<circle cx="{x}" cy="{y}" r="{rr:.1f}" fill="url(#ring)" stroke="#000" stroke-opacity=".5" stroke-width="1"/>')
+    # filo del aro: una sola luz, desde arriba; la sombra cae abajo
+    o.append(f'<path d="M{x-rr*0.98:.1f} {y:.1f} A{rr*0.98:.1f} {rr*0.98:.1f} 0 0 1 {x+rr*0.98:.1f} {y:.1f}" fill="none" stroke="#fff" stroke-opacity=".15" stroke-width="{max(1.0, r*0.07):.1f}"/>')
+    o.append(f'<path d="M{x-rr*0.94:.1f} {y:.1f} A{rr*0.94:.1f} {rr*0.94:.1f} 0 0 0 {x+rr*0.94:.1f} {y:.1f}" fill="none" stroke="#000" stroke-opacity=".26" stroke-width="{max(1.0, r*0.07):.1f}"/>')
     if k == "knurl":
         for i in range(36):
             t = math.radians(i * 10)
@@ -244,7 +269,7 @@ def knob(x, y, r, ang, a, mode="all"):
     o.append(f'<circle cx="{x}" cy="{y}" r="{r*(0.62 if k!="round" else 0.7):.1f}" fill="none" stroke="#000" stroke-opacity=".22" stroke-width="1.2"/>')
     if k == "jewel":
         o.append(f'<circle cx="{x}" cy="{y}" r="{r*.55:.1f}" fill="none" stroke="#000" stroke-opacity=".35" stroke-width="1.5"/>')
-    o.append(f'<ellipse cx="{x-r*.25:.1f}" cy="{y-r*.4:.1f}" rx="{r*.45:.1f}" ry="{r*.22:.1f}" fill="#fff" opacity=".28" transform="rotate(-25 {x} {y})"/>')
+    o.append(f'<ellipse cx="{x-r*.25:.1f}" cy="{y-r*.4:.1f}" rx="{r*.42:.1f}" ry="{r*.20:.1f}" fill="#fff" opacity=".20" transform="rotate(-25 {x} {y})"/>')
     if k == "chicken":
         o.append(f'<g transform="rotate({ang} {x} {y})"><line x1="{x}" y1="{y-r*.3:.1f}" x2="{x}" y2="{y-r*1.4:.1f}" stroke="#000" stroke-opacity=".5" stroke-width="6" stroke-linecap="round"/><line x1="{x}" y1="{y-r*.3:.1f}" x2="{x}" y2="{y-r*1.4:.1f}" stroke="{a["ptr"]}" stroke-width="3.5" stroke-linecap="round"/></g>')
     else:
@@ -269,7 +294,6 @@ def build(a, knobs=True):
     d.append(f'<linearGradient id="ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="{a["ring"][0]}"/><stop offset=".5" stop-color="{a["ring"][1]}"/><stop offset="1" stop-color="{a["ring"][0]}"/></linearGradient>')
     d.append(f'<radialGradient id="jw" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="{a["jewel"]}" stop-opacity=".9"/><stop offset="1" stop-color="{a["jewel"]}" stop-opacity="0"/></radialGradient>')
     d.append(f'<radialGradient id="jg" cx=".35" cy=".3" r=".8"><stop offset="0" stop-color="#fff"/><stop offset=".35" stop-color="{a["jewel"]}"/><stop offset="1" stop-color="#000" stop-opacity=".7"/></radialGradient>')
-    d.append('<radialGradient id="vig" cx=".5" cy=".5" r=".75"><stop offset=".55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".55"/></radialGradient>')
     # pantalla del ampli de perfiles: fosforo verde-azulado, apagado
     d.append('<linearGradient id="scr" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a1a18"/><stop offset=".5" stop-color="#06100f"/><stop offset="1" stop-color="#081513"/></linearGradient>')
     # --- luz de estudio: clave calida arriba-izquierda, relleno frio a la derecha
@@ -279,14 +303,12 @@ def build(a, knobs=True):
              '<stop offset=".34" stop-color="#fff" stop-opacity=".03"/>'
              '<stop offset=".62" stop-color="#000" stop-opacity=".10"/>'
              '<stop offset="1" stop-color="#000" stop-opacity=".42"/></linearGradient>')
-    d.append('<linearGradient id="rim" x1="0" y1="0" x2="1" y2="0">'
-             '<stop offset="0" stop-color="#fff" stop-opacity="0"/>'
-             '<stop offset=".93" stop-color="#fff" stop-opacity="0"/>'
-             '<stop offset="1" stop-color="#cfe4ff" stop-opacity=".22"/></linearGradient>')
-    # grano fotografico: la capa que separa "dibujo vectorial" de "material"
+    # micro-grano de material: fino y a dosis minima. Antes era un velo de 4
+    # octavas a .30 sobre TODO (cuerpo, chapa, tela): el ojo lo leia como una
+    # neblina uniforme que ensuciaba el conjunto. Ahora es textura, no velo.
     d.append(f'<filter id="grain" x="-2%" y="-2%" width="104%" height="104%">'
-             f'<feTurbulence type="fractalNoise" baseFrequency="0.62 0.72" numOctaves="4" seed="{_sd}" stitchTiles="stitch"/>'
-             f'<feColorMatrix type="matrix" values="0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0.85 0 0 0 -.30"/></filter>')
+             f'<feTurbulence type="fractalNoise" baseFrequency="1.4 1.7" numOctaves="2" seed="{_sd}" stitchTiles="stitch"/>'
+             f'<feColorMatrix type="matrix" values="0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0.55 0 0 0 -.24"/></filter>')
     # cepillado: ruido estirado en horizontal -> rayas largas de metal
     d.append(f'<filter id="brushedF" x="-2%" y="-2%" width="104%" height="104%">'
              f'<feTurbulence type="fractalNoise" baseFrequency="0.0025 0.9" numOctaves="2" seed="{_sd + 31}" stitchTiles="stitch"/>'
@@ -295,12 +317,22 @@ def build(a, knobs=True):
     d.append(f'<filter id="clothF" x="-2%" y="-2%" width="104%" height="104%">'
              f'<feTurbulence type="fractalNoise" baseFrequency="1.1 0.55" numOctaves="3" seed="{_sd + 77}" stitchTiles="stitch"/>'
              f'<feColorMatrix type="matrix" values="0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0.95 0 0 0 -.32"/></filter>')
+    # mancha grande de tejido: es lo que mata el "tiling" (la repeticion del
+    # patron cada 6..30 px era lo que delataba que la tela era un sello).
+    d.append(f'<filter id="clothL" x="-2%" y="-2%" width="104%" height="104%">'
+             f'<feTurbulence type="fractalNoise" baseFrequency="0.006 0.009" numOctaves="2" seed="{_sd + 53}" stitchTiles="stitch"/>'
+             f'<feColorMatrix type="matrix" values="0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0.75 0 0 0 -.34"/></filter>')
     # (retirado) clip del mueble y degradados de esquinera: sin esquineras no
     #  hacen falta; las cuatro esquinas quedan con el canto redondeado del cuerpo.
     d.append('<linearGradient id="lip" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity=".5"/><stop offset="1" stop-color="#000" stop-opacity="0"/></linearGradient>')
     d.append('<linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></linearGradient>')
-    d.append('<linearGradient id="spec" x1="0" y1="0" x2=".7" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".3" stop-color="#fff" stop-opacity=".05"/><stop offset=".44" stop-color="#fff" stop-opacity=".075"/><stop offset=".58" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>')
     d.append(f'<linearGradient id="plate" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{a["plate"][0]}"/><stop offset="1" stop-color="{a["plate"][1]}"/></linearGradient>')
+    # luz de la tela: el bafle esta curvado, asi que la tela coge luz arriba y
+    # cae a sombra en los cantos. Esto es lo que le da profundidad al hueco.
+    d.append('<radialGradient id="baf" cx=".5" cy=".34" r=".82">'
+             '<stop offset="0" stop-color="#fff" stop-opacity=".10"/>'
+             '<stop offset=".55" stop-color="#000" stop-opacity="0"/>'
+             '<stop offset="1" stop-color="#000" stop-opacity=".34"/></radialGradient>')
     d.append('<filter id="sh" x="-20%" y="-20%" width="140%" height="160%"><feGaussianBlur stdDeviation="6"/></filter>')
     d.append(patterns(a))
     d.append("</defs>")
@@ -308,13 +340,12 @@ def build(a, knobs=True):
     # redondeadas quedan transparentes para que se vea el fondo de la UI.
     d.append(f'<rect x="0" y="0" width="1200" height="540" rx="18" fill="{a["body"]}"/>')
     d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="url(#bp)"/>')
-    d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="url(#gloss)" opacity=".5"/>')
-    # material del cuerpo: grano fotografico + cepillado + luz direccional
-    d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="#808080" filter="url(#grain)" opacity=".30"/>')
+    d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="url(#gloss)" opacity=".30"/>')
+    # material del cuerpo: cepillado + micro-grano (dosis minima) + la luz
     d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="#808080" filter="url(#brushedF)" opacity=".14"/>')
+    d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="#808080" filter="url(#grain)" opacity=".06"/>')
     d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="url(#key)"/>')
-    d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="url(#rim)"/>')
-    d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="none" stroke="#000" stroke-opacity=".6" stroke-width="3"/>')
+    d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="none" stroke="#000" stroke-opacity=".55" stroke-width="3"/>')
     # (retirado) Aqui iban cuatro esquineras: una tapa de 92px pintada en cada
     #  esquina del mueble. Sobre un cuerpo oscuro la tapa (#131313) dibujaba una
     #  muesca negra; con luz de metal, una mancha clara en la punta. En los dos
@@ -344,14 +375,16 @@ def build(a, knobs=True):
         d.append(screw(sx, sy, a["ptext"]))
     pc = PCODE.get(a["id"])
     if pc:
-        d.append(f'<text x="{px+20}" y="{py+20}" font-family="{SANS}" font-size="11" font-weight="700" letter-spacing="2.2" fill="{a["ptext"]}" opacity=".6">{pc}</text>')
+        # el codigo de modelo arranca despues del tornillo de la esquina (antes
+        # nacia debajo y el tornillo se comia la primera letra)
+        d.append(f'<text x="{px+42}" y="{py+20}" font-family="{SANS}" font-size="11" font-weight="700" letter-spacing="2.2" fill="{a["ptext"]}" opacity=".6">{pc}</text>')
     # chapa del panel: cepillado metalico + grano fino + brillo direccional
     d.append(f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}" rx="8" fill="#808080" filter="url(#brushedF)" opacity="{.30 if a.get("brushed") else .12}"/>')
-    d.append(f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}" rx="8" fill="#808080" filter="url(#grain)" opacity=".16"/>')
-    d.append(f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}" rx="8" fill="url(#gloss)" opacity=".35"/>')
-    d.append(f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}" rx="8" fill="url(#key)" opacity=".55"/>')
-    d.append(f'<line x1="{px+8}" y1="{py+3}" x2="{px+pw-8}" y2="{py+3}" stroke="#fff" stroke-opacity=".5" stroke-width="1.6"/>')
-    d.append(f'<line x1="{px+8}" y1="{py+ph-2.5}" x2="{px+pw-8}" y2="{py+ph-2.5}" stroke="#000" stroke-opacity=".55" stroke-width="2"/>')
+    d.append(f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}" rx="8" fill="#808080" filter="url(#grain)" opacity=".05"/>')
+    d.append(f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}" rx="8" fill="url(#gloss)" opacity=".26"/>')
+    d.append(f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}" rx="8" fill="url(#key)" opacity=".42"/>')
+    d.append(f'<line x1="{px+8}" y1="{py+3}" x2="{px+pw-8}" y2="{py+3}" stroke="#fff" stroke-opacity=".34" stroke-width="1.6"/>')
+    d.append(f'<line x1="{px+8}" y1="{py+ph-2.5}" x2="{px+pw-8}" y2="{py+ph-2.5}" stroke="#000" stroke-opacity=".45" stroke-width="2"/>')
     # jack
     d.append(f'<circle cx="112" cy="160" r="17" fill="url(#ring)" stroke="#000" stroke-width="1.5"/><circle cx="112" cy="160" r="8" fill="#050505"/><circle cx="112" cy="160" r="3.5" fill="#777"/>')
     d.append(f'<text x="112" y="117" text-anchor="middle" font-family="{SANS}" font-size="12" font-weight="700" letter-spacing="1.5" fill="{_emb(a["ptext"])}" opacity=".45">INPUT</text>')
@@ -378,55 +411,71 @@ def build(a, knobs=True):
         d.append(f'<text x="{bx+bw/2}" y="{by+bh/2+4}" text-anchor="middle" font-family="{SANS}" font-size="12" font-weight="700" letter-spacing="1.6" fill="{a["pt"]}">{blab}</text>')
 
     # knobs
-    n = len(a["ctrl"])
     pos = []
     a["_pos"] = pos
-    x0, x1 = a.get("ctrl_x") or ((200, 1000) if n >= 5 else (330, 870))
-    if n <= 3 and not a.get("ctrl_x"): x0, x1 = 380, 820
-    xs = [x0 + (x1 - x0) * i / (n - 1) for i in range(n)]
+    xs, sp, kr = ctrl_geo(a)
+    # La escala numerica se pega al borde del hueco: el radio encoge hasta que
+    # los numeros de los extremos (i=2 e i=8, los que mas se acercan al vecino)
+    # dejan 9 px entre si. Si al encoger entra dentro de las marcas, se omite
+    # (el de perfiles mete cinco perillas en 304 px: ahi no hay escala).
+    rn = min(kr * 1.22 + 23, (sp - 14) / (2 * math.sin(math.radians(81))))
+    a["_numr"] = rn
+    a["_numfs"] = 10 if rn >= kr * 1.22 + 23 else 9
+    a["_num"] = rn >= kr * 1.22 + 16
     for x, lab in zip(xs, a["ctrl"]):
         ang = rnd.randint(-100, 100)
+        # el rotulo encoge con el hueco: "MIDDLE" y "TREBLE" se tocaban
         fs = 14 if len(lab) < 9 else 12
-        d.append(f'<text x="{x:.1f}" y="89" text-anchor="middle" font-family="{SANS}" font-size="{fs}" font-weight="800" letter-spacing="1.5" fill="{_emb(a["ptext"])}" opacity=".45">{lab}</text>')
-        d.append(f'<text x="{x:.1f}" y="88" text-anchor="middle" font-family="{SANS}" font-size="{fs}" font-weight="800" letter-spacing="1.5" fill="{a["ptext"]}">{lab}</text>')
-        d.append(f'<line x1="{x-13:.0f}" y1="94" x2="{x+13:.0f}" y2="94" stroke="{a["ptext"]}" stroke-width="1.6" opacity=".45" stroke-linecap="round"/>')
-        d.append(knob(round(x, 1), 164, 27, ang, a, "all" if knobs else "ticks"))
+        while fs > 8 and len(lab) * (fs * 0.74 + 1.5) > sp - 10: fs -= 1
+        ls = 1.5 if sp >= 110 else 1.0
+        d.append(f'<text x="{x:.1f}" y="89" text-anchor="middle" font-family="{SANS}" font-size="{fs}" font-weight="800" letter-spacing="{ls}" fill="{_emb(a["ptext"])}" opacity=".40">{lab}</text>')
+        d.append(f'<text x="{x:.1f}" y="88" text-anchor="middle" font-family="{SANS}" font-size="{fs}" font-weight="800" letter-spacing="{ls}" fill="{a["ptext"]}">{lab}</text>')
+        d.append(f'<line x1="{x-11:.0f}" y1="94" x2="{x+11:.0f}" y2="94" stroke="{a["ptext"]}" stroke-width="1.6" opacity=".42" stroke-linecap="round"/>')
+        d.append(knob(round(x, 1), 164, kr, ang, a, "all" if knobs else "ticks"))
         pos.append(dict(label=lab, x=round(x, 1), y=164))
-    # jewel + switch
-    d.append(f'<circle cx="1085" cy="120" r="58" fill="url(#jw)" opacity=".5"/>')
-    d.append(f'<circle cx="1085" cy="120" r="34" fill="url(#jw)"/>')
-    d.append(f'<circle cx="1085" cy="120" r="18" fill="none" stroke="#8f959b" stroke-width="3" opacity=".85"/>')
-    d.append(f'<circle cx="1085" cy="120" r="14" fill="url(#jg)" stroke="#000" stroke-width="2"/>')
-    d.append(f'<circle cx="1080" cy="115" r="4.5" fill="#fff" opacity=".8"/>')
-    d.append(f'<text x="1085" y="163" text-anchor="middle" font-family="{SANS}" font-size="11" font-weight="800" letter-spacing="1.5" fill="{_emb(a["ptext"])}" opacity=".45">POWER</text>')
-    d.append(f'<text x="1085" y="162" text-anchor="middle" font-family="{SANS}" font-size="11" font-weight="800" letter-spacing="1.5" fill="{a["ptext"]}">POWER</text>')
-    d.append(f'<rect x="1074" y="172" width="22" height="30" rx="5" fill="#111" stroke="#000"/><rect x="1077" y="175" width="16" height="13" rx="3" fill="url(#ring)"/>')
-    # grille
+    # jewel + switch. El grupo va pegado al canto derecho: en los frontales de
+    # siete u ocho mandos la ultima escala numerica quedaba tocando "POWER".
+    _jx = 1098
+    d.append(f'<circle cx="{_jx}" cy="120" r="46" fill="url(#jw)" opacity=".20"/>')
+    d.append(f'<circle cx="{_jx}" cy="120" r="34" fill="url(#jw)"/>')
+    d.append(f'<circle cx="{_jx}" cy="120" r="18" fill="none" stroke="#8f959b" stroke-width="3" opacity=".85"/>')
+    d.append(f'<circle cx="{_jx}" cy="120" r="14" fill="url(#jg)" stroke="#000" stroke-width="2"/>')
+    d.append(f'<circle cx="{_jx-5}" cy="115" r="4.5" fill="#fff" opacity=".8"/>')
+    d.append(f'<text x="{_jx}" y="163" text-anchor="middle" font-family="{SANS}" font-size="10" font-weight="800" letter-spacing="1.3" fill="{_emb(a["ptext"])}" opacity=".40">POWER</text>')
+    d.append(f'<text x="{_jx}" y="162" text-anchor="middle" font-family="{SANS}" font-size="10" font-weight="800" letter-spacing="1.3" fill="{a["ptext"]}">POWER</text>')
+    d.append(f'<rect x="{_jx-11}" y="172" width="22" height="30" rx="5" fill="#111" stroke="#000"/><rect x="{_jx-8}" y="175" width="16" height="13" rx="3" fill="url(#ring)"/>')
+    # --- TELA DE LA REJILLA --------------------------------------------------
+    #  Orden: base -> perfil del cono -> tejido -> mancha grande (mata la
+    #  repeticion del patron, que era lo que delataba que la tela era un sello)
+    #  -> relieve de los altavoces POR ENCIMA del tejido -> una sola luz.
     d.append(f'<rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="6" fill="{g1}"/>')
-    # altavoces asomando tras la tela: cono, canto del marco y polvo
     _cy = gy + gh//2
-    for _sx in (gx + gw * 0.28, gx + gw * 0.72):
-        d.append(f'<circle cx="{_sx:.0f}" cy="{_cy}" r="92" fill="#000" opacity=".34"/>')
-        # el cono empuja la tela: degradado radial (claro arriba-izquierda)
-        d.append(f'<radialGradient id="cn{int(_sx)}" cx=".38" cy=".32" r=".78">'
-                 f'<stop offset="0" stop-color="{a["g"][2]}" stop-opacity=".30"/>'
-                 f'<stop offset=".55" stop-color="#000" stop-opacity=".16"/>'
+    _spk = (gx + gw * 0.28, gx + gw * 0.72)
+    for _sx in _spk:
+        # perfil del cono: campana al centro, cono que coge luz, canto en sombra.
+        # El brillo del cono es luz propia (blanco a poca dosis), no el color del
+        # tejido: en los amplis oscuros el gris de la tela dejaba el altavoz negro.
+        d.append(f'<radialGradient id="cn{int(_sx)}" cx=".5" cy=".5" r=".5">'
+                 f'<stop offset="0" stop-color="#000" stop-opacity=".46"/>'
+                 f'<stop offset=".24" stop-color="#000" stop-opacity=".12"/>'
+                 f'<stop offset=".52" stop-color="#fff" stop-opacity=".11"/>'
+                 f'<stop offset=".82" stop-color="#000" stop-opacity=".30"/>'
                  f'<stop offset="1" stop-color="#000" stop-opacity="0"/></radialGradient>')
-        d.append(f'<circle cx="{_sx:.0f}" cy="{_cy}" r="92" fill="url(#cn{int(_sx)})"/>')
-        # canto del marco del altavoz: luz arriba, sombra abajo
-        d.append(f'<circle cx="{_sx:.0f}" cy="{_cy}" r="92" fill="none" stroke="#000" stroke-opacity=".45" stroke-width="7"/>')
-        d.append(f'<path d="M{_sx-88:.0f} {_cy-26:.0f}a88 88 0 0 1 118 -34" fill="none" stroke="#fff" stroke-opacity=".10" stroke-width="4"/>')
-        d.append(f'<circle cx="{_sx:.0f}" cy="{_cy}" r="62" fill="none" stroke="#000" stroke-opacity=".26" stroke-width="3"/>')
-        # campana central: es lo que el ojo lee como "cono"
-        d.append(f'<circle cx="{_sx:.0f}" cy="{_cy}" r="34" fill="#000" opacity=".42"/>')
-        d.append(f'<circle cx="{_sx:.0f}" cy="{_cy}" r="34" fill="none" stroke="#000" stroke-opacity=".5" stroke-width="2"/>')
-        d.append(f'<path d="M{_sx-30:.0f} {_cy-14:.0f}a30 30 0 0 1 44 -8" fill="none" stroke="#fff" stroke-opacity=".09" stroke-width="3"/>')
+        d.append(f'<circle cx="{_sx:.0f}" cy="{_cy}" r="98" fill="url(#cn{int(_sx)})"/>')
     d.append(f'<rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="6" fill="url(#gp)"/>')
-    # la tela: ruido de tejido + rayas horizontales del hilo + brillo sesgado
-    d.append(f'<rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="6" fill="#808080" filter="url(#clothF)" opacity=".42"/>')
-    d.append(f'<rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="6" fill="#808080" filter="url(#grain)" opacity=".18"/>')
-    d.append(f'<rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="6" fill="url(#vig)"/>')
-    d.append(f'<rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="6" fill="url(#key)" opacity=".7"/>')
+    d.append(f'<rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="6" fill="#808080" filter="url(#clothF)" opacity=".30"/>')
+    d.append(f'<rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="6" fill="#808080" filter="url(#clothL)" opacity=".18"/>')
+    # el altavoz empuja la tela: relieve por encima del tejido
+    for _sx in _spk:
+        d.append(f'<circle cx="{_sx:.0f}" cy="{_cy}" r="94" fill="none" stroke="#000" stroke-opacity=".34" stroke-width="11"/>')
+        d.append(f'<path d="M{_sx-90:.0f} {_cy-24:.0f}a90 90 0 0 1 120 -36" fill="none" stroke="#fff" stroke-opacity=".13" stroke-width="5"/>')
+        d.append(f'<circle cx="{_sx:.0f}" cy="{_cy}" r="62" fill="none" stroke="#000" stroke-opacity=".20" stroke-width="3"/>')
+        d.append(f'<circle cx="{_sx:.0f}" cy="{_cy}" r="35" fill="#000" opacity=".30"/>')
+        d.append(f'<circle cx="{_sx:.0f}" cy="{_cy}" r="35" fill="none" stroke="#000" stroke-opacity=".38" stroke-width="2"/>')
+        d.append(f'<path d="M{_sx-30:.0f} {_cy-14:.0f}a30 30 0 0 1 44 -8" fill="none" stroke="#fff" stroke-opacity=".10" stroke-width="3"/>')
+    # luz del bafle: el hueco esta curvado, coge luz arriba y cae en los cantos
+    d.append(f'<rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="6" fill="url(#baf)"/>')
+    d.append(f'<rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="6" fill="url(#key)" opacity=".45"/>')
     d.append(f'<rect x="{gx+4}" y="{gy+4}" width="{gw-8}" height="20" fill="url(#lip)"/>')
     d.append(f'<rect x="{gx}" y="{gy}" width="{gw}" height="{gh}" rx="6" fill="none" stroke="{a["pipe"]}" stroke-width="5"/>')
     # filo de luz en el canto interior del marco de la tela (bisel del baffle)
@@ -441,6 +490,9 @@ def build(a, knobs=True):
     tw = len(label) * (fs * wf + ls) + 70
     if a.get("icon"): tw += 60
     if a.get("plate_w"): tw = max(tw, a["plate_w"])
+    # la chapa tambien tiene que dar cabida a la linea de caracter: en el tweed
+    # la etiqueta larga metia el texto debajo de los dos remaches del canto
+    tw = max(tw, len(a["tag"]) * (12 * 0.68 + 1.2) + 60)
 
     cx, cy = 600, 400
     d.append(f'<rect x="{cx-tw/2+4:.0f}" y="{cy-40+8}" width="{tw:.0f}" height="84" rx="10" fill="#000" opacity=".5" filter="url(#sh)"/>')
@@ -473,14 +525,13 @@ def build(a, knobs=True):
         _dy = rnd.uniform(-6, 6)
         _c = "#fff" if rnd.random() < .6 else "#000"
         d.append(f'<line x1="{_ex:.0f}" y1="{_ey:.0f}" x2="{_ex + _ln:.0f}" y2="{_ey + _dy:.0f}" stroke="{_c}" stroke-opacity="{rnd.uniform(.03, .07):.2f}" stroke-width="{rnd.uniform(.7, 1.5):.1f}" stroke-linecap="round"/>')
-    # reflejo especular diagonal (luz de estudio sobre la chapa)
-    d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="url(#spec)"/>')
-    # cierre: polvo fino sobre TODO (una sola capa da unidad fotografica) y
-    # vineta calida de esquinas, que es lo que hace que la chapa se lea curva.
-    d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="#808080" filter="url(#grain)" opacity=".10"/>')
+    # cierre: un hilo de micro-grano (para que el plano grande no se vea plano)
+    # y una vineta suave. Se retiraron el reflejo especular diagonal y el velo
+    # de polvo: dos capas mas de neblina sobre todo el frontal.
+    d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="#808080" filter="url(#grain)" opacity=".03"/>')
     d.append('<radialGradient id="edge" cx=".5" cy=".45" r=".78">'
              '<stop offset=".62" stop-color="#000" stop-opacity="0"/>'
-             '<stop offset="1" stop-color="#0a0704" stop-opacity=".38"/></radialGradient>')
+             '<stop offset="1" stop-color="#0a0704" stop-opacity=".18"/></radialGradient>')
     d.append('<rect x="0" y="0" width="1200" height="540" rx="18" fill="url(#edge)"/>')
     d.append("</svg>")
     return "".join(d)
@@ -497,8 +548,9 @@ def knob_defs(a):
       f'<linearGradient id="ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="{a["ring"][0]}"/><stop offset=".5" stop-color="{a["ring"][1]}"/><stop offset="1" stop-color="{a["ring"][0]}"/></linearGradient>')
 
 def knob_svg(a, ang):
+    _, _, kr = ctrl_geo(a)   # mismo radio que el hueco del fondo
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{S}" height="{S}" viewBox="0 0 {S} {S}"><defs>'
-      f'{knob_defs(a)}</defs>{knob(56, 56, 27, ang, a, "body")}</svg>')
+      f'{knob_defs(a)}</defs>{knob(56, 56, kr, ang, a, "body")}</svg>')
 
 for a in AMPS:
     full = build(a)
@@ -510,9 +562,10 @@ for a in AMPS:
     open(f"out/perillas/{i_}_perilla.svg", "w", encoding="utf-8").write(k0)
     # filmstrip: 101 fotogramas apilados en un solo SVG (render por ancho)
     gs = []
+    _, _, kr = ctrl_geo(a)   # mismo radio que el hueco del fondo
     for f in range(FR):
         ang = -135 + 270 * f / (FR - 1)
-        gs.append(f'<g transform="translate(0,{f * S})">{knob(56, 56, 27, ang, a, "body")}</g>')
+        gs.append(f'<g transform="translate(0,{f * S})">{knob(56, 56, kr, ang, a, "body")}</g>')
     strip = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{S}" height="{S * FR}" viewBox="0 0 {S} {S * FR}">'
              f'<defs>{knob_defs(a)}</defs>{"".join(gs)}</svg>')
     open(f"out/filmstrips/{i_}_filmstrip.svg", "w", encoding="utf-8").write(strip)
