@@ -5150,9 +5150,16 @@ static float mixSliderFrac(int mx) {
     return (float)v;
 }
 
-// Visualizador SALIDA: mismo ancho de contenido, y el alto que deja el bloque
-// de la mezcla. Era 198 y una rejilla de 40px por lado.
-static const int SCOPE_X = COL_R_X + 8, SCOPE_Y = 664, SCOPE_W = COL_R_W - 16, SCOPE_H = 154;
+// Visualizador SALIDA: proporcion de PANTALLA (3:2) centrada en el ancho de
+// contenido. Era 324x154 (2,1:1): una cinta baja de canto a canto del panel que
+// en reposo leia como un rectangulo vacio, y con 65px de amplitud el trazo
+// quedaba aplastado. El resto de bloques del panel conserva el ancho unico (el
+// previo, la rejilla de pastillas y la mezcla) -eso lo unifico el paso 12-; lo
+// que cambia es la FORMA de la ventana de la onda, no la alineacion de la
+// columna, y el rotulo ya iba centrado.
+static const int SCOPE_W = 240, SCOPE_H = 160;
+static const int SCOPE_X = COL_R_X + (COL_R_W - SCOPE_W)/2;
+static const int SCOPE_Y = 664;
 
 // --- Estado de la lista (panel izquierdo) ---
 static int   g_leftTab = 0;         // 0=AMPLIFICADORES 1=PRESETS
@@ -5167,8 +5174,13 @@ static const int FOOT_Y = 846, FOOT_H = 70;   // debajo de la banda de cadena (8
 // (BOT_LBL_Y) y todos los controles centrados en la misma linea de abajo
 // (FOOT_Y+44). Antes cada rotulo traia su altura y su tamano y el pie leia como
 // un cajon de cosas sueltas.
-static const int BOT_LBL_Y  = FOOT_Y + 2;     // 848: linea comun de rotulos
-static const int BOT_BOX_Y  = FOOT_Y + 22;    // 868: caja de preset (44px)
+//  El ritmo de la tira era 2 / 14 (rotulos) / 4 / 44 (controles) / 4: la linea
+//  de rotulos quedaba a DOS pixeles del canto del panel y la tira leia apoyada
+//  en el suelo. Ahora es 6 / 14 / 4 / 40 / 6 con el CENTRO de los controles
+//  donde estaba (FOOT_Y+44 = 890): la caja y los mandos bajan 4px de alto y
+//  ganan el aire, sin mover ni un centro.
+static const int BOT_LBL_Y  = FOOT_Y + 6;     // 852: linea comun de rotulos
+static const int BOT_BOX_Y  = FOOT_Y + 24;    // 870: caja de preset (40px)
 static const int BOT_MTR_Y  = FOOT_Y + 31;    // 877: pista en 888..893 (centro 890)
 static const int BOT_STAT_Y = WIN_H - 26;
 // Pie: medidores + LED de clip (posiciones compartidas por estatica y dinamica)
@@ -5176,9 +5188,9 @@ static const int MTR_IN_X   = 560,  MTR_IN_W  = 120;
 static const int MTR_OUT_X  = 780,  MTR_OUT_W = 120;
 static const int MTR_GT_X   = 1000, MTR_GT_W  = 70;
 static const int CLIP_LED_X = 1132;
-static const int MASTER_X = WIN_W - 130, MASTER_Y = FOOT_Y + 44, MASTER_R = 22;
+static const int MASTER_X = WIN_W - 130, MASTER_Y = FOOT_Y + 44, MASTER_R = 20;
 // Perilla de trim del canal, justo a la izquierda del medidor INPUT
-static const int IN_TRIM_X = 476, IN_TRIM_Y = FOOT_Y + 44, IN_TRIM_R = 18;
+static const int IN_TRIM_X = 476, IN_TRIM_Y = FOOT_Y + 44, IN_TRIM_R = 16;
 
 // --- Cabecera: caja de preset + botones (derecha) ---
 static const int TOP_AUDIO_X = WIN_W - 176;
@@ -5195,8 +5207,12 @@ static const int TOP_BOX_H   = 52;
 // hover=356: el divisor saltaba 34px con el raton.
 static const int TOP_DIV_X   = 356;
 static const int TOP_ARROW_X = 358;
-static const int TOP_SAVE_X  = WIN_W - 396;
+static const int TOP_SAVE_X  = WIN_W - 402;
 static const int TOP_REC_X   = WIN_W - 286;
+// Filete de 1px que separa la accion que cambia el documento (GUARDAR) de los
+// dos conmutadores de estado (GRABAR, AUDIO): dos grupos, no tres botones
+// sueltos. Vive entre los dos, con el mismo aire a cada lado.
+static const int TOP_SEP_X   = WIN_W - 294;
 
 // --- Palette de pedales + modal afinador ---
 static const int PAL_X = (WIN_W - 660)/2, PAL_Y = 158, PAL_W = 660, PAL_H = 640;
@@ -6116,6 +6132,30 @@ static void flatPill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
     pressVeil(g, x, y, w, h, kRPill);
 }
 
+// PASTILLA DE LA LINEA DE ESTADO: el estado de audio lleva cuerpo propio (no es
+// un campo con rotulo y valor: es el dato que hay que encontrar de un vistazo
+// cuando no suena nada) y su piloto solo se enciende si HAY sesion. Devuelve el
+// ancho que ocupa, para que la linea siga avanzando por medida y no por numeros.
+static G::REAL statPill(G::Graphics& g, G::REAL x, G::REAL py, const WCHAR* word,
+                        G::Color col, bool lit, G::Font& f) {
+    G::RectF mb;
+    WCHAR full[96];
+    swprintf_s(full, L"AUDIO %s", word);
+    g.MeasureString(full, -1, &f, G::RectF(0, 0, 900, 24), nullptr, &mb);
+    const G::REAL pw = mb.Width + 34.0f;      // piloto + 9px de aire por lado
+    G::SolidBrush pf(lit ? flatTint(kFSurf2, kAcc, 0.16f) : kFSurf2);
+    G::Pen pl(col, 1.0f);
+    roundRect(g, x, py - 3.0f, pw, 22.0f, 11.0f, &pl, &pf);
+    G::SolidBrush led(lit ? G::Color(255, 0xff, 0xdd, 0x9a) : G::Color(255, 0x3a, 0x38, 0x3e));
+    g.FillEllipse(&led, x + 9.0f, py + 8.0f, 4.0f, 4.0f);
+    G::SolidBrush lbl(kFTxt3);
+    g.DrawString(L"AUDIO ", -1, &f, G::RectF(x + 18.0f, py, 900.0f, 22), nullptr, &lbl);
+    g.MeasureString(L"AUDIO ", -1, &f, G::RectF(0, 0, 900, 24), nullptr, &mb);
+    G::SolidBrush bst(col);
+    g.DrawString(word, -1, &f, G::RectF(x + 18.0f + mb.Width, py, 900.0f, 22), nullptr, &bst);
+    return pw;
+}
+
 // MANDO PLANO: disco, arco de valor y puntero. Ni aro cromado ni domo.
 //  v01 en 0..1; el barrido es de 270 grados empezando a las siete y media.
 static void flatKnob(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, float v01,
@@ -6215,13 +6255,23 @@ static void rackUnit(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h)
 // luz de canto -las tres marcas de "plastico pulido" del lenguaje viejo-: el
 // estado lo dice el TONO (reposo/hover/activo) y el piloto.
 static void topBtn(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
-                   const WCHAR* label, G::Font& f, bool hov, bool lit, G::Color litCol) {
-    flatPillBody(g, x, y, w, h, hov, lit, litCol);
+                   const WCHAR* label, G::Font& f, bool hov, bool lit, G::Color litCol,
+                   bool strong = false) {
+    if (strong && !lit && !hov) {
+        // El PRIMARIO descansa un tono por encima del panel: es toda la jerarquia
+        // de los tres botones de cabecera (antes los tres eran el mismo cuerpo y
+        // el mismo tono de rotulo, asi que ninguno se leia primero).
+        G::SolidBrush sb(kFSurf3);
+        G::Pen sp(kFLine, 1.0f);
+        roundRect(g, x, y, w, h, kRPill, &sp, &sb);
+    } else {
+        flatPillBody(g, x, y, w, h, hov, lit, litCol);
+    }
     G::StringFormat sfB;
     sfB.SetAlignment(G::StringAlignmentCenter);
     sfB.SetLineAlignment(G::StringAlignmentCenter);
     sfB.SetFormatFlags(G::StringFormatFlagsNoWrap | G::StringFormatFlagsNoClip);
-    G::SolidBrush tb(lit || hov ? kFTxt : kFTxt2);
+    G::SolidBrush tb(lit || hov || strong ? kFTxt : kFTxt2);
     g.DrawString(label, -1, &f, G::RectF(x, y, w, h), &sfB, &tb);
     pressVeil(g, x, y, w, h, kRPill);
 }
@@ -6337,6 +6387,19 @@ static void icClose(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color 
     p.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
     g.DrawLine(&p, cx - r*0.62f, cy - r*0.62f, cx + r*0.62f, cy + r*0.62f);
     g.DrawLine(&p, cx + r*0.62f, cy - r*0.62f, cx - r*0.62f, cy + r*0.62f);
+}
+
+static void icPlus(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color c) {
+    // El "+" de ANADIR: el opuesto exacto del aspa del pedal (uno suma una etapa,
+    // el otro la quita) y el UNICO icono que se dibuja mayor que la caja de 16px:
+    // es la diana de un zocalo vacio, no un mando. Para que siga siendo el mismo
+    // trazo de la familia a ese tamano, el grosor escala con el radio (1,5 a r=7,
+    // que es la medida de la caja): con el 1,5 fijo un "+" de 22px se lee como un
+    // alambre y deja de parecer de la familia.
+    G::Pen p(c, 1.5f*(r/7.0f));
+    p.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
+    g.DrawLine(&p, cx - r*0.62f, cy, cx + r*0.62f, cy);
+    g.DrawLine(&p, cx, cy - r*0.62f, cx, cy + r*0.62f);
 }
 
 // Separador horizontal: una linea de 1px. El desvanecido en los extremos era
@@ -8753,14 +8816,22 @@ static void paintWindow(HWND hwnd) {
     // --- GUARDAR preset de usuario + GRABAR / PARAR WAV ---
     {
         G::Font fTop(kFontTec, kTRotulo, G::FontStyleBold);
+        // El filete entre los dos grupos de la derecha: a la izquierda la accion
+        // que cambia el documento, a la derecha lo que solo enciende y apaga.
+        {
+            G::Pen vp(kFLine, 1.0f);
+            g.DrawLine(&vp, (G::REAL)TOP_SEP_X, 22.0f, (G::REAL)TOP_SEP_X, 46.0f);
+        }
         {
             // GUARDAR sobre un preset del usuario lo pisa; delante de un lote de
             // fabrica no hay nada que pisar, asi que el boton dice lo que hace:
-            // GUARDAR COMO pregunta el nombre y crea uno nuevo.
+            // GUARDAR COMO pregunta el nombre y crea uno nuevo. Es el PRIMARIO
+            // de la cabecera (un tono por encima del panel, rotulo en marfil);
+            // GRABAR y AUDIO son conmutadores y solo se encienden con su color.
             const bool user  = isUserPreset(g_presetIdx);
             const bool hov   = zoneHit(74);              // GUARDAR
             topBtn(g, (G::REAL)TOP_SAVE_X, 14.0f, 100.0f, 40.0f,
-                   user ? L"GUARDAR" : L"GUARDAR COMO", fTop, hov, false, kAcc);
+                   user ? L"GUARDAR" : L"GUARDAR COMO", fTop, hov, false, kAcc, true);
         }
         {
             const bool recOn = g_recActive.load();
@@ -9410,9 +9481,14 @@ static void paintWindow(HWND hwnd) {
                 G::Pen dp(hov ? kAcc : G::Color(0xff, 0x39, 0x36, 0x33), 1.6f);
                 dp.SetDashStyle(G::DashStyleDash);
                 roundRect(g, sx, sy, PED_SLOT_W, PED_SLOT_H, 10, &dp, nullptr);
-                G::SolidBrush pb(hov ? kAcc : G::Color(0xff, 0x6e, 0x69, 0x63));
-                G::Font fPlus(kFontTec, 24, G::FontStyleBold);
-                g.DrawString(L"+", -1, &fPlus, G::RectF(sx, sy + 16, PED_SLOT_W, 32), &sfC, &pb);
+                // El "+" es un icono de la familia, no un glifo: el glifo (Bahnschrift
+                // 24 en negrita) traia su propio peso y su propio ojo y era el unico
+                // signo de la app que no salia de icXxx. Mismo centro optico que el
+                // glifo (el "+" grande quedaba alto cuando se le ponia la leyenda
+                // debajo).
+                const G::Color pc = hov ? kAcc : G::Color(0xff, 0x6e, 0x69, 0x63);
+                icPlus(g, sx + PED_SLOT_W*0.5f, sy + 32.0f, 11.0f, pc);
+                G::SolidBrush pb(pc);
                 G::Font fAdd(kFontTec, kTRotulo, G::FontStyleBold);
                 g.DrawString(L"A\u00D1ADIR", -1, &fAdd, G::RectF(sx, sy + 58, PED_SLOT_W, 16), &sfC, &pb);
                 pressVeil(g, sx, sy, (G::REAL)PED_SLOT_W, (G::REAL)PED_SLOT_H, 10.0f);
@@ -9631,33 +9707,34 @@ static void paintWindow(HWND hwnd) {
         if (zoneHit(70)) {                     // preset inferior
             G::SolidBrush pb(G::Color(255, 0x10, 0x10, 0x12));
             G::Pen pp(G::Color(255, 0x18, 0x18, 0x1b), 1.0f);
-            roundRect(g, 24, BOT_BOX_Y, 306, 44, 8, &pp, &pb);
+            roundRect(g, 24, BOT_BOX_Y, 306, 40, 8, &pp, &pb);
         }
         G::SolidBrush tb(kFTxt);
         {
             G::StringFormat sfL;
             sfL.SetLineAlignment(G::StringAlignmentCenter);
             sfL.SetFormatFlags(G::StringFormatFlagsNoWrap | G::StringFormatFlagsNoClip);
-            g.DrawString(pname, -1, &fPreset, G::RectF(38, BOT_BOX_Y, 250, 44), &sfL, &tb);
+            g.DrawString(pname, -1, &fPreset, G::RectF(38, BOT_BOX_Y, 250, 40), &sfL, &tb);
         }
 
         const G::Color acCol  = zoneHit(71) ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7);
         const G::Color acCol2 = zoneHit(72) ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7);
         // Los tres glifos de la tira de transporte, en UNA linea (centros en
-        // BOT_BOX_Y+23): antes cada uno traia la altura de su fuente.
-        icChev(g, 350.0f, (G::REAL)BOT_BOX_Y + 23.0f, 13.0f, acCol, 1);
-        icChev(g, 386.0f, (G::REAL)BOT_BOX_Y + 23.0f, 13.0f, acCol2, 2);
+        // BOT_BOX_Y+20 = 890, el centro de la tira): antes cada uno traia la
+        // altura de su fuente.
+        icChev(g, 350.0f, (G::REAL)BOT_BOX_Y + 20.0f, 13.0f, acCol, 1);
+        icChev(g, 386.0f, (G::REAL)BOT_BOX_Y + 20.0f, 13.0f, acCol2, 2);
         bool fhov = zoneHit(73);               // favorito
         const bool fv = presetFav(g_presetIdx);   // el PRESET que suena
         const G::Color hbC = fv    ? kHot
                            : fhov  ? G::Color(0xff, 0xd8, 0x9c, 0x98)
                                    : G::Color(0xff, 0x82, 0x7d, 0x76);
-        icHeart(g, 427.0f, (G::REAL)BOT_BOX_Y + 23.0f, 7.5f, hbC, fv);
+        icHeart(g, 427.0f, (G::REAL)BOT_BOX_Y + 20.0f, 7.5f, hbC, fv);
 
-        pressVeil(g, 24.0f, (G::REAL)BOT_BOX_Y, 306.0f, 44.0f, 8.0f);
-        pressVeil(g, 334.0f, (G::REAL)BOT_BOX_Y + 4, 32.0f, 40.0f, 6.0f);
-        pressVeil(g, 370.0f, (G::REAL)BOT_BOX_Y + 4, 32.0f, 40.0f, 6.0f);
-        pressVeil(g, 410.0f, (G::REAL)BOT_BOX_Y + 6, 34.0f, 40.0f, 6.0f);
+        pressVeil(g, 24.0f, (G::REAL)BOT_BOX_Y, 306.0f, 40.0f, 8.0f);
+        pressVeil(g, 334.0f, (G::REAL)BOT_BOX_Y + 2, 32.0f, 36.0f, 6.0f);
+        pressVeil(g, 370.0f, (G::REAL)BOT_BOX_Y + 2, 32.0f, 36.0f, 6.0f);
+        pressVeil(g, 410.0f, (G::REAL)BOT_BOX_Y + 2, 34.0f, 36.0f, 6.0f);
         drawMeterFill(g, (G::REAL)MTR_IN_X,  (G::REAL)BOT_MTR_Y, (G::REAL)MTR_IN_W,  g_params.meterIn.load(),  g_pkHoldIn);
         drawMeterFill(g, (G::REAL)MTR_OUT_X, (G::REAL)BOT_MTR_Y, (G::REAL)MTR_OUT_W, g_params.meterOut.load(), g_pkHoldOut);
 
@@ -9690,7 +9767,7 @@ static void paintWindow(HWND hwnd) {
     {
         AudioSettings stx;
         { std::lock_guard<std::mutex> lock(g_settingsMutex); stx = g_appliedSet; }
-        char inN[256] = "-", outN[256] = "-";
+        char inN[256] = "", outN[256] = "";
         {
             std::lock_guard<std::mutex> lock(g_deviceMutex);
             if (!g_inputDevices.empty() && g_selectedInputIdx >= 0 &&
@@ -9711,10 +9788,12 @@ static void paintWindow(HWND hwnd) {
         presetNameW(g_presetIdx, wpname, 96);   // incluye presets de usuario (sin leer fuera de g_presets)
         char pnameA[128] = "";
         WideCharToMultiByte(CP_ACP, 0, wpname, -1, pnameA, 128, nullptr, nullptr);
-        // El estado se pinta aparte porque lleva color. El resto va como lista
-        // de CAMPOS: rotulo tenue y valor medio, con un filete de 1px entre uno
-        // y otro. Antes era un renglon corrido con " | " dentro y todo al mismo
-        // tono, asi que no se veia donde acababa un dato ni cual era el nombre.
+        // El estado de audio NO es un campo mas: es el unico dato de la linea que
+        // no es un par rotulo+valor y el que el usuario tiene que encontrar de un
+        // vistazo cuando no suena nada. Va en PASTILLA (cuerpo propio), con el
+        // ambar vivo si la sesion esta en linea, ambar tenue si esta apagado (el
+        // aviso con el que arranca la app) y el rojo de alerta si el motor no
+        // pudo abrir el dispositivo. El piloto solo se enciende si hay sesion.
         char stateA[64];
         sprintf_s(stateA, "%s%s", audioWord, recWord);
         WCHAR wstate[64];
@@ -9726,6 +9805,8 @@ static void paintWindow(HWND hwnd) {
             sprintf_s(tIn, "%.32s", inN);
             sprintf_s(tOut, "%.32s", outN);
             sprintf_s(tPre, "%.30s", pnameA);
+            const bool eIn  = (inN[0]  == 0);      // sin dispositivo elegido
+            const bool eOut = (outN[0] == 0);
             WCHAR weng[64], winN[160], woutN[160], wrate[64], wbuf[96], wpres[160];
             MultiByteToWideChar(CP_ACP, 0, stx.system == 1 ? "WASAPI EXCLUSIVO"
                                                            : "WASAPI COMPARTIDO", -1, weng, 64);
@@ -9739,27 +9820,31 @@ static void paintWindow(HWND hwnd) {
             G::REAL px = 24.0f;
             G::RectF mb;
             G::SolidBrush bLbl(kFTxt3), bVal(kFTxt2);
-            G::SolidBrush cs(!en ? G::Color(0xff, 0x82, 0x7d, 0x76)
-                          : sessOn ? kAcc
-                                   : kHot);
             G::Pen fsep(kFLine, 1.0f);
-            // campo 0: AUDIO y su estado, que es lo unico que lleva color
-            g.DrawString(L"AUDIO ", -1, &fSmall, G::RectF(px, py, 900.0f, 22), nullptr, &bLbl);
-            g.MeasureString(L"AUDIO ", -1, &fSmall, G::RectF(0, 0, 900, 24), nullptr, &mb);
-            px += mb.Width;
-            g.DrawString(wstate, -1, &fSmall, G::RectF(px, py, 900.0f, 22), nullptr, &cs);
-            g.MeasureString(wstate, -1, &fSmall, G::RectF(0, 0, 900, 24), nullptr, &mb);
-            px += mb.Width + 2.0f;
+            // --- campo 0: AUDIO, en pastilla (ver statPill) ---
+            {
+                const G::Color stCol = !en   ? G::Color(0x96, 0xff, 0xa5, 0x1f)
+                                     : sessOn ? kAcc
+                                              : kHot;
+                px += statPill(g, px, py, wstate, stCol, sessOn, fSmall) + 2.0f;
+            }
+            // El resto son CAMPOS. Y una casilla VACIA se apaga ENTERA (rotulo y
+            // valor al mismo tono) con una raya larga en el valor: antes decia "-"
+            // con el mismo peso que un dato, asi que "sin dispositivo elegido"
+            // parecia un dato mas.
             const WCHAR* fl[6] = { L"MOTOR", L"IN", L"OUT", L"FREC", L"BUFFER", L"PRESET" };
             const WCHAR* fv[6] = { weng, winN, woutN, wrate, wbuf, wpres };
+            const bool   vc[6] = { false, eIn, eOut, false, false, false };
             for (int i = 0; i < 6; ++i) {
+                G::SolidBrush& bl = vc[i] ? bLbl : bVal;
+                const WCHAR*   v  = vc[i] ? L"\u2014" : fv[i];
                 g.DrawLine(&fsep, px + 7.0f, py + 2.0f, px + 7.0f, py + 15.0f);
                 px += 14.0f;
                 g.DrawString(fl[i], -1, &fSmall, G::RectF(px, py, 260.0f, 22), nullptr, &bLbl);
                 g.MeasureString(fl[i], -1, &fSmall, G::RectF(0, 0, 900, 24), nullptr, &mb);
                 px += mb.Width + 5.0f;
-                g.DrawString(fv[i], -1, &fSmall, G::RectF(px, py, 620.0f, 22), nullptr, &bVal);
-                g.MeasureString(fv[i], -1, &fSmall, G::RectF(0, 0, 900, 24), nullptr, &mb);
+                g.DrawString(v, -1, &fSmall, G::RectF(px, py, 620.0f, 22), nullptr, &bl);
+                g.MeasureString(v, -1, &fSmall, G::RectF(0, 0, 900, 24), nullptr, &mb);
                 px += mb.Width;
             }
         }
@@ -10102,10 +10187,10 @@ static void buildZones() {
                   MIX_SL_W + MIX_SL_PAD*2, MIX_BLK_B - MIX_BLK_Y);         // bloque MEZCLA
 
     // --- pie: preset y su navegacion ---
-    zoneSetBox(70, 24,  BOT_BOX_Y,     306, 44);                           // preset inferior
-    zoneSetBox(71, 334, BOT_BOX_Y + 4,  32, 36);                           // anterior
-    zoneSetBox(72, 370, BOT_BOX_Y + 4,  32, 36);                           // siguiente
-    zoneSetBox(73, 410, BOT_BOX_Y + 6,  34, 36);                           // favorito
+    zoneSetBox(70, 24,  BOT_BOX_Y,     306, 40);                           // preset inferior
+    zoneSetBox(71, 334, BOT_BOX_Y + 2,  32, 36);                           // anterior
+    zoneSetBox(72, 370, BOT_BOX_Y + 2,  32, 36);                           // siguiente
+    zoneSetBox(73, 410, BOT_BOX_Y + 2,  34, 36);                           // favorito
 }
 
 // ---------------------------------------------------------------------------
@@ -12418,6 +12503,50 @@ static void hTestFlat() {
                       (double)m0, (double)m1, (double)ida);
             hCheck(dentro && vuelta, "J7 el mango de MEZCLA corre dentro de su pista", d);
         }
+
+        // cuantos pixeles TIRAN A AMBAR hay en un cuadro (el borde apagado de la
+        // pastilla no llega al umbral del ambar vivo, pero tiene que ser calido)
+        auto warm = [&](int x0, int y0, int x1, int y1) -> int {
+            int n = 0;
+            for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) {
+                const G::Color c = px(x, y);
+                if ((int)c.GetR() - (int)c.GetB() > 40 && (int)c.GetR() - (int)c.GetG() > 20) ++n;
+            }
+            return n;
+        };
+        // el piloto: solo cuenta el ambar CLARO (0xffdd9a), que no es el del rotulo
+        auto isLit = [&](int x0, int y0, int x1, int y1) -> int {
+            int n = 0;
+            for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) {
+                const G::Color c = px(x, y);
+                if (c.GetR() > 220 && c.GetG() > 200 && c.GetB() > 120) ++n;
+            }
+            return n;
+        };
+
+        // J8: la pastilla del estado de audio. Apagada (SILENCIO) el cuerpo sigue
+        // siendo ambar pero el PILOTO no se enciende: el punto solo dice que hay
+        // sesion. Es la unica pastilla de la app que representa un estado que no
+        // se pulsa, asi que su ambar es tenue.
+        {
+            G::Font fp(kFontUI, kTCuerpo);
+            const int wA = (int)statPill(g, 10.0f, 106.0f, L"SILENCIO",
+                                         G::Color(0x96, 0xff, 0xa5, 0x1f), false, fp);
+            const int amb = warm(10, 103, 10 + wA, 125);
+            const int led = isLit(18, 112, 26, 120);
+            sprintf_s(d, "ancho=%d, px ambar en el cuerpo=%d, px de piloto=%d", wA, amb, led);
+            hCheck(amb > 0 && led == 0,
+                   "J8 la pastilla del estado es ambar en reposo y no enciende el piloto", d);
+        }
+        // J9: con la sesion en linea el piloto se enciende. Es lo unico que
+        // distingue ONLINE de SILENCIO a un metro de la pantalla.
+        {
+            G::Font fp(kFontUI, kTCuerpo);
+            statPill(g, 10.0f, 106.0f, L"ONLINE", kAcc, true, fp);
+            const int led = isLit(18, 112, 26, 120);
+            sprintf_s(d, "px de piloto encendido=%d", led);
+            hCheck(led > 0, "J9 con la sesion en linea el piloto de la pastilla se enciende", d);
+        }
     }
     G::GdiplusShutdown(tok);
 }
@@ -12499,6 +12628,54 @@ static void hTestZones() {
     // el estado original del proceso queda intacto
     g_t3kOpen = sT3k; g_settingsOpen = sSet; g_addOpen = sAdd; g_tunerOpen.store(sTun);
     buildZones();
+}
+
+// ---------------------------------------------------------------------------
+//  R: los detalles del paso 16, clavados a numeros comprobables (no hay pixeles
+//  aqui: son las constantes que la pintura y el clic comparten).
+//   - el AIRE del pie y el de la tarjeta de pedal,
+//   - la JERARQUIA de la cabecera (el filete va JUSTO en medio del hueco: si
+//     alguien mueve un boton, el filete deja de estar centrado),
+//   - la PROPORCION del visualizador (pantalla, no cinta) y su centrado.
+// ---------------------------------------------------------------------------
+static void hTestDesign() {
+    char d[200];
+
+    // R1: el pie respira igual arriba y abajo, y los mandos NO se han movido. El
+    // aire del pie se gano bajando 4px el alto de los controles, no moviendolos:
+    // si alguien "arregla" el aire moviendo la linea, esto lo caza.
+    const bool r1a = (BOT_LBL_Y - FOOT_Y) == 6;                                   // 6 arriba
+    const bool r1b = (FOOT_Y + FOOT_H) - (BOT_BOX_Y + 40) == 6;                   // 6 abajo
+    const bool r1c = (BOT_BOX_Y + 20) == (FOOT_Y + 44);                           // centro intacto
+    const bool r1d = (MASTER_Y + MASTER_R) == (BOT_BOX_Y + 40) &&
+                     (IN_TRIM_Y + IN_TRIM_R) <= (BOT_BOX_Y + 40);                 // nada se sale
+    sprintf_s(d, "arriba=%d abajo=%d centro=%d caben=%d",
+              (int)(BOT_LBL_Y - FOOT_Y), (int)((FOOT_Y + FOOT_H) - (BOT_BOX_Y + 40)),
+              (int)(BOT_BOX_Y + 20), (int)r1d);
+    hCheck(r1a && r1b && r1c && r1d, "S1 el pie respira 6/6 con el centro de sus mandos intacto", d);
+
+    // R2: el switch de la tarjeta de pedal deja 4px al canto (el criterio que se
+    // pidio: la pista del bypass no se pega al borde de la chapa).
+    const int swAir = PED_SLOT_H - (PED_TRK_Y + PED_TRK_H);
+    sprintf_s(d, "aire bajo el switch = %d", swAir);
+    hCheck(swAir == 4, "S2 el switch del pedal deja 4px al canto de su tarjeta", d);
+
+    // R3: el filete de la cabecera parte el hueco entre los dos grupos en dos
+    // mitades (y con sitio para respirar): dos grupos, no tres botones sueltos.
+    const int gA = TOP_SEP_X - (TOP_SAVE_X + 100);
+    const int gB = TOP_REC_X - TOP_SEP_X;
+    sprintf_s(d, "hueco izquierdo=%d derecho=%d", gA, gB);
+    hCheck(gA == gB && gA >= 6, "S3 el filete de la cabecera parte el hueco en dos", d);
+
+    // R4: el visualizador es una PANTALLA centrada en su columna, no una cinta de
+    // canto a canto: 3:2 (15/10) y el mismo margen por los dos lados.
+    const int cl   = SCOPE_X - (COL_R_X + 8);
+    const int cr   = (COL_R_X + COL_R_W - 8) - (SCOPE_X + SCOPE_W);
+    const int prop = SCOPE_W*10/SCOPE_H;
+    const int air  = PANEL_Y + PANEL_H - (SCOPE_Y + SCOPE_H);
+    sprintf_s(d, "proporcion=%d/10 margenes=%d/%d aire al fondo=%d", prop, cl, cr, air);
+    hCheck(cl == cr && prop >= 14 && prop <= 17 && air >= 4,
+           "S4 el visualizador es una pantalla centrada y cabe en el panel", d);
 }
 
 // ---------------------------------------------------------------------------
@@ -12931,6 +13108,7 @@ static void hSelftest(int fs) {
     hTestPaste();
     hTestFlat();
     hTestZones();
+    hTestDesign();
     hTestPresets();
     hTestExtraLeak(fs);
     // P2 va al final: inyecta NaN en el motor y aunque prepare(false) lo deja
