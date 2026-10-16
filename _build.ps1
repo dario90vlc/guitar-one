@@ -17,7 +17,7 @@ Set-Location $root
 Get-Process GuitarAmp -ErrorAction SilentlyContinue | Stop-Process -Force
 # /utf-8: la fuente esta en UTF-8. Sin esta bandera MSVC la lee con la pagina de
 # codigos local y cualquier literal ancho con tilde sale corrupto.
-$cmd = 'call "' + $vc + '" >nul 2>&1 && cl /nologo /utf-8 /O2 /EHsc /std:c++17 GuitarAmpNative.cpp /Fe:GuitarAmp.exe /link ole32.lib oleaut32.lib uuid.lib user32.lib gdi32.lib msimg32.lib propsys.lib gdiplus.lib comdlg32.lib dwmapi.lib winhttp.lib bcrypt.lib crypt32.lib shell32.lib'
+$cmd = 'call "' + $vc + '" >nul 2>&1 && cl /nologo /utf-8 /O2 /EHsc /std:c++17 GuitarAmpNative.cpp /Fe:GuitarAmp.exe /link ole32.lib oleaut32.lib uuid.lib user32.lib gdi32.lib propsys.lib gdiplus.lib comdlg32.lib dwmapi.lib winhttp.lib bcrypt.lib crypt32.lib shell32.lib'
 cmd /c $cmd
 if ($LASTEXITCODE -ne 0) { Write-Output ('BUILD_FAILED ' + $LASTEXITCODE); exit 1 }
 

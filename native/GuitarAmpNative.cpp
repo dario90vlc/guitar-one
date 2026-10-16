@@ -10,7 +10,7 @@
 //  - Panel AJUSTES estilo app kAcc (motor, frecuencia, buffer, dispositivos)
 //  - Compilar: cl /O2 /EHsc /std:c++17 GuitarAmpNative.cpp
 //              /Fe:GuitarAmp.exe /link ole32.lib oleaut32.lib uuid.lib
-//              user32.lib gdi32.lib msimg32.lib propsys.lib gdiplus.lib
+//              user32.lib gdi32.lib propsys.lib gdiplus.lib
 // ============================================================================
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX              // sin macros min/max de windows: el DSP usa std::min/std::max
@@ -4636,6 +4636,20 @@ static void uiApplyTransform(G::Graphics& g, int W, int H) {
     G::Matrix m(g_uiS, 0.0f, 0.0f, g_uiS, g_uiOX, g_uiOY);
     g.SetTransform(&m);
 }
+// Diseno -> cliente para los rectangulos sucios. InvalidateRect habla en pixeles de
+// cliente, pero las tres zonas que se repintan por trozos durante un arrastre (la
+// tarjeta de pedal, el bloque de mezcla y el mando) se piensan en diseno. Colar el
+// rectangulo de diseno tal cual solo funcionaba a 1:1: al ampliar la ventana el
+// trozo se quedaba corto y el arrastre dejaba estelas. El margen de 3px cubre el
+// antialiasing del borde que queda fuera del rectangulo exacto.
+static void uiInvalidate(HWND hwnd, const RECT& design) {
+    RECT r;
+    r.left   = (LONG)((float)design.left  *g_uiS + g_uiOX) - 3;
+    r.top    = (LONG)((float)design.top   *g_uiS + g_uiOY) - 3;
+    r.right  = (LONG)((float)design.right *g_uiS + g_uiOX) + 4;
+    r.bottom = (LONG)((float)design.bottom*g_uiS + g_uiOY) + 4;
+    InvalidateRect(hwnd, &r, FALSE);
+}
 
 // ============================================================
 //  Layout GUITAR ONE: rejilla de 3 columnas (copia del diseno)
@@ -6572,15 +6586,68 @@ static float pedalKnobV01(int t, int k) {
 }
 
 // --- Plantillas de slot de pedal: una cacheada por tipo ---
-// Cada plantilla (156x92 con margen de sombra) se renderiza UNA vez; por frame
-// solo se hace BitBlt del slot + los estados dinamicos encima.
+// Cada plantilla (124x120, la tarjeta con 6px de margen) se renderiza UNA vez; por
+// frame se dibuja el slot + los estados dinamicos encima.
+//  Se dibuja con GDI+ (DrawImage) y NO con BitBlt: la ventana es redimensionable y
+// todo el pintado va en coordenadas de diseno bajo una transformacion de GDI+, que
+// un volcado de GDI se salta. Con BitBlt la tarjeta se quedaba a 1:1 y sin desplazar
+// mientras el switch, el aspa de quitar y las perillas -que si van por GDI+-
+// escalaban con el resto: al ampliar la ventana los pedales salian desencajados de
+// sus propios mandos. El fallo no se veia a 1:1, donde la transformacion es la
+// identidad, y por eso vivio escondido hasta que se miro una ventana ampliada.
 struct SlotTmpl {
     HDC dc = nullptr; HBITMAP bmp = nullptr; HGDIOBJ old = nullptr;
     void* bits = nullptr; bool valid = false;
+    G::Bitmap* gp = nullptr;      // vista GDI+ de esos mismos bits: es lo que se pinta
 };
 static SlotTmpl g_slotTmpl[18];
+
+// --- Fantasma de arrastre: la copia translucida de la plantilla ---
+// El fantasma lleva la tarjeta ENTERA (cuerpo, switch y las dos perillas) y va al
+// 75% de alfa. Antes se volcaba con AlphaBlend, que se salta la transformacion
+// igual que el BitBlt. Aqui se prepara UNA copia con el alfa ya multiplicado -que es
+// lo que pide PixelFormat32bppPARGB y lo que hacia AC_SRC_ALPHA- y se dibuja con
+// DrawImage: escala y se coloca con la misma transformacion que el resto. Se
+// construye al empezar el arrastre y se reutiliza mientras dure.
+static HBITMAP    g_ghostDib  = nullptr;
+static void*      g_ghostBits = nullptr;
+static G::Bitmap* g_ghostBmp  = nullptr;
+static int        g_ghostType = -1;
+static const int  kGhostAlpha = 190;   // el mismo valor que usaba AlphaBlend
+
+static void freeGhostCard() {
+    if (g_ghostBmp) { delete g_ghostBmp; g_ghostBmp = nullptr; }
+    if (g_ghostDib) { DeleteObject(g_ghostDib); g_ghostDib = nullptr; }
+    g_ghostBits = nullptr;
+    g_ghostType = -1;
+}
+static void buildGhostCard(int t) {
+    freeGhostCard();
+    if (t < 0 || t >= 18 || !g_slotTmpl[t].bits) return;
+    HDC scr = GetDC(nullptr);
+    g_ghostDib = createSurfaceDib(scr, PED_TMPL_W, PED_TMPL_H, &g_ghostBits);
+    ReleaseDC(nullptr, scr);
+    if (!g_ghostDib || !g_ghostBits) { freeGhostCard(); return; }
+    const BYTE* src = (const BYTE*)g_slotTmpl[t].bits;
+    BYTE* dst = (BYTE*)g_ghostBits;
+    const int n = PED_TMPL_W*PED_TMPL_H;
+    for (int i = 0; i < n; ++i) {
+        dst[i*4 + 0] = (BYTE)(src[i*4 + 0]*kGhostAlpha/255);
+        dst[i*4 + 1] = (BYTE)(src[i*4 + 1]*kGhostAlpha/255);
+        dst[i*4 + 2] = (BYTE)(src[i*4 + 2]*kGhostAlpha/255);
+        dst[i*4 + 3] = (BYTE)kGhostAlpha;
+    }
+    g_ghostBmp = new G::Bitmap(PED_TMPL_W, PED_TMPL_H, PED_TMPL_W*4,
+                               PixelFormat32bppPARGB, (BYTE*)g_ghostBits);
+    g_ghostType = t;
+}
+
 static void freeSlotTemplates() {
+    freeGhostCard();
     for (int t = 0; t < 18; ++t) {
+        // GDI+ primero: nunca puede quedar un Bitmap vivo sobre los bits de un DIB
+        // ya borrado.
+        if (g_slotTmpl[t].gp) { delete g_slotTmpl[t].gp; g_slotTmpl[t].gp = nullptr; }
         if (g_slotTmpl[t].dc) {
             if (g_slotTmpl[t].old) SelectObject(g_slotTmpl[t].dc, g_slotTmpl[t].old);
             if (g_slotTmpl[t].bmp) DeleteObject(g_slotTmpl[t].bmp);
@@ -6658,6 +6725,11 @@ static void buildSlotTemplates() {
             roundRect(g, x + PED_TRK_X, y + PED_TRK_Y, PED_TRK_W, PED_TRK_H, 7.0f, &trp, &tr);
         }
         surfaceDibOpaque(g_slotTmpl[t].bits, PED_TMPL_W, PED_TMPL_H);
+        // Vista GDI+ de los mismos bits: es lo que se pinta por frame (ver el
+        // comentario del struct). Sin transparencia: el fondo de la plantilla es el
+        // tono del estante, asi que cubre su rectangulo entero.
+        g_slotTmpl[t].gp = new G::Bitmap(PED_TMPL_W, PED_TMPL_H, PED_TMPL_W*4,
+                                         PixelFormat32bppPARGB, (BYTE*)g_slotTmpl[t].bits);
         g_slotTmpl[t].valid = true;
     }
     ReleaseDC(nullptr, scr);
@@ -8928,9 +9000,13 @@ static void paintWindow(HWND hwnd) {
                 continue;
             }
             const G::REAL sx = pedSlotX((int)i), sy = PED_ROW_Y[row];
-            if (g_slotTmpl[t].dc) {
-                BitBlt(g_bufDC, (int)(sx - PED_TMPL_M), (int)(sy - PED_TMPL_M),
-                       PED_TMPL_W, PED_TMPL_H, g_slotTmpl[t].dc, 0, 0, SRCCOPY);
+            // La plantilla entra por GDI+ con la transformacion puesta: misma
+            // escala y mismo desplazamiento que el switch, el aspa y las perillas
+            // que se pintan encima (ver el comentario del struct).
+            if (g_slotTmpl[t].gp) {
+                g.DrawImage(g_slotTmpl[t].gp, sx - (G::REAL)PED_TMPL_M,
+                            sy - (G::REAL)PED_TMPL_M,
+                            (G::REAL)PED_TMPL_W, (G::REAL)PED_TMPL_H);
             }
             const G::Color ac = colFx(t);
             if (rectHas(pedSlotBox((int)sx, (int)sy), g_mouseX, g_mouseY)) {
@@ -8991,10 +9067,11 @@ static void paintWindow(HWND hwnd) {
         const G::REAL gx = (G::REAL)(g_mouseX - PED_TMPL_W/2);
         const G::REAL gy = (G::REAL)(g_mouseY - PED_TMPL_H/2);
         const G::REAL ox = (G::REAL)PED_TMPL_M, oy = (G::REAL)PED_TMPL_M;  // tarjeta dentro del margen
-        if (g_slotTmpl[g_dragPedalType].dc) {
-            BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)190, 0 };
-            AlphaBlend(g_bufDC, (int)gx, (int)gy, PED_TMPL_W, PED_TMPL_H,
-                       g_slotTmpl[g_dragPedalType].dc, 0, 0, PED_TMPL_W, PED_TMPL_H, bf);
+        // La copia translucida se prepara al empezar el arrastre y se dibuja por
+        // GDI+ con la transformacion puesta (ver freeGhostCard/buildGhostCard).
+        if (g_ghostType != g_dragPedalType) buildGhostCard(g_dragPedalType);
+        if (g_ghostBmp) {
+            g.DrawImage(g_ghostBmp, gx, gy, (G::REAL)PED_TMPL_W, (G::REAL)PED_TMPL_H);
         }
         // El fantasma blitea la plantilla y dibuja encima lo mismo que la capa
         // viva: con LA CHAPA como origen (gx+ox es la esquina de la chapa dentro
@@ -10693,7 +10770,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (fy - 4 < r.top)               r.top    = fy - 4;
             if (fx + PED_TMPL_W + 4 > r.right)  r.right  = fx + PED_TMPL_W + 4;
             if (fy + PED_TMPL_H + 4 > r.bottom) r.bottom = fy + PED_TMPL_H + 4;
-            InvalidateRect(hwnd, &r, FALSE);
+            uiInvalidate(hwnd, r);
             return 0;
         }
         if (g_mixDrag) {
@@ -10701,7 +10778,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // regiones: el bloque entero (valor, pista y extremos)
             RECT r = { MIX_SL_X - 4, MIX_BLK_Y - 4,
                        MIX_SL_X + MIX_SL_W + 4, MIX_BLK_B + 4 };
-            InvalidateRect(hwnd, &r, FALSE);
+            uiInvalidate(hwnd, r);
             return 0;
         }
         if (g_dragIdx >= 0) {
@@ -10716,7 +10793,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // centro; margen generoso para ticks y glow)
             RECT r = { k.x - k.r - 70, k.y - k.r - 70,
                        k.x + k.r + 70, k.y + k.r + 70 };
-            InvalidateRect(hwnd, &r, FALSE);
+            uiInvalidate(hwnd, r);
             return 0;
         }
         // repintar solo cuando el hover cambia de control
@@ -12023,6 +12100,144 @@ static void hTestZones() {
     buildZones();
 }
 
+// Puesta en escena de la interfaz: los mismos pasos que da WinMain, sin hilos ni
+// audio (loadIni es de solo lectura) y con el motor preparado antes de pintar (si
+// no, el scope y los medidores salen a cero). Lo comparten el comando render y la
+// prueba de escala, que necesitan exactamente la misma foto.
+static void hUiStage() {
+    initDspDefaults();
+    applyPreset(0);
+    loadIni();
+    loadAmpArt();
+    rebuildKnobs();
+    g_amp.prepare(48000.0f);
+}
+// Ventana fuera de pantalla con el MISMO WndProc que la app. WS_POPUP y sin padre:
+// el cliente mide exactamente w x h, que es de lo que depende la escala.
+static HWND hUiOffscreenWindow(int w, int h) {
+    WNDCLASSEXA wc = { sizeof(wc) };
+    wc.lpfnWndProc   = WndProc;
+    wc.hInstance     = GetModuleHandleA(nullptr);
+    wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
+    wc.lpszClassName = "GuitarAmpOffscreen";
+    RegisterClassExA(&wc);
+    return CreateWindowExA(0, wc.lpszClassName, "GUITAR ONE", WS_POPUP,
+                           -4000, -4000, w, h, nullptr, nullptr, wc.hInstance, nullptr);
+}
+// Color medio del buffer trasero alrededor de un punto de CLIENTE. Se promedia
+// para que medio pixel de diferencia al reescalar no cuente como fallo.
+static G::Color hBufAvg(int cx, int cy, int rad) {
+    long sr = 0, sg = 0, sb = 0; int n = 0;
+    for (int y = cy - rad; y <= cy + rad; ++y)
+        for (int x = cx - rad; x <= cx + rad; ++x) {
+            if (!g_bufBits || x < 0 || y < 0 || x >= g_bufW || y >= g_bufH) continue;
+            const BYTE* p = (const BYTE*)g_bufBits + ((size_t)y*g_bufW + x)*4;
+            sb += p[0]; sg += p[1]; sr += p[2]; ++n;
+        }
+    if (!n) return G::Color(0, 0, 0);
+    return G::Color(255, (BYTE)(sr/n), (BYTE)(sg/n), (BYTE)(sb/n));
+}
+static int hColorDist(G::Color a, G::Color b) {
+    int d = abs((int)a.GetR() - (int)b.GetR());
+    const int dg = abs((int)a.GetG() - (int)b.GetG()), db = abs((int)a.GetB() - (int)b.GetB());
+    if (dg > d) d = dg;
+    if (db > d) d = db;
+    return d;
+}
+// ---------------------------------------------------------------------------
+//  M: el pintado escala ENTERO.
+//  La ventana es redimensionable y todo el pintado va en coordenadas de diseno
+//  bajo una transformacion de GDI+. Lo que se salga de esa transformacion -un
+//  volcado de GDI, un rectangulo sucio en diseno- se ve perfecto a 1:1, donde el
+//  factor es 1 y la transformacion es la identidad, y se descuelga en cuanto la
+//  ventana se amplia. El defecto real: la tarjeta de pedal se volcaba con BitBlt y
+//  al ampliar la ventana aparecia desencajada de su switch, sus perillas y su aspa.
+//  La prueba pinta la MISMA escena a 1:1 y a 1.25 y compara puntos elegidos para
+//  que su color delate si el elemento esta donde toca: la cinta y la pista vienen
+//  de la plantilla cacheada, y el mando del bypass y el aspa van por GDI+ encima.
+// ---------------------------------------------------------------------------
+static void hTestScale() {
+    G::GdiplusStartupInput gsi;
+    ULONG_PTR tok = 0;
+    if (G::GdiplusStartup(&tok, &gsi, nullptr) != G::Ok) {
+        hCheck(false, "M0 GDI+ arranca para la prueba de escala", "GDI+ no arranco");
+        return;
+    }
+    {
+        const std::vector<int> savePre = g_chainPre, savePost = g_chainPost;
+        bool saveOn[18];
+        for (int t = 0; t < 18; ++t) {
+            saveOn[t] = g_params.fxOn[t].load();
+            g_params.fxOn[t].store(true);   // el mando del bypass, al final de su pista
+        }
+        HWND hwnd = nullptr;
+        {
+            hUiStage();   // carga el ini, el arte y los knobs de verdad
+            // Cadena conocida: tres pedales antes del cabezal y dos despues, para
+            // que las DOS filas tengan tarjeta que comparar.
+            publishChain(std::vector<int>{ 0, 1, 2 }, std::vector<int>{ 3, 4 });
+            rebuildKnobs();
+            hwnd = hUiOffscreenWindow(WIN_W, WIN_H);
+        }
+        if (!hwnd) {
+            hCheck(false, "M0 se abre la ventana fuera de pantalla", "CreateWindowExA fallo");
+        } else {
+            // Puntos de diseno, uno por fila: la cinta de tipo (en lo alto de la
+            // chapa), la pista del bypass y el mando encendido al final de esa pista.
+            // La cinta y la pista vienen de la plantilla (lo que se volcaba mal) y el
+            // mando de la capa viva: si la tarjeta y sus mandos no comparten escala,
+            // los tres no pueden estar bien a la vez.
+            // Medido con el fallo puesto: cinta 89 y 105, pista 9 y 2, mando 0 y 9 (la
+            // tarjeta no estaba; el mando siempre iba escalado). Ajustado: cinta 5,
+            // pista 0 y 1, mando 0. De ahi las tolerancias: el aspa de quitar no vale
+            // como punto, su disco es 3 unidades mas oscuro que el estante (solo se
+            // mediria el aspa fina, que cambia de brillo al reescalar: 44 de desvio
+            // sin que hubiera nada descolocado).
+            struct Probe { int x, y, rad, tol; const char* what; };
+            Probe pr[6]; int np = 0;
+            for (int row = 0; row < 2; ++row) {
+                const int sx = (int)pedSlotX(0), sy = PED_ROW_Y[row];
+                pr[np++] = { sx + 56,                        sy + 3,  1, 12, "cinta" };
+                pr[np++] = { sx + PED_TRK_X + 12,            sy + PED_TRK_Y + 7, 2, 8, "pista" };
+                pr[np++] = { sx + PED_TRK_X + PED_TRK_W - 8, sy + PED_TRK_Y + 7, 2, 20, "mando" };
+            }
+            G::Color base[6];
+            InvalidateRect(hwnd, nullptr, FALSE);
+            SendMessageA(hwnd, WM_PAINT, 0, 0);
+            for (int i = 0; i < np; ++i) base[i] = hBufAvg(pr[i].x, pr[i].y, pr[i].rad);
+            const bool tenia1a1 = (g_uiS > 0.99f && g_uiS < 1.01f);
+
+            // La misma escena con la ventana ampliada: ahora cada punto cae donde la
+            // escala dice, y el color tiene que seguir siendo el mismo.
+            SetWindowPos(hwnd, nullptr, 0, 0, 1800, 1200,
+                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            SendMessageA(hwnd, WM_PAINT, 0, 0);
+            int malos = 0, peor = 0;
+            char d[240], desv[160] = "";
+            for (int i = 0; i < np; ++i) {
+                const int cx = (int)((G::REAL)pr[i].x*g_uiS + g_uiOX + 0.5f);
+                const int cy = (int)((G::REAL)pr[i].y*g_uiS + g_uiOY + 0.5f);
+                const int dd = hColorDist(base[i], hBufAvg(cx, cy, pr[i].rad));
+                if (dd > peor) peor = dd;
+                if (dd > pr[i].tol) ++malos;
+                // el desvio de cada punto, para que el margen quede a la vista
+                sprintf_s(desv + strlen(desv), sizeof(desv) - strlen(desv),
+                          "%s%s=%d(tol %d)", i ? " " : "", pr[i].what, dd, pr[i].tol);
+            }
+            sprintf_s(d, "%d puntos, %d fuera de tolerancia a escala %.3f | %s",
+                      np, malos, g_uiS, desv);
+            hCheck(tenia1a1, "M1 la foto de referencia se pinta a 1:1", tenia1a1 ? "escala 1.000" : "la escala no era 1");
+            hCheck(malos == 0, "M1 al ampliar la ventana cada pieza cae donde dice la escala", d);
+
+            freeStaticScene(); freeAmpArt(); freeSlotTemplates(); freeBackbuffer();
+        }
+        publishChain(savePre, savePost);
+        for (int t = 0; t < 18; ++t) g_params.fxOn[t].store(saveOn[t]);
+    }
+    G::GdiplusShutdown(tok);
+}
+
 static void hSelftest(int fs) {
     printf("\n== autotest de correcciones ==\n");
     hNamRejects();
@@ -12095,11 +12310,19 @@ static void hSelftest(int fs) {
     char d[220];
     sprintf_s(d, "6 kHz %+.2f dB (debe ser plano), 30 kHz %.2f dB", os6, os30);
     hCheck(os6 > -0.5 && os30 < -50.0, "B2 el 4x filtra de verdad: pasa 6 kHz, mata 30 kHz", d);
+
+    // M va la ULTIMA: carga el ini y deja otra cadena de pedales, asi que no puede
+    // quedar nada despues que dependa del estado del motor.
+    hTestScale();
 }
 
 // ---------------------------------------------------------------------------
-//  render <png> [estado]: fotografia de la ventana entera, para poder mirar el
-//  rediseno en una maquina sin sesion grafica utilizable.
+//  render <png> [estado] [AnchoxAlto]: fotografia de la ventana entera, para poder
+//  mirar el rediseno en una maquina sin sesion grafica utilizable.
+//  El tamano es opcional (por defecto el de diseno, 1440x956) y existe porque la
+//  ventana es REDIMENSIONABLE: a 1:1 la transformacion de GDI+ es la identidad y
+//  un pintado que se salte la escala (un BitBlt de GDI) sale bien y el fallo no se
+//  ve. Pidiendo por ejemplo 1800x1200 la foto sale a 1.25 y ese fallo aparece.
 //  Es EXACTAMENTE el mismo paintWindow que usa la app, en una ventana fuera de
 //  pantalla; el destino real del pintado es el buffer trasero, asi que la foto
 //  sale entera aunque la ventana no se vea. Con esto cada panel se revisa con
@@ -12141,7 +12364,7 @@ static void hRenderPaintProbe(HWND hwnd) {
     }
 }
 
-static int hRender(const char* outPath, const char* state) {
+static int hRender(const char* outPath, const char* state, int winW, int winH) {
     setvbuf(stdout, nullptr, _IONBF, 0);   // si algo peta, el log tiene que llegar
     G::GdiplusStartupInput gsi;
     ULONG_PTR tok = 0;
@@ -12156,7 +12379,7 @@ static int hRender(const char* outPath, const char* state) {
 
     // Fuera de pantalla: da igual, el pintado va al buffer trasero
     HWND hwnd = CreateWindowExA(0, wc.lpszClassName, "GUITAR ONE", WS_POPUP,
-                                -4000, -4000, WIN_W, WIN_H,
+                                -4000, -4000, winW, winH,
                                 nullptr, nullptr, wc.hInstance, nullptr);
     if (!hwnd) { printf("RENDER_SIN_VENTANA\n"); return 1; }
 
@@ -12178,6 +12401,15 @@ static int hRender(const char* outPath, const char* state) {
         else if (strcmp(state, "tuner") == 0)    g_tunerOpen.store(true);
         else if (strcmp(state, "settings") == 0) g_settingsOpen = true;
         else if (strcmp(state, "presets") == 0)  g_leftTab = 1;
+        else if (strcmp(state, "drag") == 0) {
+            // Arrastre de pedal a medias: la tarjeta que sigue al raton. Es la unica
+            // forma de mirar el fantasma, que solo existe mientras dura el gesto. Se
+            // pone sobre el frontal del cabezal para que se vea entero.
+            if (!g_chainPre.empty()) {
+                g_dragPedalRow = 0; g_dragPedalIdx = 0; g_dragPedalType = g_chainPre[0];
+                g_mouseX = ART_X + 210; g_mouseY = ART_Y + 150;
+            }
+        }
     }
 
     ShowWindow(hwnd, SW_SHOWNA);
@@ -12250,7 +12482,16 @@ int main(int argc, char** argv) {
     if (strcmp(mode, "render") == 0) {
         const char* outP = (argc > 2) ? argv[2] : "_dsp_out/render.png";
         const char* st   = (argc > 3) ? argv[3] : nullptr;
-        const int r = hRender(outP, st);
+        int rw = WIN_W, rh = WIN_H;   // por defecto, tamano de diseno (escala 1)
+        if (argc > 4) {
+            int a = 0, b = 0;
+            if (sscanf_s(argv[4], "%dx%d", &a, &b) == 2 && a >= 320 && b >= 240) {
+                rw = a; rh = b;
+            } else {
+                printf("RENDER_TAMANO_ILEGIBLE %s (se espera AnchoxAlto)\n", argv[4]);
+            }
+        }
+        const int r = hRender(outP, st, rw, rh);
         printf("\nRENDER_FAILS=%d\n", r);
         printf("\nHARNESS_DONE\n");
         return r ? 1 : 0;
