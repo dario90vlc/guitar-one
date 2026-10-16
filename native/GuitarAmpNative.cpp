@@ -1577,9 +1577,9 @@ static int   g_presetIdx = 0;
 // Se declara aqui porque saveIni/loadIni (muy mas abajo en el fichero) la
 // persisten, y el corazon del pie refleja el bit del ampli cargado.
 static DWORD g_favMask = 0;
-// El favorito de un ampli: lo que marca la estrella de una fila de
-// AMPLIFICADORES. Los PRESETS llevan su propio favorito (ver presetFav): la
-// estrella marca siempre lo que la lista ensena en esa fila.
+// El favorito de un ampli: lo que marca la estrella de una fila de la lista del
+// sidebar. Los PRESETS llevan su propio favorito (ver presetFav), que en el
+// navegador es un PUNTO de color: cada lista marca lo suyo con su propio mando.
 static bool ampFav(int a) { return (a >= 0 && a < 32) && (((g_favMask >> a) & 1u) != 0); }
 
 // --- Presets de usuario (persistidos en GuitarAmp.ini) ---
@@ -1619,17 +1619,17 @@ static std::vector<UserPreset> g_userPresets;
 static int presetTotal() { return kNumPresets + (int)g_userPresets.size(); }
 static bool isUserPreset(int idx) { return idx >= kNumPresets && idx < presetTotal(); }
 // --- Favoritos de PRESET -----------------------------------------------------
-// La estrella de la fila marca EL PRESET que hay en esa fila, no el ampli (esa
-// es la de la pestana AMPLIFICADORES, que se queda como estaba). Los 78 de
-// fabrica van en un arreglo fijo porque su indice no se mueve nunca; los del
-// usuario lo llevan en su propia ficha, porque su lista se recorta al borrar y
-// un bit por indice se correria de preset.
+// La estrella de la fila marca EL PRESET que hay en esa fila, no el ampli (esa es
+// la de la lista de amplificadores del sidebar). Los 78 de fabrica van en un
+// arreglo fijo porque su indice no se mueve nunca; los del usuario lo llevan en su
+// propia ficha, porque su lista se recorta al borrar y un bit por indice se
+// correria de preset.
 // Los COLORES de favorito (paso 18): antes el favorito era un bool y la estrella
 // encendida; ahora es un punto con color, como las colecciones de Guitar Rig.
 // 0 = sin color; 1..4 = ambar, rojo, azul, verde (ver favColorAt).
 static const int kFavColors = 5;
 static unsigned char g_favPreset[kNumPresets] = {};
-static bool g_favOnly = false;         // el filtro "solo favoritos" del navegador
+static bool g_favOnly = false;         // el filtro "solo mis amplis favoritos" del sidebar
 static int presetFavColor(int idx) {
     if (idx < 0 || idx >= presetTotal()) return 0;
     return (idx < kNumPresets) ? (int)g_favPreset[idx]
@@ -4950,31 +4950,30 @@ static const int COL_L_X = 24,  COL_L_W = 300;      // lista de amps
 static const int COL_C_X = 340, COL_C_W = 720;      // torre de senal
 static const int COL_R_X = 1076, COL_R_W = 340;     // panel CABINA
 
-// Panel izquierdo: tabs + busqueda + lista
-static const int TAB_Y = 86,  TAB_H = 30;
-// 12px de aire entre pestanas, buscador y lista: es el ritmo del resto del
-// diseno. Con 8 el navegador se leia apretado de arriba.
-static const int SEARCH_X = 34, SEARCH_Y = 128, SEARCH_W = 280, SEARCH_H = 32;
-static const int LIST_Y = 172, LIST_H = PANEL_Y + PANEL_H - LIST_Y - 36;
+// Panel izquierdo: busqueda + lista. La banda de pestanas AMPLIFICADORES|PRESETS
+// se retiro (paso 19): con el navegador superpuesto, la lista de presets de la
+// izquierda era un SEGUNDO catalogo que contaba lo mismo, y el panel nacio para
+// elegir AMPLIFICADOR (de el dependen el frontal y las perillas). Los presets
+// viven solo en el navegador.
+static const int TAB_H = 30;                 // alto del filete de la pestana CABINA
+// 12px de aire entre buscador y lista: es el ritmo del resto del diseno. Con 8 el
+// navegador se leia apretado de arriba.
+static const int SEARCH_X = 34, SEARCH_Y = 86, SEARCH_W = 236, SEARCH_H = 32;
+// La ESTRELLA del filtro "solo favoritos" de los amplis: al canto del buscador,
+// en la misma fila. Antes vivia en la banda de pestanas y filtraba la pestana
+// activa; ahora solo hay una lista que filtrar, asi que el mando se queda con
+// ella (y el buscador cede el ancho justo para que no se pisen).
+static const int SEARCH_STAR_X = SEARCH_X + SEARCH_W + 8, SEARCH_STAR_W = 36;
+static const int LIST_Y = 130, LIST_H = PANEL_Y + PANEL_H - LIST_Y - 36;
 static const int HINT_Y = PANEL_Y + PANEL_H - 24;   // leyenda de atajos al pie del navegador
 // Fila de la lista: 56 y no 48. El aire es la mitad del rediseno, y con 56 la
 // fila deja de ser un renglon apretado: caben 11 amplis sin scroll (11x56 = 616).
 static const int LIST_ROW_H = 56;
-// La fila de PESTANAS: dos pestanas y, al canto, la ESTRELLA del filtro "solo
-// favoritos". El buscador ocupa su ancho entero y no dejaba sitio a un mando
-// mas; aqui el filtro vive con las pestanas y filtra la que este activa (los
-// amplis marcados en AMPLIFICADORES, los presets marcados en PRESETS). La
-// geometria sale de UNA definicion -la misma para el pintado y para el clic-,
-// que es lo que impide que el clic y lo que se ve vuelvan a separarse.
-static const int TAB_STAR_W = 40;
-static RECT tabRect(int i) {
-    const int tw = (COL_L_W - 16 - TAB_STAR_W - 8) / 2;
-    RECT r = { COL_L_X + 8 + i*(tw + 4), TAB_Y, COL_L_X + 8 + i*(tw + 4) + tw, TAB_Y + TAB_H };
-    return r;
-}
-static RECT tabStarRect() {
-    RECT r = { COL_L_X + COL_L_W - 8 - TAB_STAR_W, TAB_Y + 2,
-               COL_L_X + COL_L_W - 8, TAB_Y + TAB_H - 2 };
+// La caja de la ESTRELLA del filtro de la lista: UNA definicion para el pintado y
+// para el clic, que es lo que impide que el mando y su zona vuelvan a separarse.
+static RECT searchStarRect() {
+    RECT r = { SEARCH_STAR_X, SEARCH_Y + 2,
+               SEARCH_STAR_X + SEARCH_STAR_W, SEARCH_Y + SEARCH_H - 2 };
     return r;
 }
 // ============================================================================
@@ -5300,7 +5299,6 @@ static const int SCOPE_X = COL_R_X + (COL_R_W - SCOPE_W)/2;
 static const int SCOPE_Y = 664;
 
 // --- Estado de la lista (panel izquierdo) ---
-static int   g_leftTab = 0;         // 0=AMPLIFICADORES 1=PRESETS
 static int   g_listScroll = 0;
 static bool  g_searchFocus = false;
 static WCHAR g_ampFilter[40] = L"";
@@ -5426,12 +5424,11 @@ static const char*   kFxShort[18][2] = { { "THR", "DEC" }, { "SUS", "LVL" }, { "
                                         { "DIST", "FLT" }, { "RATE", "DEEP" },
                                         { "TIME", "FB" }, { "DWELL", "MIX" },
                                         { "LVL", "TONE" }, { "SENS", "RNG" } };
-// Las ranuras de la lista del navegador: una por entrada (amp o preset) MAS una
-// de encabezado por amplificador -la banda que dice de que ampli son los
-// presets que vienen-. Las ranuras miden todas lo mismo, de modo que la fila, el
-// clic y el hover siguen midiendose con navRowRect: lo unico que cambia es QUE
-// hay en cada ranura. El tope tiene que cubrir las dos cosas: con el tope de
-// entradas, el encabezado del ultimo ampli se salia del arreglo.
+// Las ranuras de la lista del navegador: una por entrada de la lista. Desde el
+// paso 19 la lista es solo de amplificadores y es PLANA, asi que sobra el tope de
+// encabezados; se conserva por si volviera una lista con filas intercaladas, y
+// porque las ranuras miden todas lo mismo: la fila, el clic y el hover se miden
+// con navRowRect y lo unico que cambia es QUE hay en cada ranura.
 static const int kMaxNavRows = kMaxListEntries + kAmpCount;
 static const WCHAR* kAmpNames[13]  = { L"SPARKLE TWIN", L"CHIME 30", L"AMBER TWEED",
                                         L"CHORUS 120", L"MARAUDER 800", L"LEAD 1959",
@@ -7179,40 +7176,21 @@ static void buildStaticScene(int W, int H) {
                        (G::REAL)TOP_BOX_X + TOP_DIV_X, (G::REAL)(TOP_BOX_Y + TOP_BOX_H - 12));
     }
 
-    // --- Panel izquierdo: tabs AMPLIFICADORES|PRESETS + busqueda ---
+    // --- Panel izquierdo: busqueda + lista de amplificadores ---
     {
         glassPanel(g, (G::REAL)COL_L_X, (G::REAL)PANEL_Y, (G::REAL)COL_L_W,
                    (G::REAL)PANEL_H, kRPanel);
-        const WCHAR* tabsL[2] = { L"AMPLIFICADORES", L"PRESETS" };
-        for (int i = 0; i < 2; ++i) {
-            const RECT tr = tabRect(i);
-            const int tx = tr.left, tw = tr.right - tr.left;
-            const bool act = (g_leftTab == i);
-            if (act) {
-                // Filete de 64x2 centrado bajo la pestana activa: la MISMA
-                // pieza que la pestana CABINA (antes esta llevaba caja rellena y
-                // un filete de 110px, y las dos pestanas del sistema no se leian
-                // igual). Sin caja: la caja hacia que el navegador pareciese un
-                // formulario.
-                G::SolidBrush ub(kAcc);
-                roundRect(g, tx + (tw - 64)/2, TAB_Y + TAB_H - 3, 64, 2, 1, nullptr, &ub);
-            }
-            // El rotulo se mide y se ajusta: a 11,5 pt "AMPLIFICADORES" ya no cabe
-            // en media columna y DrawString lo partia en dos lineas.
-            drawTxFitC(g, tabsL[i], G::FontStyleBold, act ? kFTxt : kFTxt2,
-                           (G::REAL)(tx + tw/2), (G::REAL)(TAB_Y + 3), 1.1f,
-                           (G::REAL)(tw - 8), TxRotulo);
-        }
+        // El separador va DEBAJO del buscador: con la banda de pestanas retirada
+        // no hay pestana que separar, pero el filete sigue haciendo el mismo
+        // trabajo (cerrar el buscador antes de la lista).
+        hairSep(g, (G::REAL)(COL_L_X + 12), (G::REAL)(SEARCH_Y + SEARCH_H + 4), (G::REAL)(COL_L_W - 24), 40);
         // La estrella del filtro: ambar cuando filtra (esta PULSADA es la unica
         // lectura que admite el lenguaje) y contorno tenue en reposo.
         {
-            const RECT sr = tabStarRect();
+            const RECT sr = searchStarRect();
             icStar(g, (G::REAL)(sr.left + sr.right)/2.0f, (G::REAL)(sr.top + sr.bottom)/2.0f,
                    7.5f, g_favOnly ? kAcc : kFTxt3, g_favOnly);
         }
-        // El separador va DEBAJO de la banda de pestanyas: con SEARCH_Y-10 (y=114)
-        // cruzaba el filete activo (113..115) y le ponia una raya a la pestana.
-        hairSep(g, (G::REAL)(COL_L_X + 12), (G::REAL)(SEARCH_Y - 4), (G::REAL)(COL_L_W - 24), 40);
         // Leyenda de atajos: el hueco del pie estaba RESERVADO (LIST_H deja 36px y
         // HINT_Y apuntaba a el) pero nada lo pintaba. Los atajos existen y son
         // reales, asi que la leyenda cierra el panel como promete el diseno.
@@ -7885,47 +7863,27 @@ static int browseOrder(int* out) {
     return n;
 }
 
+// Las entradas de la lista del panel izquierdo: los 13 amplis, filtrados por el
+// buscador (nombre Y subtitulo) y por el "solo mis favoritos". La rama de PRESETS
+// se retiro con la pestana (paso 19): el catalogo de presets es del navegador.
 static void listFilterIdx(int* out, int* pCount) {
     int n = 0;
     WCHAR lowF[40]; int fi = 0;
     for (; fi < 39 && g_ampFilter[fi]; ++fi) lowF[fi] = lowerW(g_ampFilter[fi]);
     lowF[fi] = 0;
-    if (g_leftTab == 1) {
-        int ord[kMaxListEntries];
-        const int tot = presetOrder(ord);
-        for (int k = 0; k < tot && n < kMaxListEntries; ++k) {
-            const int i = ord[k];
-            if (g_favOnly && !presetFav(i)) continue;
-            if (fi == 0) { out[n++] = i; continue; }
-            // El buscador tiene que encontrar lo que se ve: el nombre del preset
-            // Y el ampli del grupo, que es el rotulo que la lista pone encima de
-            // sus seis lotes (buscar "marauder" tiene que traerlos). Antes
-            // filtraba solo por nombre.
-            WCHAR pn[128]; presetNameW(i, pn, 128);
-            const int g = presetGroup(i);
-            WCHAR all[192];
-            if (g >= 0) swprintf_s(all, L"%s %s", pn, kAmpNames[g]);
-            else        wcsncpy_s(all, pn, _TRUNCATE);
-            WCHAR lowP[208]; size_t j = 0;
-            for (; j + 1 < 208 && all[j]; ++j) lowP[j] = lowerW(all[j]);
-            lowP[j] = 0;
-            if (wcsstr(lowP, lowF)) out[n++] = i;
-        }
-    } else {
-        // 13 amplis, no 12: con `i < 12` el cabezal PERFIL no aparecia NUNCA en
-        // la lista (quedaba inalcanzable desde la interfaz, que es justo la mitad
-        // del producto que se anuncia).
-        for (int i = 0; i < kAmpCount; ++i) {
-            if (g_favOnly && !ampFav(i)) continue;
-            if (fi == 0) { out[n++] = i; continue; }
-            WCHAR all[96];
-            swprintf_s(all, L"%s %s", kAmpNames[i], kAmpSubs[i]);
-            WCHAR lowAll[96];
-            size_t j = 0;
-            for (; j + 1 < 96 && all[j]; ++j) lowAll[j] = lowerW(all[j]);
-            lowAll[j] = 0;
-            if (wcsstr(lowAll, lowF)) out[n++] = i;
-        }
+    // 13 amplis, no 12: con `i < 12` el cabezal PERFIL no aparecia NUNCA en
+    // la lista (quedaba inalcanzable desde la interfaz, que es justo la mitad
+    // del producto que se anuncia).
+    for (int i = 0; i < kAmpCount; ++i) {
+        if (g_favOnly && !ampFav(i)) continue;
+        if (fi == 0) { out[n++] = i; continue; }
+        WCHAR all[96];
+        swprintf_s(all, L"%s %s", kAmpNames[i], kAmpSubs[i]);
+        WCHAR lowAll[96];
+        size_t j = 0;
+        for (; j + 1 < 96 && all[j]; ++j) lowAll[j] = lowerW(all[j]);
+        lowAll[j] = 0;
+        if (wcsstr(lowAll, lowF)) out[n++] = i;
     }
     *pCount = n;
 }
@@ -7944,24 +7902,16 @@ static RECT navRowPaintRect(int vi) {
     r.bottom -= 4;             // el aire entre filas es solo visual
     return r;
 }
-// Columna de acciones del borde derecho de la fila. Las tres chapas, de derecha
-// a izquierda: 0 es la del canto (la estrella de favoritos, en las DOS pestanas
-// -es el mismo mando en el mismo sitio-) y a su izquierda el lapiz (1) y el aspa
-// (2), que solo tienen los presets del usuario. Antes el aspa ocupaba el canto y
-// la estrella de los presets no existia; mover el aspa a la tercera columna es
-// lo que deja sitio al favorito sin tocar la geometria de las otras dos.
-static RECT navBadgeColRect(int vi, int col) {
+// La caja de la ESTRELLA de favoritos de una fila: la unica chapa del canto
+// derecho. Antes eran tres (estrella, lapiz y aspa) porque la lista tambien
+// llevaba presets del usuario; con la pestana PRESETS retirada (paso 19) queda la
+// estrella, que es lo unico que ofrece la fila de un ampli. Una sola definicion
+// para el pintado y para el clic, que es lo que impide que vuelvan a separarse.
+static RECT navStarRect(int vi) {
     RECT r = navRowRect(vi);
-    switch (col) {
-        case 0:  r.left = r.right - 28; r.right = r.right -  2; break;
-        case 1:  r.left = r.right - 54; r.right = r.right - 30; break;
-        default: r.left = r.right - 80; r.right = r.right - 56; break;
-    }
+    r.left = r.right - 28; r.right = r.right - 2;
     r.top += 4; r.bottom -= 8;
     return r;
-}
-static RECT navBadgeRect(int vi, bool primary) {
-    return navBadgeColRect(vi, primary ? 0 : 1);
 }
 static bool rectHas(const RECT& r, int x, int y) {
     POINT p = { x, y };
@@ -7973,17 +7923,9 @@ static RECT pedSlotBox(int sx, int sy) {
     RECT r = { sx, sy, sx + PED_SLOT_W, sy + PED_SLOT_H };
     return r;
 }
-// El ROTULO del ampli de un grupo: nombre + caracter, la misma pareja que usa la
-// ficha de la fila de AMPLIFICADORES. Es el encabezado que la lista de presets
-// pone delante de los seis lotes (y de los presets del usuario) de un ampli.
-static void groupLabelW(int g, WCHAR* out, int n) {
-    if (!out || n <= 0) return;
-    if (g >= 0 && g < kAmpCount) swprintf_s(out, (size_t)n, L"%s \x00B7 %s", kAmpNames[g], kAmpSubs[g]);
-    else                         wcsncpy_s(out, (size_t)n, L"SIN AMPLIFICADOR", _TRUNCATE);
-}
 // El rotulo del lote en la banda del cabezal: QUE lote del ampli suena. Antes
 // era el indice global ("PRESET 31"), que no es una posicion que nadie pueda
-// buscar en ninguna parte; ahora es el mismo numero que ensena la lista.
+// buscar en ninguna parte; ahora es el mismo numero que ensena el navegador.
 static void presetTagW(int idx, WCHAR* out, int n) {
     if (!out || n <= 0) return;
     const int g  = presetGroup(idx);
@@ -7991,19 +7933,16 @@ static void presetTagW(int idx, WCHAR* out, int n) {
     if (g < 0 || ig <= 0) { wcsncpy_s(out, (size_t)n, L"SIN AMPLIFICADOR", _TRUNCATE); return; }
     swprintf_s(out, (size_t)n, L"%s \x00B7 %d", kAmpNames[g], ig);
 }
-// El texto del hueco del buscador. Es el mismo campo en las dos pestanas, asi
-// que tiene que decir lo que la pestana filtra: en PRESETS pedia "Buscar
-// amplificador...", que es justo lo que NO filtra esa pestana.
+// El texto del hueco del buscador. El panel izquierdo lista AMPLIFICADORES (la
+// pestana PRESETS se retiro en el paso 19), asi que el hueco lo dice y no puede
+// prometer otra cosa: la busqueda de presets vive en el navegador.
 static const WCHAR* searchHint() {
-    return (g_leftTab == 1) ? L"Buscar preset..." : L"Buscar amplificador...";
+    return L"Buscar amplificador...";
 }
 // Las RANURAS de la lista, en orden de pintado: una por entrada de listFilterIdx
-// (que es lo que seleccionan el clic y las flechas). La lista es PLANA en las dos
-// pestanas (paso 18.9): antes la pestana de PRESETS intercalaba un ENCABEZADO por
-// ampli, y con el navegador superpuesto las dos listas contaban lo mismo y se
-// estorbaban (ademas el encabezado no era pegajoso y se iba con el scroll). El
-// ampli y su caracter viajan ahora en el SUBTITULO de cada fila (groupLabelW),
-// como en las filas del navegador.
+// (que es lo que seleccionan el clic y las flechas). La lista es PLANA (paso
+// 18.9, y tras el paso 19 es la unica que hay): un ampli por fila, sin
+// encabezados intercalados, y el subtitulo de cada fila dice su nombre.
 static int navRows(int* out) {
     int idx[kMaxListEntries], cnt = 0;
     listFilterIdx(idx, &cnt);
@@ -8818,6 +8757,9 @@ struct BrwBox {
     // El Info pane (paso 18.7): las cajas que se PULSAN. Se calculan aqui, con
     // el resto de la geometria, y las leen el pintado y el clic.
     RECT iName, iAuthor, iComment, iTags[kCharCount], iFav;
+    // Las fechas (solo en un preset mio) y el boton BORRAR, que bajo del aspa de
+    // la fila del sidebar al navegador (paso 19).
+    RECT iWhen, iDel;
     int  lblFav, lblOrg, lblChr, lblAmp;
 };
 static BrwBox g_brw;
@@ -8828,6 +8770,17 @@ static const WCHAR* presetCharLabel(int idx) {
     const unsigned int t = presetTags(idx);
     for (int c = 0; c < kCharCount; ++c) if (t & (1u << c)) return kCharNames[c];
     return L"SIN ETIQUETA";
+}
+
+// La fecha de un preset mio, en un formato que se lee de un vistazo
+// (AAAA-MM-DD). El 0 es "sin fecha": los presets de fabrica no llevan.
+static void brwDateW(long long t, WCHAR* out, int n) {
+    if (!out || n <= 0) return;
+    if (t <= 0) { wcsncpy_s(out, (size_t)n, L"\x2014", _TRUNCATE); return; }
+    __time64_t tt = (__time64_t)t;
+    tm lt = {};
+    if (_localtime64_s(&lt, &tt) != 0) { wcsncpy_s(out, (size_t)n, L"\x2014", _TRUNCATE); return; }
+    swprintf_s(out, (size_t)n, L"%04d-%02d-%02d", lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
 }
 
 static void brwLayout() {
@@ -8890,6 +8843,13 @@ static void brwLayout() {
         y += ((kCharCount + 1)/2)*30 + 6;
         y += 22;                                           // "FAVORITO"
         g_brw.iFav = RECT{ il, y, ir, y + 24 };
+        y += 32;
+        g_brw.iWhen = RECT{ il, y, ir, y + 18 };           // "CREADO ... USADO ..."
+        // BORRAR: al pie del Info pane, pegado al canto inferior. Es una accion de
+        // la FICHA (y solo la tienen los presets mios), asi que vive con ella y no
+        // en una fila del catalogo: era el aspa de la fila del sidebar, que se
+        // retiro en el paso 19. Se pulsa dos veces.
+        g_brw.iDel = RECT{ il, g_brw.info.bottom - 34, il + 150, g_brw.info.bottom - 6 };
     }
 }
 static RECT brwRowRect(int vi) {
@@ -9189,6 +9149,29 @@ static void brwPaint(G::Graphics& g) {
             else    { G::Pen dp(kFTxt3, 1.2f); g.DrawEllipse(&dp, dx, dy, 12.0f, 12.0f); }
             drawTxFit(g, kBrwFavNames[fc], G::FontStyleRegular, kFTxt2, dx + 20.0f, (G::REAL)fr.top + 4.0f, 0.5f, 200.0f, TxCuerpo);
         }
+        // Las FECHAS: solo los presets mios las tienen (los de fabrica no llevan).
+        // Es lo unico de la ficha que no se edita.
+        if (user) {
+            WCHAR w1[48], w2[48], line[160];
+            brwDateW(presetCreated(idx), w1, 48);
+            brwDateW(presetUsed(idx),    w2, 48);
+            swprintf_s(line, L"CREADO %s   \x00b7   USADO %s", w1, w2);
+            drawTxFit(g, line, G::FontStyleRegular, kFTxt3, (G::REAL)ir.left, (G::REAL)g_brw.iWhen.top, 0.4f,
+                      (G::REAL)(ir.right - ir.left), TxRotulo);
+        }
+        // BORRAR: la accion que en el sidebar era el aspa de la fila (paso 19).
+        // Pide DOS clics -el primero arma el boton- para no llevarse un preset de
+        // un roce, el mismo patron que el resto de la app.
+        if (user) {
+            const RECT& dr = g_brw.iDel;
+            const bool armed = (g_delArm == idx);
+            const bool hov = rectHas(dr, g_mouseX, g_mouseY);
+            flatPillBody(g, (G::REAL)dr.left, (G::REAL)dr.top,
+                         (G::REAL)(dr.right - dr.left), (G::REAL)(dr.bottom - dr.top),
+                         hov && !armed, armed, kHot);
+            brwTextIn(g, dr, armed ? L"SEGURO? PULSA OTRA VEZ" : L"BORRAR PRESET",
+                      G::FontStyleBold, armed ? kFTxt : (hov ? kFTxt : kFTxt2), TxRotulo, 0.4f, 10.0f);
+        }
         if (!user) {
             drawTxFit(g, L"los presets de fabrica no se editan: guarda una copia para tocar sus metadatos",
                       G::FontStyleRegular, kFTxt3, (G::REAL)ir.left, (G::REAL)ir.bottom - 20.0f, 0.4f,
@@ -9197,7 +9180,7 @@ static void brwPaint(G::Graphics& g) {
     }
     // --- pie: los atajos ---
     brwTextIn(g, RECT{ BRW_X + 24, BRW_Y + BRW_H - 40, BRW_X + BRW_W - 24, BRW_Y + BRW_H - 16 },
-              L"ESC CIERRA   \x00b7   UN CLIC CARGA EL PRESET   \x00b7   EL PUNTO DE COLOR ES EL FAVORITO   \x00b7   EN UN PRESET MIO, LOS CAMPOS DEL INFO PANE SE ESCRIBEN",
+              L"ESC CIERRA   \x00b7   UN CLIC CARGA EL PRESET   \x00b7   EL PUNTO DE COLOR ES EL FAVORITO   \x00b7   EN UN PRESET MIO SE ESCRIBEN LOS CAMPOS Y BORRAR PIDE DOS CLICS",
               G::FontStyleRegular, kFTxt3, TxRotulo, 0.6f, 6.0f);
 }
 
@@ -9320,6 +9303,20 @@ static void brwClick(int x, int y) {
             for (int c = 0; c < kCharCount; ++c)
                 if (PtInRect(&g_brw.iTags[c], pt)) { brwToggleTag(idx, c); return; }
             if (PtInRect(&g_brw.iFav, pt)) { brwCycleFav(idx); return; }
+            // BORRAR: el aspa que el sidebar tenia en la fila (paso 19). Dos
+            // clics: el primero arma el boton. Al borrar hay que soltar la
+            // seleccion: los indices de los presets mios se corren y g_brwSel
+            // apuntaria a otro preset (o fuera de la lista).
+            if (PtInRect(&g_brw.iDel, pt)) {
+                if (g_delArm == idx) {
+                    deleteUserPreset(idx);
+                    g_delArm = -1;
+                    g_brwSel = -1;
+                } else {
+                    g_delArm = idx;
+                }
+                return;
+            }
         }
     }
 }
@@ -9924,22 +9921,20 @@ static void paintWindow(HWND hwnd) {
     // --- Panel izquierdo: lista dinamica de amps o presets ---
     {
         // El estado de la lista se lee en RANURAS (ver navRows): una ranura por
-        // entrada mas una por encabezado de grupo. cnt es el numero de FILAS.
+        // entrada. cnt es el numero de FILAS.
         int rows[kMaxNavRows];
         const int cnt = navRows(rows);
         const int vis = listVisibleRows();
         if (g_listScroll > listScrollMax()) g_listScroll = listScrollMax();
         if (g_listScroll < 0) g_listScroll = 0;
-        // Al cambiar de seleccion (amp o preset) se desplaza la lista para que
-        // el elemento activo quede siempre a la vista (p. ej. KRAFT V4). La
-        // posicion es la de la RANURA: con los encabezados delante, la entrada 6
-        // ya no esta en la fila 6.
+        // Al cambiar de ampli se desplaza la lista para que el que suena quede
+        // siempre a la vista (p. ej. KRAFT V4).
         {
-            const int sel = (g_leftTab == 0) ? g_params.model.load() : g_presetIdx;
+            const int sel = g_params.model.load();
             int pos = -1;
             for (int i = 0; i < cnt; ++i) if (rows[i] == sel) { pos = i; break; }
             static int lastKey = -1;
-            const int key = (g_leftTab << 24) | (pos & 0xFFFF);
+            const int key = (pos & 0xFFFF);
             if (pos >= 0 && key != lastKey) {
                 if (pos < g_listScroll) g_listScroll = pos;
                 else if (pos >= g_listScroll + vis) g_listScroll = pos - vis + 1;
@@ -9951,7 +9946,6 @@ static void paintWindow(HWND hwnd) {
         G::Font fRowN(kFontUI, kTNombre, G::FontStyleBold);
         G::Font fRowS(kFontTec, kTPico);
         const int cur = g_params.model.load();
-        const bool dirty = presetDirty();
         for (int vi = 0; vi < vis; ++vi) {
             const int gi = g_listScroll + vi;
             if (gi >= cnt) break;
@@ -9959,7 +9953,7 @@ static void paintWindow(HWND hwnd) {
             const RECT rp = navRowPaintRect(vi);    // la fila, de UNA definicion
             const int rx = rp.left, ry = rp.top;
             const int rw = rp.right - rp.left, rh = rp.bottom - rp.top;
-            const bool sel = (g_leftTab == 0) ? (a == cur) : (a == g_presetIdx);
+            const bool sel = (a == cur);
             const bool hov = rectHas(rp, g_mouseX, g_mouseY);
             // el hover entra/sale en kRampHover ms: la luz se vana/recupera sola,
             // en vez de encenderse y apagarse de golpe
@@ -9983,115 +9977,55 @@ static void paintWindow(HWND hwnd) {
                                           kFSurf3.GetG(), kFSurf3.GetB()));
                 roundRect(g, (G::REAL)rx, (G::REAL)ry, (G::REAL)rw, (G::REAL)rh, 6.0f, nullptr, &hb);
             }
-            if (g_leftTab == 0) {
-                // miniatura: marco de cristal + frontal recortado a las esquinas
-                const G::REAL tx = (G::REAL)(rx + 10), ty = (G::REAL)(ry + 6);
-                const G::REAL tw = 88.0f, th = 40.0f;
-                // celda ya rasterizada (ver ampThumb): escalar la foto aqui
-                // costaba ~4 ms por fila, ~40 ms de frame con la lista llena
-                G::Bitmap* tb = ampThumb(a, !sel);
-                if (tb) {
-                    g.DrawImage(tb, tx, ty, tw, th);
-                } else {
-                    G::SolidBrush mbc(G::Color(0xff, 0x0c, 0x0c, 0x0e));
-                    G::Pen mpc(G::Color(46, 0x9c, 0x98, 0x90), 1.0f);
-                    roundRect(g, tx, ty, tw, th, 5.0f, &mpc, &mbc);
-                }
-                G::SolidBrush nb2(kFTxt);
-                g.DrawString(kAmpNames[a], -1, &fRowN,
-                             G::RectF((G::REAL)(rx + 108), (G::REAL)(ry + 7), (G::REAL)(rw - 144), 20.0f),
-                             nullptr, &nb2);
-                G::SolidBrush sb3(kFTxt2);
-                g.DrawString(kAmpSubs[a], -1, &fRowS,
-                             G::RectF((G::REAL)(rx + 108), (G::REAL)(ry + 29), (G::REAL)(rw - 144), 16.0f),
-                             nullptr, &sb3);
-                // estrella de favoritos
-                {
-                    const bool fav = ampFav(a);
-                    // A plena intensidad solo si es favorito o la fila esta bajo
-                    // el raton: trece estrellas encendidas de seguido llenaban de
-                    // ruido el borde derecho de la lista y competian con los
-                    // nombres. En reposo quedan como un contorno tenue.
-                    const G::Color stc = fav ? colAmp(a)
-                                             : (hov ? kFTxt2
-                                                    : G::Color(88, 0x8b, 0x87, 0x81));
-                    icStar(g, (G::REAL)rx + rw - 15.0f, (G::REAL)ry + 26.0f, 7.0f, stc, fav);
-                }
+            // miniatura: marco de cristal + frontal recortado a las esquinas
+            const G::REAL tx = (G::REAL)(rx + 10), ty = (G::REAL)(ry + 6);
+            const G::REAL tw = 88.0f, th = 40.0f;
+            // celda ya rasterizada (ver ampThumb): escalar la foto aqui
+            // costaba ~4 ms por fila, ~40 ms de frame con la lista llena
+            G::Bitmap* tb = ampThumb(a, !sel);
+            if (tb) {
+                g.DrawImage(tb, tx, ty, tw, th);
             } else {
-                WCHAR pn[128];
-                presetNameW(a, pn, 128);
-                const bool user  = isUserPreset(a);
-                const bool armed = (user && g_delArm == a);
-                const bool psel  = (a == g_presetIdx);
-                // El nombre se mide y se ajusta (Regla del Rotulo Encajado): con
-                // DrawString sin formato un nombre largo del usuario envolvia a la
-                // segunda linea, y esa linea caia fuera de la fila sobre la fila
-                // siguiente. La caja reserva la columna de las tres chapas cuando
-                // el preset es del usuario.
-                const G::REAL nameEnd =
-                    drawTxFit(g, pn, G::FontStyleBold, sel ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7),
-                              (G::REAL)(rx + 12), (G::REAL)(ry + 8), 0.5f,
-                              (G::REAL)(rw - (user ? 115 : 24)), TxNombre);
-                // EL SUBTITULO: el ampli y su caracter. Antes esto lo ponia el
-                // ENCABEZADO del grupo, que ya no existe; ahora viaja en la fila,
-                // como en el navegador (misma funcion, groupLabelW).
-                {
-                    WCHAR sub[96];
-                    groupLabelW(presetGroup(a), sub, 96);
-                    drawTxFit(g, sub, G::FontStyleRegular, kFTxt3,
-                              (G::REAL)(rx + 12), (G::REAL)(ry + 30), 0.3f,
-                              (G::REAL)(rw - (user ? 115 : 24)), TxPico);
-                }
-                // El PUNTO de MODIFICADO: el rig de ahora no es el del preset que
-                // suena (ver presetDirty). Va pegado al nombre, donde se mira.
-                if (dirty && psel) {
-                    G::SolidBrush db(kFTxt);
-                    g.FillEllipse(&db, nameEnd + 8.0f, (G::REAL)(ry + 15), 6.0f, 6.0f);
-                }
-                // LA ESTRELLA de favoritos del preset: la misma columna del canto
-                // que en AMPLIFICADORES. Debajo el lapiz (renombrar) y el aspa
-                // (borrar), que solo tienen los presets del usuario; el aspa pide
-                // dos clics (el primero arma la fila) para no llevarse un preset
-                // de un roce.
-                {
-                    const int  fc  = presetFavColor(a);
-                    const bool fav = (fc != 0);
-                    const bool hS = rectHas(navBadgeRect(vi, true), g_mouseX, g_mouseY);
-                    const G::Color stc = fav ? favColorAt(fc)
-                                             : (hS ? kFTxt2 : G::Color(88, 0x8b, 0x87, 0x81));
-                    icStar(g, (G::REAL)rx + rw - 15.0f, (G::REAL)ry + 26.0f, 7.0f, stc, fav);
-                }
-                if (user) {
-                    const bool hE = rectHas(navBadgeRect(vi, false), g_mouseX, g_mouseY);
-                    const bool hX = rectHas(navBadgeColRect(vi, 2),  g_mouseX, g_mouseY);
-                    // Lapiz y aspa: vectores de la familia, con el MISMO centro
-                    // vertical que la estrella y el que declara navBadgeRect.
-                    icPencil(g, (G::REAL)rx + rw - 42.0f, (G::REAL)ry + 26.0f, 7.0f,
-                             hE ? kFTxt : kFTxt3);
-                    icClose(g, (G::REAL)rx + rw - 68.0f, (G::REAL)ry + 26.0f, 7.0f,
-                            armed ? kHot : (hX ? kFTxt : kFTxt3));
-                    if (armed) {
-                        G::Pen ap(kHot, 1.5f);
-                        roundRect(g, (G::REAL)rx, (G::REAL)ry, (G::REAL)rw, (G::REAL)rh,
-                                  6.0f, &ap, nullptr);
-                    }
-                }
+                G::SolidBrush mbc(G::Color(0xff, 0x0c, 0x0c, 0x0e));
+                G::Pen mpc(G::Color(46, 0x9c, 0x98, 0x90), 1.0f);
+                roundRect(g, tx, ty, tw, th, 5.0f, &mpc, &mbc);
+            }
+            G::SolidBrush nb2(kFTxt);
+            g.DrawString(kAmpNames[a], -1, &fRowN,
+                         G::RectF((G::REAL)(rx + 108), (G::REAL)(ry + 7), (G::REAL)(rw - 144), 20.0f),
+                         nullptr, &nb2);
+            G::SolidBrush sb3(kFTxt2);
+            g.DrawString(kAmpSubs[a], -1, &fRowS,
+                         G::RectF((G::REAL)(rx + 108), (G::REAL)(ry + 29), (G::REAL)(rw - 144), 16.0f),
+                         nullptr, &sb3);
+            // estrella de favoritos
+            {
+                const bool fav = ampFav(a);
+                // A plena intensidad solo si es favorito o la fila esta bajo
+                // el raton: trece estrellas encendidas de seguido llenaban de
+                // ruido el borde derecho de la lista y competian con los
+                // nombres. En reposo quedan como un contorno tenue.
+                const G::Color stc = fav ? colAmp(a)
+                                         : (hov ? kFTxt2
+                                                : G::Color(88, 0x8b, 0x87, 0x81));
+                icStar(g, (G::REAL)rx + rw - 15.0f, (G::REAL)ry + 26.0f, 7.0f, stc, fav);
             }
         }
         // Estado vacio: sin esto una busqueda sin resultados dejaba el hueco en
-        // blanco y no se distinguia de "la lista no ha cargado".
+        // blanco y no se distinguia de "la lista no ha cargado". La lista puede
+        // quedar vacia por DOS filtros (el buscador y la estrella de favoritos),
+        // asi que el aviso nombra el que este puesto.
         if (cnt == 0) {
             G::Font fEmp(kFontTec, kTRotulo, G::FontStyleRegular);
             G::SolidBrush em(kFTxt2);
             G::StringFormat sfc2; sfc2.SetAlignment(G::StringAlignmentCenter);
-            const WCHAR* msg = (g_leftTab == 0) ? L"SIN AMPLIFICADORES CON ESE FILTRO"
-                                                : L"SIN PRESETS CON ESE FILTRO";
-            g.DrawString(msg, -1, &fEmp,
+            g.DrawString(L"SIN AMPLIFICADORES CON ESE FILTRO", -1, &fEmp,
                          G::RectF((G::REAL)(COL_L_X + 8), (G::REAL)(LIST_Y + 44),
                                   (G::REAL)(COL_L_W - 16), 24.0f), &sfc2, &em);
             G::Font fEmp2(kFontUI, kTCuerpo, G::FontStyleRegular);
             G::StringFormat sfc3; sfc3.SetAlignment(G::StringAlignmentCenter);
-            g.DrawString(L"borra el filtro de la caja de busqueda", -1, &fEmp2,
+            g.DrawString(g_favOnly ? L"la estrella filtra: solo tus amplis marcados"
+                                   : L"borra el filtro de la caja de busqueda", -1, &fEmp2,
                          G::RectF((G::REAL)(COL_L_X + 8), (G::REAL)(LIST_Y + 68),
                                   (G::REAL)(COL_L_W - 16), 20.0f), &sfc3, &em);
         }
@@ -11610,28 +11544,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;   // modal: clics fuera del panel se ignoran
         }
 
-        // --- Panel izquierdo: tabs, buscador, filas de la lista y favoritos ---
+        // --- Panel izquierdo: buscador, estrella del filtro, filas y favoritos ---
         {
-            // tabs AMPLIFICADORES / PRESETS y la estrella del filtro
-            for (int i = 0; i < 2; ++i) {
-                RECT tr = tabRect(i);
-                if (PtInRect(&tr, pt)) {
-                    if (g_leftTab != i) {
-                        g_leftTab = i;
-                        g_listScroll = 0;
-                        g_scene.valid = false;   // el resaltado de la pestana vive en la escena estatica
-                    }
-                    g_searchFocus = false;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    return 0;
-                }
+            // caja de busqueda: toma el foco para escribir
+            RECT sBox = { SEARCH_X, SEARCH_Y, SEARCH_X + SEARCH_W, SEARCH_Y + SEARCH_H };
+            if (PtInRect(&sBox, pt)) {
+                g_searchFocus = true;
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
             }
+            // la estrella del filtro: "solo mis amplis favoritos". Vive en la
+            // escena estatica (ambar o tenue), asi que hay que rehacerla.
             {
-                RECT sr = tabStarRect();
+                RECT sr = searchStarRect();
                 if (PtInRect(&sr, pt)) {
-                    // Filtro "solo favoritos" de la pestana que este activa. La
-                    // estrella vive en la escena estatica (ambar o tenue), asi que
-                    // hay que rehacerla.
                     g_favOnly = !g_favOnly;
                     g_listScroll = 0;
                     g_searchFocus = false;
@@ -11641,14 +11567,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
             }
-            // caja de busqueda: toma el foco para escribir
-            RECT sBox = { SEARCH_X, SEARCH_Y, SEARCH_X + SEARCH_W, SEARCH_Y + SEARCH_H };
-            if (PtInRect(&sBox, pt)) {
-                g_searchFocus = true;
-                InvalidateRect(hwnd, nullptr, FALSE);
-                return 0;
-            }
-            // filas de la lista: seleccionar amp/preset o marcar favorito
+            // filas de la lista: seleccionar ampli o marcar favorito
             RECT lBox = { COL_L_X + 8, LIST_Y, COL_L_X + 8 + (COL_L_W - 16), LIST_Y + LIST_H };
             if (PtInRect(&lBox, pt)) {
                 g_searchFocus = false;
@@ -11661,56 +11580,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 const int gi = g_listScroll + vi;
                 if (vi >= 0 && vi < vis && gi >= 0 && gi < cnt) {
                     const int a = rows[gi];
-                    if (g_leftTab == 0) {
-                        // estrella de favoritos (esquina derecha de la fila)
-                        const RECT fr = navBadgeRect(vi, true);   // estrella
-                        if (PtInRect(&fr, pt)) {
-                            g_favMask ^= (1u << a);         // una sola fuente de favoritos
-                            g_sceneDirty.store(true);       // la estrella esta en la escena
-                            InvalidateRect(hwnd, nullptr, FALSE);
-                            return 0;
-                        }
-                        if (g_params.model.load() != a) {
-                            g_params.model.store(a);
-                            g_scene.valid = false;   // miniaturas/hero/knobs dependen del modelo
-                            rebuildKnobs();
-                        }
-                    } else {
-                        // Las tres chapas de un preset: ESTRELLA (favorito, la
-                        // misma columna del canto que en AMPLIFICADORES), LAPIZ
-                        // (renombrar) y ASPA (borrar), las dos ultimas solo en
-                        // los presets del usuario. Borrar pide dos clics: el
-                        // primero arma la fila.
-                        const RECT sr = navBadgeRect(vi, true);      // estrella
-                        if (PtInRect(&sr, pt)) {
-                            // Un clic pasa al COLOR siguiente (y vuelve a "sin
-                            // color"): el favorito es una coleccion, no un bit.
-                            presetFavSet(a, (presetFavColor(a) + 1) % kFavColors);
-                            saveIni();                    // el favorito se persiste al instante
-                            g_sceneDirty.store(true);     // la lista cambia si hay filtro
-                            InvalidateRect(hwnd, nullptr, FALSE);
-                            return 0;
-                        }
-                        if (isUserPreset(a)) {
-                            const RECT xr = navBadgeColRect(vi, 2);   // aspa
-                            const RECT er = navBadgeRect(vi, false);  // lapiz
-                            if (PtInRect(&xr, pt)) {
-                                if (g_delArm == a) { deleteUserPreset(a); g_delArm = -1; }
-                                else               { g_delArm = a; }
-                                InvalidateRect(hwnd, nullptr, FALSE);
-                                return 0;
-                            }
-                            if (PtInRect(&er, pt)) {
-                                const int ui = a - kNumPresets;
-                                openNameModal(a, false, g_userPresets[ui].name);
-                                g_searchFocus = false;
-                                InvalidateRect(hwnd, nullptr, FALSE);
-                                return 0;
-                            }
-                        }
-                        g_delArm = -1;
-                        g_presetIdx = a;
-                        applyPreset(a);
+                    // estrella de favoritos (esquina derecha de la fila)
+                    const RECT fr = navStarRect(vi);
+                    if (PtInRect(&fr, pt)) {
+                        g_favMask ^= (1u << a);         // una sola fuente de favoritos
+                        g_sceneDirty.store(true);       // la estrella esta en la escena
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                    if (g_params.model.load() != a) {
+                        g_params.model.store(a);
+                        g_scene.valid = false;   // miniaturas/hero/knobs dependen del modelo
+                        rebuildKnobs();
                     }
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
@@ -11891,15 +11772,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
-        // Caja de preset del pie -> verlo en el navegador (pestana PRESETS).
-        // Se pinta con hover y con velo de pulsacion, asi que TIENE que responder:
-        // antes era un control pulsable que no hacia nada.
+        // Caja de preset del pie -> verlo en el NAVEGADOR, con el preset que suena
+        // ya seleccionado (brwOpen lo deja a la vista). Se pinta con hover y con
+        // velo de pulsacion, asi que TIENE que responder: antes era un control
+        // pulsable que no hacia nada, y despues abria la pestana PRESETS del
+        // sidebar, que ya no existe (paso 19).
         RECT fbox = zoneRect(70);     // preset del pie
         if (PtInRect(&fbox, pt)) {
-            if (g_leftTab != 1) { g_leftTab = 1; g_searchFocus = false; }
-            g_listScroll = 0;
-            listFollow(g_presetIdx);
-            g_scene.valid = false;      // el resaltado de pestana vive en la escena
+            g_searchFocus = false;
+            brwOpen();
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -12223,33 +12104,28 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;                                                  // modal: sin mas atajos
         if (g_searchFocus) return 0;                                     // escribiendo: sin atajos
         if (g_dragIdx >= 0 || g_dragPedalIdx >= 0) return 0;             // arrastrando: no
-        // Flechas ARRIBA/ABAJO: navegan la lista de la izquierda (amps o presets).
-        // Es el gesto del navegador de Guitar Rig y Amplitube: cambiar de ampli
-        // o de preset SIN soltar el instrumento, con el resaltado de fila como
-        // foco visible (el mismo que marca el raton).
+        // Flechas ARRIBA/ABAJO: navegan la lista de amplificadores de la
+        // izquierda. Es el gesto del navegador de Guitar Rig y Amplitube: cambiar
+        // de ampli SIN soltar el instrumento, con el resaltado de fila como foco
+        // visible (el mismo que marca el raton). Los presets se mueven con las
+        // flechas IZQUIERDA/DERECHA.
         if (wp == VK_UP || wp == VK_DOWN) {
             int idx[kMaxListEntries], cnt = 0;
             listFilterIdx(idx, &cnt);
             if (cnt > 0) {
                 const int dir = (wp == VK_DOWN) ? 1 : -1;
                 int cur = 0;
-                const int self = (g_leftTab == 0) ? g_params.model.load() : g_presetIdx;
+                const int self = g_params.model.load();
                 for (int i = 0; i < cnt; ++i) if (idx[i] == self) { cur = i; break; }
                 int n = cur + dir;
                 if (n < 0) n = cnt - 1;
                 if (n >= cnt) n = 0;
-                if (g_leftTab == 0) {
-                    if (g_params.model.load() != idx[n]) {
-                        g_params.model.store(idx[n]);
-                        g_scene.valid = false;    // miniaturas/hero/knobs del modelo
-                        rebuildKnobs();
-                    }
-                    listFollow(idx[n]);
-                } else {
-                    g_presetIdx = idx[n];
-                    applyPreset(g_presetIdx);
-                    listFollow(g_presetIdx);
+                if (g_params.model.load() != idx[n]) {
+                    g_params.model.store(idx[n]);
+                    g_scene.valid = false;    // miniaturas/hero/knobs del modelo
+                    rebuildKnobs();
                 }
+                listFollow(idx[n]);
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
@@ -13442,14 +13318,13 @@ static void hTestZones() {
            rp0.top == rw0.top && rp0.bottom == rw0.bottom - 4,
            "L1 la fila y su version pintada difieren solo en el aire", d);
 
-    const RECT bA = navBadgeRect(2, true), bB = navBadgeRect(2, false);
+    const RECT bA = navStarRect(2);
     const int bx = COL_L_X + 8, bw = COL_L_W - 16, by = LIST_Y + 2*LIST_ROW_H;
-    sprintf_s(d, "derecha=[%d..%d] izquierda=[%d..%d] alto=%d",
-              (int)bA.left, (int)bA.right, (int)bB.left, (int)bB.right, (int)bA.bottom);
+    sprintf_s(d, "estrella=[%d..%d] alto=[%d..%d]",
+              (int)bA.left, (int)bA.right, (int)bA.top, (int)bA.bottom);
     hCheck(bA.left == bx + bw - 28 && bA.right == bx + bw - 2 &&
-           bB.left == bx + bw - 54 && bB.right == bx + bw - 30 &&
            bA.top == by + 4 && bA.bottom == by + LIST_ROW_H - 8,
-           "L2 las chapas caen en su columna del borde derecho", d);
+           "L2 la estrella de favoritos cae en su columna del borde derecho", d);
 
     const RECT sb = pedSlotBox((int)pedSlotX(3), PED_ROW_Y[0]);
     sprintf_s(d, "slot3=[%d,%d,%d,%d]", (int)sb.left, (int)sb.top, (int)sb.right, (int)sb.bottom);
@@ -13511,12 +13386,16 @@ static void hTestDesign() {
 }
 
 // ---------------------------------------------------------------------------
-//  Q: los presets como LISTA. Cinco cosas que antes no existian o mentian:
-//   - la lista no estaba agrupada por ampli y numeraba con el indice global,
-//   - los presets del usuario caian al final, lejos de su ampli,
-//   - no habia favoritos de preset ni filtro,
-//   - no habia marca de MODIFICADO ni GUARDAR COMO,
-//   - la cabecera ponia "PRESET 31" y el buscador pedia "amplificador" en PRESETS.
+//  Q: los PRESETS y su modelo. Lo que este bloque vigila:
+//   - el banco de fabrica (seis lotes contiguos por ampli) y la variante de cada
+//     lote dentro de su ampli,
+//   - el ORDEN del catalogo, con los presets del usuario pegados a los suyos,
+//   - que la lista del SIDEBAR sea solo de amplificadores (paso 19) y que su
+//     estrella filtre los amplis marcados,
+//   - la marca de MODIFICADO, que sigue al rig y no a la MEZCLA,
+//   - los rotulos: la banda del cabezal dice el ampli y el lote, no el indice
+//     global,
+//   - el hueco del buscador, que dice lo que filtra.
 //  Monta su propia lista de presets de usuario (guardada y restaurada al salir:
 //  la lista real del usuario no se toca, y no escribe el .ini).
 // ---------------------------------------------------------------------------
@@ -13525,7 +13404,6 @@ static void hTestPresets() {
     const int  bakIdx  = g_presetIdx;
     const bool bakFav  = g_favOnly;
     const unsigned char bakF0 = g_favPreset[3];
-    const int  tab0    = g_leftTab;
     WCHAR bakFilt[40];
     wcsncpy_s(bakFilt, g_ampFilter, _TRUNCATE);
     char d[320];
@@ -13549,7 +13427,6 @@ static void hTestPresets() {
     { UserPreset u = {}; wcsncpy_s(u.name, L"OTRA EN EL 5", _TRUNCATE);        u.model = 5;  g_userPresets.push_back(u); }
     wcscpy_s(g_ampFilter, L"");
     g_favOnly = false;
-    g_leftTab = 1;
 
     // Q1: la VARIANTE dentro de su ampli: 1..6 los de fabrica, y los del usuario
     // continuan la cuenta de su propio ampli (7, 8...).
@@ -13585,56 +13462,43 @@ static void hTestPresets() {
     hCheck(nord == presetTotal() && dup == 0 && in5 && in5b && in12,
            "Q2 la lista ordena por ampli y mete los del usuario con los suyos", d);
 
-    // Q3: la lista es PLANA (paso 18.9): una fila por entrada y NINGUN
-    // encabezado intercalado. El ampli y su caracter viajan en el subtitulo de
-    // cada fila (groupLabelW), que es lo que pinta la fila. El defecto que caza:
-    // volver a meter encabezados y que la lista ensene dos veces lo mismo.
+    // Q3: la lista del sidebar es SOLO de amplificadores (paso 19): una fila por
+    // ampli, los trece, sin encabezados intercalados y sin presets. El defecto que
+    // caza: que vuelva a colarse la lista de presets (que ya vive en el navegador)
+    // o un encabezado de grupo en una lista que ya es plana.
     int rows[kMaxNavRows];
     const int nr = navRows(rows);
-    int heads = 0, entradas = 0, sinRotulo = 0;
+    int heads = 0, amps = 0, fuera = 0;
     for (int i = 0; i < nr; ++i) {
-        if (rows[i] == -1) ++heads;
-        else ++entradas;
-        if (rows[i] != -1) {
-            WCHAR sub[96];
-            groupLabelW(presetGroup(rows[i]), sub, 96);   // el subtitulo que pinta la fila
-            if (!sub[0]) ++sinRotulo;
-        }
+        if (rows[i] == -1) { ++heads; continue; }
+        if (rows[i] >= 0 && rows[i] < kAmpCount) ++amps; else ++fuera;
     }
-    // y en AMPLIFICADORES tampoco: las dos pestanas son la misma lista plana
-    g_leftTab = 0;
-    int arows[kMaxNavRows];
-    const int anr = navRows(arows);
-    int aHead = 0;
-    for (int i = 0; i < anr; ++i) if (arows[i] == -1) ++aHead;
-    g_leftTab = 1;
-    sprintf_s(d, "%d filas = %d entradas + %d encabezados; en AMPLIFICADORES %d de %d filas; %d sin subtitulo",
-              nr, entradas, heads, aHead, anr, sinRotulo);
-    hCheck(heads == 0 && aHead == 0 && entradas == presetTotal() && nr == entradas && sinRotulo == 0,
-           "Q3 la lista es plana: el ampli va en el subtitulo de la fila, no en un encabezado", d);
+    sprintf_s(d, "%d filas = %d amplis + %d encabezados (%d fuera de rango)", nr, amps, heads, fuera);
+    hCheck(nr == kAmpCount && amps == kAmpCount && heads == 0 && fuera == 0,
+           "Q3 la lista del sidebar es solo de amplis: trece filas planas", d);
 
-    // Q4: favoritos POR PRESET, con COLOR, y el filtro. Se marcan dos de distinto
-    // tipo y de distinto color; el filtro deja exactamente esos dos, y cada uno
-    // conserva SU color (el bool viejo no podia distinguirlos).
-    g_favPreset[3] = 2;                       // un lote de fabrica, en rojo
-    g_userPresets[0].favColor = 3;            // y uno del usuario, en azul
+    // Q4: la estrella del sidebar filtra los AMPLIS marcados (paso 19: antes
+    // filtraba la pestana activa y, con la pestana PRESETS retirada, solo queda
+    // esta lista). Se marcan dos amplis; el filtro deja exactamente esos dos, y
+    // los favoritos de PRESET (que son del navegador) no entran en la cuenta.
+    const DWORD bakMask = g_favMask;
+    g_favPreset[3] = 2;                       // un favorito de preset, en rojo
+    g_favMask = (1u << 2) | (1u << 9);        // dos amplis marcados
     g_favOnly = true;
     int fi[kMaxListEntries], fc = 0;
     listFilterIdx(fi, &fc);
-    int soloMarca = 1, coloresOk = 0;
-    for (int i = 0; i < fc; ++i) if (!presetFav(fi[i])) soloMarca = 0;
-    if (fc == 2) {
-        coloresOk = (presetFavColor(fi[0]) == 2 && presetFavColor(fi[1]) == 3) ? 1 : 0;
-    }
+    int soloMarca = 1;
+    for (int i = 0; i < fc; ++i) if (!ampFav(fi[i])) soloMarca = 0;
+    const bool dosOk = (fc == 2 && ((fi[0] == 2 && fi[1] == 9) || (fi[0] == 9 && fi[1] == 2)));
     g_favOnly = false;
     int fi2[kMaxListEntries], fc2 = 0;
     listFilterIdx(fi2, &fc2);
-    sprintf_s(d, "con el filtro: %d filas, todas marcadas = %d; colores %d/%d conservados = %d; sin el: %d (en total %d)",
-              fc, soloMarca, fc == 2 ? presetFavColor(fi[0]) : -1, fc == 2 ? presetFavColor(fi[1]) : -1,
-              coloresOk, fc2, presetTotal());
-    hCheck(fc == 2 && soloMarca && coloresOk && fc2 == presetTotal(),
-           "Q4 el filtro \"solo favoritos\" deja los presets marcados, con su color", d);
-    g_favPreset[3] = 0; g_userPresets[0].favColor = 0;
+    sprintf_s(d, "con el filtro: %d filas, todas marcadas = %d; los amplis 2 y 9 = %d; sin el: %d",
+              fc, soloMarca, dosOk ? 1 : 0, fc2);
+    hCheck(fc == 2 && soloMarca && dosOk && fc2 == kAmpCount,
+           "Q4 el filtro del sidebar deja los amplis marcados y no toca los presets", d);
+    g_favPreset[3] = 0;
+    g_favMask = bakMask;
 
     // Q5: el punto de MODIFICADO sigue al rig, no a lo que no es parte del preset
     // (la MEZCLA). Recien marcado: limpio; una perilla: sucio; la MEZCLA: limpio.
@@ -13654,41 +13518,41 @@ static void hTestPresets() {
     hCheck(limpio && sucio && mixNo, "Q5 el punto de MODIFICADO sigue al rig, no a la MEZCLA", d);
     rigMark();
 
-    // Q6: los rotulos: la banda del cabezal dice el ampli y el lote (no "PRESET
-    // 31", el indice global) y el encabezado del grupo, el ampli y su caracter.
+    // Q6: el rotulo: la banda del cabezal dice el ampli y el lote, no "PRESET 31"
+    // (el indice global, que no es una posicion que nadie pueda buscar).
     WCHAR tag[48]; presetTagW(5*kPresetsPerAmp + 2, tag, 48);
-    WCHAR gl[96];  groupLabelW(5, gl, 96);
-    const std::wstring wt(tag), wg(gl);
+    const std::wstring wt(tag);
     const bool tagOk = wt.find(kAmpNames[5]) != std::wstring::npos &&
                        wt.find(L"3") != std::wstring::npos &&
                        wt.find(L"PRESET") == std::wstring::npos;
-    const bool glOk  = wg.find(kAmpNames[5]) != std::wstring::npos;
-    sprintf_s(d, "cabecera = \"%ls\"; encabezado = \"%ls\"", tag, gl);
-    hCheck(tagOk && glOk, "Q6 el rotulo dice el ampli y el lote, no el indice global", d);
+    sprintf_s(d, "cabecera = \"%ls\"", tag);
+    hCheck(tagOk, "Q6 el rotulo dice el ampli y el lote, no el indice global", d);
 
-    // Q7: el hueco del buscador dice lo que la pestana filtra.
-    g_leftTab = 0; const std::wstring h0 = searchHint();
-    g_leftTab = 1; const std::wstring h1 = searchHint();
-    sprintf_s(d, "AMPLIFICADORES = \"%ls\"; PRESETS = \"%ls\"", h0.c_str(), h1.c_str());
+    // Q7: el hueco del buscador dice lo que la lista filtra: amplificadores. La
+    // pestana PRESETS se retiro (paso 19), asi que ya no puede haber un hueco que
+    // prometa presets en un campo que filtra amplis.
+    const std::wstring h0 = searchHint();
+    sprintf_s(d, "hueco del buscador = \"%ls\"", h0.c_str());
     hCheck(h0.find(L"amplificador") != std::wstring::npos &&
-           h1.find(L"preset") != std::wstring::npos &&
-           h1.find(L"amplificador") == std::wstring::npos,
-           "Q7 el buscador dice lo que filtra la pestana", d);
+           h0.find(L"preset") == std::wstring::npos,
+           "Q7 el buscador dice lo que filtra: amplificadores", d);
 
-    // Q8: la estrella del filtro vive en la banda de pestanas sin pisarlas.
-    const RECT t0 = tabRect(0), t1 = tabRect(1), st = tabStarRect();
-    sprintf_s(d, "pestanas [%d..%d] y [%d..%d]; estrella [%d..%d]",
-              (int)t0.left, (int)t0.right, (int)t1.left, (int)t1.right, (int)st.left, (int)st.right);
-    hCheck(t0.right <= t1.left && t1.right <= st.left &&
-           st.right <= COL_L_X + COL_L_W && st.left >= COL_L_X,
-           "Q8 la estrella del filtro y las pestanas no se pisan", d);
+    // Q8: la estrella del filtro vive en la fila del buscador sin pisarlo, y no
+    // baja hasta la lista (es un mando del buscador, no de la lista).
+    const RECT sB = { SEARCH_X, SEARCH_Y, SEARCH_X + SEARCH_W, SEARCH_Y + SEARCH_H };
+    const RECT st = searchStarRect();
+    sprintf_s(d, "buscador [%d..%d]; estrella [%d..%d] alto %d..%d (la lista empieza en %d)",
+              (int)sB.left, (int)sB.right, (int)st.left, (int)st.right,
+              (int)st.top, (int)st.bottom, (int)LIST_Y);
+    hCheck(sB.right <= st.left && st.right <= COL_L_X + COL_L_W &&
+           st.bottom <= LIST_Y && st.left >= COL_L_X,
+           "Q8 la estrella del filtro no pisa el buscador ni la lista", d);
 
     // la lista del usuario (y el filtro y el foco) quedan como estaban
     g_userPresets = bak;
     g_presetIdx = bakIdx;
     g_favOnly = bakFav;
     g_favPreset[3] = bakF0;
-    g_leftTab = tab0;
     wcsncpy_s(g_ampFilter, bakFilt, _TRUNCATE);
     rigMark();
 }
@@ -14062,6 +13926,61 @@ static void hTestBrowse() {
         g_iniPath = realPath;
         DeleteFileW(tmp.c_str());
     }
+
+    // T10: BORRAR en el Info pane (paso 19). El aspa que el sidebar tenia en la
+    // fila de un preset mio bajo a la FICHA, y sigue pidiendo DOS clics: el
+    // primero arma el boton y NO borra, el segundo borra. El defecto que caza:
+    // que un solo roce se lleve un preset, y que el boton siga vivo en un preset
+    // de fabrica (que no se borra).
+    {
+        const std::wstring tmpDir = exeDirW() + L"\\_dsp_out";
+        CreateDirectoryW(tmpDir.c_str(), nullptr);
+        const std::wstring tmp = tmpDir + L"\\browse_del.txt";
+        const std::wstring realPath = g_iniPath;
+        const std::vector<UserPreset> bak = g_userPresets;
+        const bool bakOpen = g_brwOpen;
+        const int  bakSel  = g_brwSel;
+        const int  bakIdx  = g_presetIdx;
+        const int  bakArm  = g_delArm;
+        DeleteFileW(tmp.c_str());
+        g_iniPath = tmp;
+
+        g_userPresets.clear();
+        { UserPreset u = {}; wcsncpy_s(u.name, L"UNO", _TRUNCATE); u.model = 3; g_userPresets.push_back(u); }
+        { UserPreset u = {}; wcsncpy_s(u.name, L"DOS", _TRUNCATE); u.model = 5; g_userPresets.push_back(u); }
+        g_brwOpen = true;
+        g_brwSel  = kNumPresets;               // el primero de los mios
+        g_delArm  = -1;
+        brwLayout();
+        const int bx = (g_brw.iDel.left + g_brw.iDel.right) / 2;
+        const int by = (g_brw.iDel.top + g_brw.iDel.bottom) / 2;
+
+        brwClick(bx, by);                      // primer clic: ARMA
+        const int  n1  = (int)g_userPresets.size();
+        const bool arm = (g_delArm == kNumPresets);
+
+        brwClick(bx, by);                      // segundo clic: BORRA
+        const int  n2  = (int)g_userPresets.size();
+        const bool gone = (n2 == 1) && wcscmp(g_userPresets[0].name, L"DOS") == 0;
+        const bool off  = (g_delArm == -1) && (g_brwSel == -1);
+
+        // en un preset de FABRICA el boton no existe: pulsarlo no borra nada
+        g_brwSel = 0;                          // SPARKLE TWIN, de fabrica
+        const int n3 = (int)g_userPresets.size();
+        brwClick(bx, by);
+        const bool fabOk = ((int)g_userPresets.size() == n3) && (g_delArm == -1);
+
+        sprintf_s(d, "un clic: n=%d armado=%d; dos clics: n=%d queda=%ls fuera=%d; en fabrica n=%d",
+                  n1, (int)arm, n2, n2 ? g_userPresets[0].name : L"", (int)off,
+                  (int)g_userPresets.size());
+        hCheck(n1 == 2 && arm && n2 == 1 && gone && off && fabOk,
+               "T10 BORRAR en el Info pane pide dos clics y no existe en un preset de fabrica", d);
+
+        g_brwOpen = bakOpen; g_brwSel = bakSel; g_presetIdx = bakIdx; g_delArm = bakArm;
+        g_userPresets = bak;
+        g_iniPath = realPath;
+        DeleteFileW(tmp.c_str());
+    }
 }
 
 // Puesta en escena de la interfaz: los mismos pasos que da WinMain, sin hilos ni
@@ -14334,12 +14253,9 @@ static void hSelftest(int fs) {
     }
     {   // La lista de amplis tiene que ofrecer los TRECE, con el cabezal PERFIL:
         // el bucle pedia 12 y el 13 no aparecia nunca en la interfaz.
-        const int tab0 = g_leftTab;
         wcscpy_s(g_ampFilter, L"");
-        g_leftTab = 0;
         int idx[kMaxListEntries], cnt = 0;
         listFilterIdx(idx, &cnt);
-        g_leftTab = tab0;
         bool has12 = false;
         for (int i = 0; i < cnt; ++i) if (idx[i] == 12) has12 = true;
         char d[160];
@@ -14470,7 +14386,6 @@ static int hRender(const char* outPath, const char* state, int winW, int winH) {
         if      (strcmp(state, "add") == 0)      { g_addOpen = true; g_addRow = 0; }
         else if (strcmp(state, "tuner") == 0)    g_tunerOpen.store(true);
         else if (strcmp(state, "settings") == 0) g_settingsOpen = true;
-        else if (strcmp(state, "presets") == 0)  g_leftTab = 1;
         else if (strcmp(state, "browser") == 0)  { brwOpen(); g_brwSel = 0; }   // navegador (paso 18)
         else if (strcmp(state, "browser_mio") == 0) {   // con presets mios y metadatos
             brwOpen();
@@ -14503,15 +14418,14 @@ static int hRender(const char* outPath, const char* state, int winW, int winH) {
             brwBeginEdit(3, presetComment(kNumPresets));
         }
         else if (strcmp(state, "dirty") == 0) {          // el punto de MODIFICADO
-            g_leftTab = 1;
+            // El punto vive pegado al nombre del preset en la CABECERA: la fila de
+            // la lista que tambien lo llevaba se fue con la pestana PRESETS (paso
+            // 19), asi que este estado vigila el unico sitio donde queda.
             const int mm = g_params.model.load();
             g_params.amp[mm][0].store(g_params.amp[mm][0].load() + 6.0f);
         }
-        else if (strcmp(state, "favonly") == 0) {        // el filtro "solo favoritos"
-            g_leftTab = 1;
-            int ord[kMaxListEntries];
-            const int n = presetOrder(ord);
-            if (n > 2) { presetFavSet(ord[1], 2); presetFavSet(ord[4], 3); }
+        else if (strcmp(state, "favonly") == 0) {        // la estrella: solo mis amplis
+            g_favMask = (1u << 0) | (1u << 4) | (1u << 10);
             g_favOnly = true;
         }
         else if (strcmp(state, "drag") == 0) {
