@@ -157,9 +157,6 @@ static const G::REAL kRPanel = 12.0f;   // paneles y unidades
 static const G::REAL kRCard  = 10.0f;   // tarjetas y modulos
 static const G::REAL kRWell  =  8.0f;   // pozos
 static const G::REAL kRPill  =  9.0f;   // pastillas y botones
-static const G::REAL kRBtn   =  8.0f;   // botones de accion
-static const int     kPadX   = 16;      // margen interno de panel
-static const G::REAL kAir    = 12.0f;   // separacion vertical entre bloques
 
 // --- Escala tipografica: UNA tabla, un PAPEL por texto ----------------------
 // GDI+ construye Gdiplus::Font en PUNTOS (1pt = 1,333px a 96 dpi). Un sitio de
@@ -187,10 +184,8 @@ static const TxStep kTx[TxRoleCount] = {
     { kFontTec,  15.0f, 11.0f, "titulo: titulos de zona" },
     { kFontTec,  20.0f, 12.0f, "marca y titulo de modal" },
 };
-// Medidas sueltas: SOLO para el texto atado al arte (la tarjeta de pedal mide
-// 124x120 y su texto se mide con ELLA, no con la escala de la interfaz) y para
-// las figuras de display del afinador. Ningun texto de interfaz usa estas.
-static const G::REAL kTFxTitle  = 13.0f;   // titulo dentro de la tarjeta
+// Medidas sueltas: SOLO las figuras de display del afinador, que no son texto
+// de interfaz y se miden aparte de la escala.
 static const G::REAL kTDisplay  = 88.0f;   // nota del afinador (display)
 static const G::REAL kTDisplay2 = 26.0f;   // "--" del afinador en reposo
 static const G::REAL kTValor  = kTx[TxValor].pt;    // 12,5
@@ -198,7 +193,6 @@ static const G::REAL kTPico   = kTx[TxPico].pt;     // 8,0
 static const G::REAL kTRotulo = kTx[TxRotulo].pt;   // 9,5
 static const G::REAL kTCuerpo = kTx[TxCuerpo].pt;   // 10,5
 static const G::REAL kTNombre = kTx[TxNombre].pt;   // 13,0
-static const G::REAL kTTitulo = kTx[TxTitulo].pt;   // 15,0
 static const G::REAL kTMarca  = kTx[TxMarca].pt;    // 20,0
 
 // El grano de 1px se retira: sobre un fondo casi puro leia como suciedad, no
@@ -327,12 +321,6 @@ static int namChainAddAt(const WCHAR* path, int pos, std::wstring& msg)
     namPublish();
     msg = L"BLOQUE PUESTO EN LA CELDA";
     return at;
-}
-
-// Compat: cargar un fichero = anadir un bloque a la cadena
-static bool namLoadProfile(const WCHAR* path, std::wstring& msg)
-{
-    return namChainAdd(path, msg) >= 0;
 }
 
 // El candado se suelta ANTES de publicar: namPublish vuelve a pedirlo (el
@@ -3674,6 +3662,39 @@ static void saveIni() {
     }
 }
 
+// Recarga la cadena del cabezal PERFIL desde el .ini. Es una RECARGA, no un
+// anadido: vacia primero lo que hubiera en memoria (namChainClear) para que
+// releer el .ini no pueda duplicar la cadena.
+static void namChainLoadFromIni() {
+    namChainClear();
+    const int n = iniGetInt(L"chain", L"count", 0);
+    for (int i = 0; i < n && i < 16; ++i) {
+        wchar_t key[32], np[MAX_PATH] = L"";
+        swprintf_s(key, L"p%d", i);
+        GetPrivateProfileStringW(L"chain", key, L"", np, MAX_PATH, g_iniPath.c_str());
+        if (!np[0]) continue;
+        // El .ini guarda la ruta relativa a la carpeta del exe cuando el
+        // .nam vive ahi dentro; lo que hubiera de antes venia absoluto y
+        // iniPathLoad lo devuelve tal cual.
+        const std::wstring abs = iniPathLoad(np);
+        if (GetFileAttributesW(abs.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
+        std::wstring msg;
+        const int idx = namChainAdd(abs.c_str(), msg);
+        if (idx < 0) continue;
+        NamChain snap;
+        { std::lock_guard<std::mutex> lk(g_namMutex); snap = g_namUi; }
+        if (idx < (int)snap.size()) {
+            swprintf_s(key, L"on%d", i);
+            snap[idx]->on.store(iniGetInt(L"chain", key, 1) != 0);
+            swprintf_s(key, L"lv%d", i);
+            float lv = 1.0f;
+            iniGetFlt(L"chain", key, &lv, 1);
+            snap[idx]->level.store(lv < 0.0f ? 0.0f : (lv > 2.0f ? 2.0f : lv));
+        }
+    }
+    namPublish();
+}
+
 static void loadIni() {
     iniBuildPath();
     if (GetFileAttributesW(g_iniPath.c_str()) == INVALID_FILE_ATTRIBUTES) return; // sin ini: presets de fabrica
@@ -3907,34 +3928,7 @@ static void loadIni() {
     }
 
     // Cadena del cabezal PERFIL: se recarga cada bloque guardado que siga existiendo
-    {
-        const int n = iniGetInt(L"chain", L"count", 0);
-        for (int i = 0; i < n && i < 16; ++i) {
-            wchar_t key[32], np[MAX_PATH] = L"";
-            swprintf_s(key, L"p%d", i);
-            GetPrivateProfileStringW(L"chain", key, L"", np, MAX_PATH, g_iniPath.c_str());
-            if (!np[0]) continue;
-            // El .ini guarda la ruta relativa a la carpeta del exe cuando el
-            // .nam vive ahi dentro; lo que hubiera de antes venia absoluto y
-            // iniPathLoad lo devuelve tal cual.
-            const std::wstring abs = iniPathLoad(np);
-            if (GetFileAttributesW(abs.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
-            std::wstring msg;
-            const int idx = namChainAdd(abs.c_str(), msg);
-            if (idx < 0) continue;
-            NamChain snap;
-            { std::lock_guard<std::mutex> lk(g_namMutex); snap = g_namUi; }
-            if (idx < (int)snap.size()) {
-                swprintf_s(key, L"on%d", i);
-                snap[idx]->on.store(iniGetInt(L"chain", key, 1) != 0);
-                swprintf_s(key, L"lv%d", i);
-                float lv = 1.0f;
-                iniGetFlt(L"chain", key, &lv, 1);
-                snap[idx]->level.store(lv < 0.0f ? 0.0f : (lv > 2.0f ? 2.0f : lv));
-            }
-        }
-        namPublish();
-    }
+    namChainLoadFromIni();
     // El rig con el que arranca la app ES el del preset guardado: sin esto, la
     // marca de MODIFICADO saldria encendida nada mas abrir (la comparacion es
     // contra el rig del ultimo applyPreset, que era el preset 0).
@@ -4321,7 +4315,7 @@ static void volSnapshot(const char* tag) {
     }
 }
 
-static void volWatchProc() {
+static DWORD WINAPI volWatchProc(LPVOID) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     float prevDef = -2.0f, prevOut = -2.0f;
     int   prevDefM = -1,  prevOutM = -1;
@@ -4352,6 +4346,7 @@ static void volWatchProc() {
         for (int i = 0; i < 20 && !g_volWatchStop.load() && !g_audioQuit.load(); ++i) Sleep(50);
     }
     CoUninitialize();
+    return 0;
 }
 
 static DWORD WINAPI AudioThread(LPVOID) {
@@ -4806,7 +4801,7 @@ static void uiInvalidate(HWND hwnd, const RECT& design) {
 //  Layout GUITAR ONE: rejilla de 3 columnas (copia del diseno)
 // ============================================================
 // --- Rejilla principal (paneles) ---
-static const int GUT = 16, MARG = 24;
+static const int MARG = 24;
 static const int PANEL_Y = 76,  PANEL_H = 754;      // 76..830 (toda la torre)
 static const int COL_L_X = 24,  COL_L_W = 300;      // lista de amps
 static const int COL_C_X = 340, COL_C_W = 720;      // torre de senal
@@ -4814,8 +4809,8 @@ static const int COL_R_X = 1076, COL_R_W = 340;     // panel CABINA
 
 // Panel izquierdo: tabs + busqueda + lista
 static const int TAB_Y = 86,  TAB_H = 30;
-// 12px de aire entre pestanas, buscador y lista: el mismo ritmo que el resto
-// del diseno (kAir, RACK_GAP). Con 8 el navegador se leia apretado de arriba.
+// 12px de aire entre pestanas, buscador y lista: es el ritmo del resto del
+// diseno. Con 8 el navegador se leia apretado de arriba.
 static const int SEARCH_X = 34, SEARCH_Y = 128, SEARCH_W = 280, SEARCH_H = 32;
 static const int LIST_Y = 172, LIST_H = PANEL_Y + PANEL_H - LIST_Y - 36;
 static const int HINT_Y = PANEL_Y + PANEL_H - 24;   // leyenda de atajos al pie del navegador
@@ -5356,10 +5351,6 @@ static int ampExtraHoles(int m, int* out) {
     }
     return n;
 }
-static int ampExtraHole(int m) {          // primer hueco con control extra, o -1
-    int h[2];
-    return (ampExtraHoles(m, h) > 0) ? h[0] : -1;
-}
 // Que funcion tiene el control extra numero idx (0 o 1) del ampli m.
 static int ampExtraKindAt(int m, int idx) {
     int h[2];
@@ -5432,12 +5423,6 @@ static void knobRemember(std::atomic<float>* v, float val) {
 // perillas del ampli.
 static int   g_ampKnobCount = 6;
 static int   g_dragIdx = -1;
-// Encendido de la torre: al activar el audio (o al arrancar) las unidades se
-// encienden en cascada, de arriba abajo y en orden de senal. Es el unico
-// momento animado del sistema, y explica el estado: la torre esta viva.
-static DWORD g_powerT0 = 0;
-static bool  g_powerAnim = false;
-static void powerOnSweep() { g_powerT0 = GetTickCount(); g_powerAnim = true; }
 static int   g_dragY = 0;
 static float g_dragStart = 0.0f;
 static bool  g_dragFine  = false;   // SHIFT pulsado al empezar el arrastre del mando
@@ -6223,22 +6208,6 @@ static void flatMeterFill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w,
     }
 }
 
-// BANDA DE SECCION: el rotulo del sistema. Una regla de 1px y el titulo en
-// versalitas; en la unidad activa la regla es ambar, porque el ambar marca lo
-// que suena y la unidad activa es la que suena.
-static void sectionHeader(G::Graphics& g, const WCHAR* s, G::REAL x, G::REAL y,
-                          G::REAL w, bool active, G::Color txt) {
-    if (active) {   // la unidad activa lleva la regla en el acento: marca lo que suena
-        G::Pen p(kAcc, 1.0f);
-        g.DrawLine(&p, x, y, x + w, y);
-    } else {
-        G::Pen p(kFLine, 1.0f);
-        g.DrawLine(&p, x, y, x + w, y);
-    }
-    drawSpacedFit(g, s, G::FontStyleBold, txt, x + 2.0f, y + 5.0f, 1.6f,
-                  w - 4.0f, kTFxTitle, kTFxTitle*0.78f, kFontTec);
-}
-
 // UNIDAD: el contenedor de todo lo que se apila en la torre (estantes y
 // cabezal). Una placa de cristal y una regla que separa su banda de titulo; los
 // tornillos del rack se han ido con el lenguaje viejo, porque el titulo ya se
@@ -6551,61 +6520,6 @@ static void drawFxGlyph(G::Graphics& g, int type, G::REAL cx, G::REAL cy, G::REA
             break;
         }
     }
-}
-
-// Piloto jewel (dinamico): bisel cromado + testigo del amp activo
-static void drawJewel(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h, int amp,
-                      bool active, G::Color ac) {
-    const bool dark = (amp/4 == 2);
-    G::Color scrC = dark ? G::Color(255, 0x46, 0x43, 0x3c) : G::Color(0xff, 0x5a, 0x56, 0x51);
-    G::REAL jx = x + w - 104, jy = y + h/2;
-    G::SolidBrush bez(scrC);
-    g.FillEllipse(&bez, jx - 8.0f, jy - 8.0f, 16.0f, 16.0f);
-    G::SolidBrush gapB(dark ? G::Color(255, 10, 12, 14) : G::Color(0xff, 0x27, 0x25, 0x27));
-    g.FillEllipse(&gapB, jx - 6.0f, jy - 6.0f, 12.0f, 12.0f);
-    if (active) {
-        G::SolidBrush glow(G::Color(95, ac.GetR(), ac.GetG(), ac.GetB()));
-        g.FillEllipse(&glow, jx - 11.0f, jy - 11.0f, 22.0f, 22.0f);
-    }
-    G::Color jc = active ? ac : G::Color(255, 0x44, 0x41, 0x3a);
-    G::SolidBrush jb(jc);
-    g.FillEllipse(&jb, jx - 4.5f, jy - 4.5f, 9.0f, 9.0f);
-    G::SolidBrush hl(G::Color(90, 255, 255, 255));
-    g.FillEllipse(&hl, jx - 2.5f, jy - 3.5f, 4.0f, 2.6f);
-}
-
-static void drawHandle(G::Graphics& g, G::REAL cx, G::REAL topY, G::REAL w, G::REAL h) {
-    G::REAL r = 14.0f;
-    // soportes (brackets) en los extremos
-    {
-        G::SolidBrush br(G::Color(255, 0x22, 0x1f, 0x18));
-        G::Pen bp(G::Color(255, 0x4b, 0x48, 0x41), 1.2f);
-        roundRect(g, cx - w/2 - 8, topY - 3, 20, 14, 3, &bp, &br);
-        roundRect(g, cx + w/2 - 12, topY - 3, 20, 14, 3, &bp, &br);
-    }
-    G::GraphicsPath p;
-    p.AddArc(cx - w/2, topY, r*2, r*2, 180, 90);
-    p.AddArc(cx + w/2 - r*2, topY, r*2, r*2, 270, 90);
-    p.AddLine(cx + w/2, topY + r, cx + w/2, topY + h);
-    p.AddLine(cx - w/2, topY + h, cx - w/2, topY + r);
-    // base oscura + luz superior = metal
-    G::Pen back(G::Color(255, 0x1f, 0x1c, 0x15), 7.0f);
-    g.DrawPath(&back, &p);
-    G::Pen pen(G::Color(175, 0x6d, 0x6a, 0x63), 3.0f);
-    g.DrawPath(&pen, &p);
-}
-
-static void drawSwitch(G::Graphics& g, G::REAL x, G::REAL y, bool on) {
-    G::REAL w = 38, h = 21;
-    if (on) {
-        G::SolidBrush gl(G::Color(70, 0x82, 0x7d, 0x76));
-        roundRect(g, x - 3, y - 3, w + 6, h + 6, (h + 6)/2, nullptr, &gl);
-    }
-    G::SolidBrush track(on ? G::Color(0xff, 0x82, 0x7d, 0x76) : G::Color(255, 0x48, 0x45, 0x3e));
-    roundRect(g, x, y, w, h, h/2, nullptr, &track);
-    G::SolidBrush kb(on ? G::Color(255, 255, 255, 255) : G::Color(255, 0xb9, 0xb6, 0xaf));
-    G::REAL kx = on ? (x + w - 18) : (x + 3);
-    g.FillEllipse(&kb, kx, y + 3, 15.0f, 15.0f);
 }
 
 // Canal del medidor (estatico): etiqueta en versalitas + ranura hundida con
@@ -7710,9 +7624,6 @@ static void buildStaticScene(int W, int H) {
 
     g_scene.valid = true;
 }
-
-// --- Estado extra de la capa dinamica (N3/N4) ---
-static bool  g_hoverMix = false;      // hover sobre el slider MEZCLA
 
 // --- Lista del panel izquierdo: indices filtrados (pintado + input + rueda) ---
 static WCHAR lowerW(WCHAR c) { return (c >= L'A' && c <= L'Z') ? (WCHAR)(c - L'A' + L'a') : c; }
@@ -11579,6 +11490,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESTROY:
         recStop();          // cierra el WAV en curso con su cabecera parcheada
         saveIni();          // persiste audio + DSP + presets de usuario
+        g_volWatchStop.store(true);
         g_audioQuit.store(true);
         g_deviceChanged.store(true);
         freeStaticScene();
@@ -11681,6 +11593,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     HANDLE hThread = CreateThread(nullptr, 0, AudioThread, nullptr, 0, nullptr);
     if (hThread) CloseHandle(hThread);
 
+    // La vigilancia de volumen es un hilo propio (solo LEE el nivel del
+    // endpoint, nunca lo escribe): vive lo mismo que el motor y anota en
+    // GuitarAmp-audio.log quien mueve el nivel mientras suena.
+    HANDLE hVolWatch = CreateThread(nullptr, 0, volWatchProc, nullptr, 0, nullptr);
+    if (hVolWatch) CloseHandle(hVolWatch);
+
     SetTimer(hwnd, 1, 16, nullptr);   // ~60 fps: medidores y scope fluidos
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
@@ -11691,6 +11609,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
         DispatchMessage(&msg);
     }
 
+    g_volWatchStop.store(true);
     g_audioQuit.store(true);
     g_deviceChanged.store(true);
     CoUninitialize();
@@ -12402,6 +12321,26 @@ static void hIniContract() {
         char d[200];
         sprintf_s(d, "recien creado con BOM=%d | primer guardado sin perdida=%d", b0, (int)ida);
         hCheck(b0 == 1 && ida, "I6 un .ini nuevo nace en UTF-16", d);
+    }
+
+    // I7: recargar la cadena del .ini SUSTITUYE la que hubiera en memoria, no se
+    //     suma a ella. namChainClear() existia sin ningun llamador: la recarga se
+    //     apilaba encima de lo ya cargado y la cadena podia duplicarse al releer.
+    {
+        wr(L"chain", L"count", L"0");
+        {
+            auto sl = std::make_shared<NamSlot>();
+            sl->path = L"fantasma"; sl->name = L"fantasma";
+            std::lock_guard<std::mutex> lk(g_namMutex);
+            g_namUi.push_back(sl);
+            g_namSel = 0;
+        }
+        namChainLoadFromIni();
+        int n = -1, sel = 0;
+        { std::lock_guard<std::mutex> lk(g_namMutex); n = (int)g_namUi.size(); sel = g_namSel; }
+        char d[200];
+        sprintf_s(d, "celdas tras recargar: %d (esperadas 0); seleccion %d (esperada -1)", n, sel);
+        hCheck(n == 0 && sel == -1, "I7 recargar la cadena sustituye, no acumula", d);
     }
 
     g_iniPath = realPath;
