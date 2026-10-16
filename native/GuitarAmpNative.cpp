@@ -1585,17 +1585,25 @@ static const int kNumPresets = (int)(sizeof(g_presets) / sizeof(g_presets[0]));
 static_assert(kNumPresets == 13 * kPresetsPerAmp, "el banco debe tener 6 lotes por amp");
 static int presetAmp(int p) { return (p >= 0 && p < kNumPresets) ? g_presets[p].model : -1; }
 static int   g_presetIdx = 0;
-static bool  g_fav = false;
 // Mascaras de favoritos de la lista: bit i = ampli i marcado con estrella.
 // Se declara aqui porque saveIni/loadIni (muy mas abajo en el fichero) la
 // persisten, y el corazon del pie refleja el bit del ampli cargado.
 static DWORD g_favMask = 0;
+// El favorito de un ampli: lo que marca la estrella de una fila de
+// AMPLIFICADORES. Los PRESETS llevan su propio favorito (ver presetFav): la
+// estrella marca siempre lo que la lista ensena en esa fila.
+static bool ampFav(int a) { return (a >= 0 && a < 32) && (((g_favMask >> a) & 1u) != 0); }
 
 // --- Presets de usuario (persistidos en GuitarAmp.ini) ---
 // El tope existe porque cada preset ocupa su propia seccion del ini. Al llegar
 // arriba no se rota ni se sobrescribe nada en silencio: la app avisa y toca
 // borrar alguno.
 static const int kMaxUserPresets = 32;
+// Cuantos amplificadores hay. El 12 estaba escrito a mano en dos sitios y los dos
+// se comian al PERFIL: la lista no lo mostraba y su fila salia sin miniatura
+// (ampThumb cortaba en 12). Sube aqui porque el codigo de presets -que es lo
+// primero que lo necesita- vive por encima de la tabla de nombres.
+static const int kAmpCount = 13;
 // Tope de la lista del navegador: TODOS los presets (fabrica + usuario) tienen
 // que caber. Con 64 se quedaban fuera los presets de fabrica 65..78, que ni se
 // pintaban ni se podian clicar (las flechas si los seleccionaban).
@@ -1610,11 +1618,30 @@ struct UserPreset {
     int   cabModel, cabMic, cabDist;
     int   preCount;  int pre[6];
     int   postCount; int post[6];
+    int   fav;            // 1 = estrella marcada en la lista
 };
 static std::vector<UserPreset> g_userPresets;
 
 static int presetTotal() { return kNumPresets + (int)g_userPresets.size(); }
 static bool isUserPreset(int idx) { return idx >= kNumPresets && idx < presetTotal(); }
+// --- Favoritos de PRESET -----------------------------------------------------
+// La estrella de la fila marca EL PRESET que hay en esa fila, no el ampli (esa
+// es la de la pestana AMPLIFICADORES, que se queda como estaba). Los 78 de
+// fabrica van en un arreglo fijo porque su indice no se mueve nunca; los del
+// usuario lo llevan en su propia ficha, porque su lista se recorta al borrar y
+// un bit por indice se correria de preset.
+static bool g_favPreset[kNumPresets] = {};
+static bool g_favOnly = false;         // el filtro "solo favoritos" del navegador
+static bool presetFav(int idx) {
+    if (idx < 0 || idx >= presetTotal()) return false;
+    return (idx < kNumPresets) ? g_favPreset[idx]
+                               : (g_userPresets[idx - kNumPresets].fav != 0);
+}
+static void presetFavSet(int idx, bool v) {
+    if (idx < 0 || idx >= presetTotal()) return;
+    if (idx < kNumPresets) g_favPreset[idx] = v;
+    else                   g_userPresets[idx - kNumPresets].fav = v ? 1 : 0;
+}
 // Amp (0..11) bajo el que se agrupa el preset; -1 = sin amp (grupo MIS PRESETS)
 static int presetGroup(int idx) {
     if (idx < 0 || idx >= presetTotal()) return -1;
@@ -1626,6 +1653,74 @@ static int presetGroup(int idx) {
 static int presetSlot(int idx) {
     if (idx < 0 || idx >= kNumPresets) return 0;
     return (idx % kPresetsPerAmp) + 1;
+}
+// El numero del preset DENTRO DE SU GRUPO (el ampli): 1..6 los seis lotes de
+// fabrica y 7, 8, ... los presets del usuario montados en ese mismo ampli. Es
+// el numero que ensenan la lista y la cabecera; antes la lista ensenaba el
+// indice global ("31") y la cabecera "PRESET 31", que no son una posicion que
+// nadie pueda buscar en ninguna parte. 0 = fuera de rango.
+// Los seis de fabrica de un ampli son contiguos y en orden (lo fija el
+// generador del banco y lo vigila la prueba Q0), de ahi el (idx % 6) + 1.
+static int presetInGroup(int idx) {
+    if (idx < 0 || idx >= presetTotal()) return 0;
+    if (idx < kNumPresets) return (idx % kPresetsPerAmp) + 1;
+    const int g = presetGroup(idx);
+    int n = kPresetsPerAmp;                       // detras de los seis lotes
+    for (int i = kNumPresets; i < idx; ++i)
+        if (presetGroup(i) == g) ++n;
+    return n + 1;
+}
+
+// --- El ESTADO de un preset, ni mas ni menos ---------------------------------
+// Lo que un preset guarda: el ampli, sus seis perillas, los 18 pedales (con su
+// encendido), el master, la cabina y la cadena. Lo leen DOS cosas: la marca de
+// MODIFICADO (se compara el rig de ahora con el que habia al aplicar el preset)
+// y GUARDAR (se vuelca a un preset de usuario). Al salir de la misma lista, un
+// sitio no puede contar cosas que el otro no guarde: el punto de MODIFICADO no
+// puede quedarse encendido despues de guardar.
+// NO entra la MEZCLA ni los dos controles extra del ampli: no son parte de
+// ningun preset (no se guardan con el), asi que tocarlos no lo modifica.
+struct RigState {
+    int model;
+    float amp[6];
+    float fx[18][2];
+    unsigned char fxOn[18];
+    float master;
+    int cabModel, cabMic, cabDist;
+    int preCount,  pre[6];
+    int postCount, post[6];
+};
+static RigState g_rigAtApply;      // el rig que habia al aplicar el preset
+static void rigCapture(RigState& s) {
+    memset(&s, 0, sizeof(s));      // tambien el relleno: la comparacion es un memcmp
+    s.model = g_params.model.load();
+    if (s.model < 0 || s.model >= 13) s.model = -1;
+    if (s.model >= 0)
+        for (int k = 0; k < 6; ++k) s.amp[k] = g_params.amp[s.model][k].load();
+    for (int f = 0; f < 18; ++f) {
+        s.fx[f][0] = g_params.fx[f][0].load();
+        s.fx[f][1] = g_params.fx[f][1].load();
+        s.fxOn[f]  = g_params.fxOn[f].load() ? 1 : 0;
+    }
+    s.master   = g_params.master.load();
+    s.cabModel = g_params.cabModel.load();
+    s.cabMic   = g_params.cabMic.load();
+    s.cabDist  = g_params.cabDist.load();
+    {
+        std::lock_guard<std::mutex> lk(g_chainMutex);
+        s.preCount = (int)g_chainPre.size();  if (s.preCount > 6)  s.preCount = 6;
+        for (int i = 0; i < s.preCount; ++i)  s.pre[i]  = g_chainPre[i];
+        s.postCount = (int)g_chainPost.size(); if (s.postCount > 6) s.postCount = 6;
+        for (int i = 0; i < s.postCount; ++i) s.post[i] = g_chainPost[i];
+    }
+}
+// Marca el rig actual como "el que era": al aplicar un preset y al guardarlo.
+static void rigMark() { rigCapture(g_rigAtApply); }
+// MODIFICADO: el rig ya no es el del preset que suena.
+static bool presetDirty() {
+    RigState now;
+    rigCapture(now);
+    return memcmp(&now, &g_rigAtApply, sizeof(RigState)) != 0;
 }
 
 static void applyPreset(int idx) {
@@ -1658,6 +1753,7 @@ static void applyPreset(int idx) {
                      std::vector<int>(p.post, p.post + p.postCount));
         g_sceneDirty.store(true);   // hero/rack/knobs dependen del modelo
         rebuildKnobs();
+        rigMark();                  // este es el rig del preset: no hay nada modificado
         return;
     }
     // Preset de usuario guardado por GUARDAR
@@ -1682,6 +1778,7 @@ static void applyPreset(int idx) {
                  std::vector<int>(u.post, u.post + u.postCount));
     g_sceneDirty.store(true);   // hero/rack/knobs dependen del modelo
     rebuildKnobs();
+    rigMark();                  // este es el rig del preset: no hay nada modificado
 }
 
 static void presetNameW(int idx, WCHAR* out, int n) {
@@ -3488,7 +3585,13 @@ static void saveIni() {
     swprintf_s(buf, L"%.4f", (double)g_params.mixCab.load()); WritePrivateProfileStringW(L"state", L"mixCab", buf, g_iniPath.c_str());
     WritePrivateProfileStringW(L"cab", L"irPath", iniPathStore(g_cabIRPath).c_str(), g_iniPath.c_str());
     swprintf_s(buf, L"%08X", (unsigned)g_favMask);     WritePrivateProfileStringW(L"state", L"favMask", buf, g_iniPath.c_str());
-    swprintf_s(buf, L"%d", g_fav ? 1 : 0);              WritePrivateProfileStringW(L"state", L"fav", buf, g_iniPath.c_str());
+    {
+        // Favoritos de preset de fabrica: una cadena de kNumPresets '0'/'1'.
+        WCHAR pf[kNumPresets + 8];
+        for (int i = 0; i < kNumPresets; ++i) pf[i] = g_favPreset[i] ? L'1' : L'0';
+        pf[kNumPresets] = 0;
+        WritePrivateProfileStringW(L"state", L"presetFav", pf, g_iniPath.c_str());
+    }
     swprintf_s(buf, L"%d", g_presetIdx);                WritePrivateProfileStringW(L"state", L"preset", buf, g_iniPath.c_str());
     WritePrivateProfileStringW(L"state", L"presetVer", L"2", g_iniPath.c_str());   // banco por lotes
     for (int a = 0; a < 13; ++a) {
@@ -3532,6 +3635,7 @@ static void saveIni() {
         const UserPreset& u = g_userPresets[i];
         wchar_t sec[16]; swprintf_s(sec, L"user%u", (unsigned)i);
         WritePrivateProfileStringW(sec, L"name", u.name, g_iniPath.c_str());
+        swprintf_s(buf, L"%d", u.fav);    WritePrivateProfileStringW(sec, L"fav", buf, g_iniPath.c_str());
         swprintf_s(buf, L"%d", u.model);  WritePrivateProfileStringW(sec, L"model", buf, g_iniPath.c_str());
         swprintf_s(buf, L"%.4f", (double)u.master); WritePrivateProfileStringW(sec, L"master", buf, g_iniPath.c_str());
         swprintf_s(buf, L"%.4f,%.4f,%.4f,%.4f,%.4f,%.4f",
@@ -3640,14 +3744,21 @@ static void loadIni() {
         wchar_t fm[16] = L"";
         GetPrivateProfileStringW(L"state", L"favMask", L"", fm, 16, g_iniPath.c_str());
         if (fm[0]) {
-            // Una sola fuente de favoritos (el bitmask): el corazon del pie
-            // refleja el bit del ampli cargado, no un estado propio.
+            // La mascara de favoritos de AMPLIFICADORES (la estrella de su lista).
             g_favMask = (DWORD)wcstoul(fm, nullptr, 16);
-            const int mk = g_params.model.load();
-            g_fav = (mk >= 0 && mk < 32) && (((g_favMask >> mk) & 1u) != 0);
         } else {
-            g_fav = iniGetInt(L"state", L"fav", g_fav ? 1 : 0) != 0;   // migracion del bool suelto
+            // .ini de antes del bitmask: el bool suelto marcaba el ampli cargado.
+            const int mk = g_params.model.load();
+            if (mk >= 0 && mk < 32 && iniGetInt(L"state", L"fav", 0) != 0)
+                g_favMask |= (1u << mk);
         }
+    }
+    {
+        // Favoritos de PRESET de fabrica: la cadena de kNumPresets caracteres
+        // ('0'/'1' por indice). Los del usuario van en su propia ficha (fav=1).
+        wchar_t pf[kNumPresets + 8] = L"";
+        GetPrivateProfileStringW(L"state", L"presetFav", L"", pf, kNumPresets + 8, g_iniPath.c_str());
+        for (int i = 0; i < kNumPresets; ++i) g_favPreset[i] = (pf[i] == L'1');
     }
     for (int a = 0; a < 13; ++a) {
         wchar_t key[16]; swprintf_s(key, L"a%d", a);
@@ -3715,7 +3826,8 @@ static void loadIni() {
         UserPreset u = {};
         wcsncpy_s(u.name, wname, _TRUNCATE);
         u.model = iniGetInt(sec, L"model", -1);
-        if (u.model < 0 || u.model > 11) u.model = -1;
+        if (u.model < 0 || u.model >= kAmpCount) u.model = -1;
+        u.fav = iniGetInt(sec, L"fav", 0) != 0 ? 1 : 0;
         float mv2 = 70.0f; iniGetFlt(sec, L"master", &mv2, 1); u.master = mv2;
         {
             float dam[6] = { 0,0,0,0,0,0 };
@@ -3823,6 +3935,10 @@ static void loadIni() {
         }
         namPublish();
     }
+    // El rig con el que arranca la app ES el del preset guardado: sin esto, la
+    // marca de MODIFICADO saldria encendida nada mas abrir (la comparacion es
+    // contra el rig del ultimo applyPreset, que era el preset 0).
+    rigMark();
 }
 
 // --- Aviso efimero (arriba, centrado): lo pinta la capa dinamica ---
@@ -3838,50 +3954,53 @@ static void toast(const WCHAR* msg) {
     if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);   // que se vea al instante
 }
 
-// Guarda el estado actual como preset de usuario.
-//  - Si el preset activo ya es de usuario, lo sobrescribe y CONSERVA su nombre.
-//  - Si no, anade uno nuevo al final con nombre automatico.
-// Nunca sobrescribe otro preset en silencio ni rota por detrás.
-static void saveUserPreset() {
+// Vuelca el rig de ahora al slot `slot` de la lista del usuario, con ese nombre,
+// y lo deja seleccionado. El tope no rota ni pisa a nadie en silencio: avisa.
+static bool writeUserPreset(int slot, const WCHAR* name) {
+    if (slot < 0 || slot >= kMaxUserPresets) { toast(L"SIN ESPACIO: BORRA UN PRESET"); return false; }
     UserPreset u = {};
-    const bool overwrite = isUserPreset(g_presetIdx);
-    int slot = -1;
-    if (overwrite) slot = g_presetIdx - kNumPresets;     // sobrescribe el actual
-    else if ((int)g_userPresets.size() < kMaxUserPresets)
-        slot = (int)g_userPresets.size();                // primer slot libre
-    else {
-        toast(L"SIN ESPACIO: BORRA UN PRESET");
-        return;
-    }
-    if (slot >= (int)g_userPresets.size())
-        g_userPresets.resize(slot + 1);
-    if (overwrite) wcsncpy_s(u.name, g_userPresets[slot].name, _TRUNCATE);
-    else           swprintf_s(u.name, L"MIS PRESET %02d", slot + 1);
-    u.model = g_params.model.load();
-    if (u.model < 0 || u.model > 11) u.model = 0;
-    for (int k = 0; k < 6; ++k)
-        u.amp[k] = g_params.amp[u.model][k].load();
+    RigState s; rigCapture(s);
+    u.model = (s.model >= 0 && s.model < kAmpCount) ? s.model : 0;
+    for (int k = 0; k < 6; ++k) u.amp[k] = s.amp[k];
     for (int f = 0; f < 18; ++f) {
-        u.fx[f][0] = g_params.fx[f][0].load();
-        u.fx[f][1] = g_params.fx[f][1].load();
-        u.fxOn[f]  = g_params.fxOn[f].load();
+        u.fx[f][0] = s.fx[f][0];
+        u.fx[f][1] = s.fx[f][1];
+        u.fxOn[f]  = s.fxOn[f] != 0;
     }
-    u.master = g_params.master.load();
-    u.cabModel = g_params.cabModel.load();
-    u.cabMic   = g_params.cabMic.load();
-    u.cabDist  = g_params.cabDist.load();
-    {
-        std::lock_guard<std::mutex> lk(g_chainMutex);
-        u.preCount = (int)g_chainPre.size();  if (u.preCount > 6) u.preCount = 6;
-        for (int i = 0; i < u.preCount; ++i) u.pre[i] = g_chainPre[i];
-        u.postCount = (int)g_chainPost.size(); if (u.postCount > 6) u.postCount = 6;
-        for (int i = 0; i < u.postCount; ++i) u.post[i] = g_chainPost[i];
-    }
+    u.master   = s.master;
+    u.cabModel = s.cabModel;
+    u.cabMic   = s.cabMic;
+    u.cabDist  = s.cabDist;
+    u.preCount  = s.preCount;  for (int i = 0; i < s.preCount;  ++i) u.pre[i]  = s.pre[i];
+    u.postCount = s.postCount; for (int i = 0; i < s.postCount; ++i) u.post[i] = s.post[i];
+    if (slot >= (int)g_userPresets.size()) g_userPresets.resize(slot + 1);
+    u.fav = g_userPresets[slot].fav;        // el favorito es de la FILA, no del rig
+    wcsncpy_s(u.name, name, _TRUNCATE);
     g_userPresets[slot] = u;
     g_presetIdx = kNumPresets + slot;
     g_sceneDirty.store(true);   // la lista cambia de contenido
-    saveIni();   // persistir al instante
-    toast(overwrite ? L"PRESET ACTUALIZADO" : L"PRESET GUARDADO");
+    saveIni();                  // persistir al instante
+    rigMark();                  // lo guardado es el rig de ahora: ya no hay nada modificado
+    return true;
+}
+// GUARDAR sobre un preset del usuario: lo pisa y CONSERVA su nombre. Nunca
+// sobrescribe otro preset en silencio ni rota por detrás.
+static void saveUserPreset() {
+    if (!isUserPreset(g_presetIdx)) return;
+    const int slot = g_presetIdx - kNumPresets;
+    WCHAR nm[64];
+    wcsncpy_s(nm, g_userPresets[slot].name, _TRUNCATE);
+    if (writeUserPreset(slot, nm)) toast(L"PRESET ACTUALIZADO");
+}
+// GUARDAR COMO: un preset NUEVO con el nombre que el usuario escriba (el modal
+// de renombrar, en su modo de guardar). Antes el boton GUARDAR, con un preset de
+// fabrica delante, creaba uno nuevo por detras con un nombre automatico
+// ("MIS PRESET 07") y sin preguntar nada.
+static void savePresetAs(const WCHAR* nm) {
+    if (!nm || !nm[0]) { toast(L"EL PRESET NECESITA UN NOMBRE"); return; }
+    const int slot = (int)g_userPresets.size();
+    if (slot >= kMaxUserPresets) { toast(L"SIN ESPACIO: BORRA UN PRESET"); return; }
+    if (writeUserPreset(slot, nm)) toast(L"PRESET GUARDADO");
 }
 
 // Renombra un preset de usuario (el modal de la lista llama aqui)
@@ -3904,7 +4023,10 @@ static void deleteUserPreset(int idx) {
 }
 
 // --- Modal de renombrado: buffer de escritura y estado ---
+// El mismo modal hace dos cosas, porque son el mismo gesto (escribir el nombre
+// de un preset): RENOMBRAR uno del usuario y GUARDAR COMO (crear uno nuevo).
 static bool  g_renameOpen = false;
+static bool  g_renameSave = false;       // true = GUARDAR COMO (crea), false = renombrar
 static int   g_renameIdx  = -1;          // preset de usuario que se renombra
 static WCHAR g_renameBuf[64] = L"";
 static int   g_delArm     = -1;          // preset armado para borrar (0 clics = -1)
@@ -4700,6 +4822,23 @@ static const int HINT_Y = PANEL_Y + PANEL_H - 24;   // leyenda de atajos al pie 
 // Fila de la lista: 56 y no 48. El aire es la mitad del rediseno, y con 56 la
 // fila deja de ser un renglon apretado: caben 11 amplis sin scroll (11x56 = 616).
 static const int LIST_ROW_H = 56;
+// La fila de PESTANAS: dos pestanas y, al canto, la ESTRELLA del filtro "solo
+// favoritos". El buscador ocupa su ancho entero y no dejaba sitio a un mando
+// mas; aqui el filtro vive con las pestanas y filtra la que este activa (los
+// amplis marcados en AMPLIFICADORES, los presets marcados en PRESETS). La
+// geometria sale de UNA definicion -la misma para el pintado y para el clic-,
+// que es lo que impide que el clic y lo que se ve vuelvan a separarse.
+static const int TAB_STAR_W = 40;
+static RECT tabRect(int i) {
+    const int tw = (COL_L_W - 16 - TAB_STAR_W - 8) / 2;
+    RECT r = { COL_L_X + 8 + i*(tw + 4), TAB_Y, COL_L_X + 8 + i*(tw + 4) + tw, TAB_Y + TAB_H };
+    return r;
+}
+static RECT tabStarRect() {
+    RECT r = { COL_L_X + COL_L_W - 8 - TAB_STAR_W, TAB_Y + 2,
+               COL_L_X + COL_L_W - 8, TAB_Y + TAB_H - 2 };
+    return r;
+}
 // ============================================================================
 //  RACK: la columna central es la torre de senal.
 //  Antes y despues del ampli se leen ARRIBA y ABAJO de el, no en dos filas
@@ -5130,10 +5269,13 @@ static const char*   kFxShort[18][2] = { { "THR", "DEC" }, { "SUS", "LVL" }, { "
                                         { "DIST", "FLT" }, { "RATE", "DEEP" },
                                         { "TIME", "FB" }, { "DWELL", "MIX" },
                                         { "LVL", "TONE" }, { "SENS", "RNG" } };
-// Numero de amplis. El 12 estaba escrito a mano en dos sitios y los dos se comian
-// al PERFIL: la lista no lo mostraba y su fila salia sin miniatura (ampThumb
-// cortaba en 12). Todo lo que recorra amplis usa esta constante.
-static const int kAmpCount = 13;
+// Las ranuras de la lista del navegador: una por entrada (amp o preset) MAS una
+// de encabezado por amplificador -la banda que dice de que ampli son los
+// presets que vienen-. Las ranuras miden todas lo mismo, de modo que la fila, el
+// clic y el hover siguen midiendose con navRowRect: lo unico que cambia es QUE
+// hay en cada ranura. El tope tiene que cubrir las dos cosas: con el tope de
+// entradas, el encabezado del ultimo ampli se salia del arreglo.
+static const int kMaxNavRows = kMaxListEntries + kAmpCount;
 static const WCHAR* kAmpNames[13]  = { L"SPARKLE TWIN", L"CHIME 30", L"AMBER TWEED",
                                         L"CHORUS 120", L"MARAUDER 800", L"LEAD 1959",
                                         L"TANGERINE 120", L"LONDON BLUES", L"SESSION HOT",
@@ -5436,12 +5578,26 @@ static void modalCloseAll() {
     g_t3kOpen      = false;
     g_tunerOpen.store(false);
     g_renameOpen   = false;
+    g_renameSave   = false;
     g_renameIdx    = -1;
     g_delArm       = -1;
     g_pedDelArm    = -1;   // un pedal armado tambien se desarma al abrir un modal
     g_t3kConnOpen  = false;
     g_t3kFocus     = 0;
     g_sceneDirty.store(true);       // el fondo se vuelve a ver entero
+}
+
+// Abre el modal de nombre en sus dos modos: renombrar un preset del usuario
+// (idx = el que se renombra, con su nombre en el campo) o GUARDAR COMO (idx = -1,
+// con el nombre del lote que suena como propuesta, para que se pueda escribir
+// encima o aceptar tal cual).
+static void openNameModal(int idx, bool saveAs, const WCHAR* suggested) {
+    modalCloseAll();                       // un modal a la vez
+    g_renameIdx  = idx;
+    g_renameSave = saveAs;
+    if (suggested && suggested[0]) wcsncpy_s(g_renameBuf, suggested, _TRUNCATE);
+    else                           g_renameBuf[0] = 0;
+    g_renameOpen = true;
 }
 
 static void rebuildKnobs() {
@@ -6790,7 +6946,7 @@ static const float kRampHover = 80.0f;    // ms: el raton entra en una fila
 static const float kRampModal = 140.0f;   // ms: un modal se abre o se cierra
 
 struct UAnim {
-    float row[64];      // rampa de hover de cada fila visible
+    float row[kMaxNavRows];   // rampa de hover de cada ranura de la lista
     float modal;        // 0..1: cuanto esta puesto el velo del modal
     float pulse;        // fase del latido de la cadena (radianes)
 };
@@ -6904,8 +7060,8 @@ static void buildStaticScene(int W, int H) {
                    (G::REAL)PANEL_H, kRPanel);
         const WCHAR* tabsL[2] = { L"AMPLIFICADORES", L"PRESETS" };
         for (int i = 0; i < 2; ++i) {
-            const int tx = COL_L_X + 8 + i*((COL_L_W - 16)/2);
-            const int tw = (COL_L_W - 16)/2 - 4;
+            const RECT tr = tabRect(i);
+            const int tx = tr.left, tw = tr.right - tr.left;
             const bool act = (g_leftTab == i);
             if (act) {
                 // Filete de 64x2 centrado bajo la pestana activa: la MISMA
@@ -6921,6 +7077,13 @@ static void buildStaticScene(int W, int H) {
             drawTxFitC(g, tabsL[i], G::FontStyleBold, act ? kFTxt : kFTxt2,
                            (G::REAL)(tx + tw/2), (G::REAL)(TAB_Y + 3), 1.1f,
                            (G::REAL)(tw - 8), TxRotulo);
+        }
+        // La estrella del filtro: ambar cuando filtra (esta PULSADA es la unica
+        // lectura que admite el lenguaje) y contorno tenue en reposo.
+        {
+            const RECT sr = tabStarRect();
+            icStar(g, (G::REAL)(sr.left + sr.right)/2.0f, (G::REAL)(sr.top + sr.bottom)/2.0f,
+                   7.5f, g_favOnly ? kAcc : kFTxt3, g_favOnly);
         }
         // El separador va DEBAJO de la banda de pestanyas: con SEARCH_Y-10 (y=114)
         // cruzaba el filete activo (113..115) y le ponia una raya a la pestana.
@@ -7490,31 +7653,56 @@ static bool  g_hoverMix = false;      // hover sobre el slider MEZCLA
 
 // --- Lista del panel izquierdo: indices filtrados (pintado + input + rueda) ---
 static WCHAR lowerW(WCHAR c) { return (c >= L'A' && c <= L'Z') ? (WCHAR)(c - L'A' + L'a') : c; }
+// El ORDEN de la lista de presets: por amplificador. Los seis lotes de fabrica
+// de un ampli y, detras, los presets del usuario montados en ese mismo ampli
+// (los que la lista numera 7, 8...); los presets sin ampli van al final, juntos.
+// Antes el orden era el crudo del banco y los del usuario caian al final de
+// todo, lejos de su ampli: para saber con que ampli sonaba un preset habia que
+// leer un numero global (31) que no era una posicion de nada.
+static int presetOrder(int* out) {
+    int n = 0;
+    for (int g = 0; g < kAmpCount; ++g) {
+        for (int s = 0; s < kPresetsPerAmp; ++s) out[n++] = g*kPresetsPerAmp + s;
+        for (int i = 0; i < (int)g_userPresets.size(); ++i)
+            if (g_userPresets[i].model == g) out[n++] = kNumPresets + i;
+    }
+    for (int i = 0; i < (int)g_userPresets.size(); ++i)
+        if (g_userPresets[i].model < 0 || g_userPresets[i].model >= kAmpCount)
+            out[n++] = kNumPresets + i;
+    return n;
+}
 static void listFilterIdx(int* out, int* pCount) {
     int n = 0;
+    WCHAR lowF[40]; int fi = 0;
+    for (; fi < 39 && g_ampFilter[fi]; ++fi) lowF[fi] = lowerW(g_ampFilter[fi]);
+    lowF[fi] = 0;
     if (g_leftTab == 1) {
-        WCHAR lowF[40]; int fi = 0;
-        for (; fi < 39 && g_ampFilter[fi]; ++fi) lowF[fi] = lowerW(g_ampFilter[fi]);
-        lowF[fi] = 0;
-        const int tot = presetTotal();
-        for (int i = 0; i < tot && n < kMaxListEntries; ++i) {
+        int ord[kMaxListEntries];
+        const int tot = presetOrder(ord);
+        for (int k = 0; k < tot && n < kMaxListEntries; ++k) {
+            const int i = ord[k];
+            if (g_favOnly && !presetFav(i)) continue;
             if (fi == 0) { out[n++] = i; continue; }
-            // El buscador tambien filtra por nombre de preset: en esta pestana se
-            // podia escribir y no filtraba nada (parecia roto).
+            // El buscador tiene que encontrar lo que se ve: el nombre del preset
+            // Y el ampli del grupo, que es el rotulo que la lista pone encima de
+            // sus seis lotes (buscar "marauder" tiene que traerlos). Antes
+            // filtraba solo por nombre.
             WCHAR pn[128]; presetNameW(i, pn, 128);
-            WCHAR lowP[160]; size_t j = 0;
-            for (; j + 1 < 160 && pn[j]; ++j) lowP[j] = lowerW(pn[j]);
+            const int g = presetGroup(i);
+            WCHAR all[192];
+            if (g >= 0) swprintf_s(all, L"%s %s", pn, kAmpNames[g]);
+            else        wcsncpy_s(all, pn, _TRUNCATE);
+            WCHAR lowP[208]; size_t j = 0;
+            for (; j + 1 < 208 && all[j]; ++j) lowP[j] = lowerW(all[j]);
             lowP[j] = 0;
             if (wcsstr(lowP, lowF)) out[n++] = i;
         }
     } else {
-        WCHAR lowF[40]; int fi = 0;
-        for (; fi < 39 && g_ampFilter[fi]; ++fi) lowF[fi] = lowerW(g_ampFilter[fi]);
-        lowF[fi] = 0;
         // 13 amplis, no 12: con `i < 12` el cabezal PERFIL no aparecia NUNCA en
         // la lista (quedaba inalcanzable desde la interfaz, que es justo la mitad
         // del producto que se anuncia).
         for (int i = 0; i < kAmpCount; ++i) {
+            if (g_favOnly && !ampFav(i)) continue;
             if (fi == 0) { out[n++] = i; continue; }
             WCHAR all[96];
             swprintf_s(all, L"%s %s", kAmpNames[i], kAmpSubs[i]);
@@ -7542,15 +7730,24 @@ static RECT navRowPaintRect(int vi) {
     r.bottom -= 4;             // el aire entre filas es solo visual
     return r;
 }
-// Columna de acciones del borde derecho de la fila: estrella de favorito en
-// AMPLIFICADORES, aspa de borrado en PRESETS (las dos en `primary`) y lapiz de
-// renombrar a su izquierda. Mismo sitio en las dos pestanas.
-static RECT navBadgeRect(int vi, bool primary) {
+// Columna de acciones del borde derecho de la fila. Las tres chapas, de derecha
+// a izquierda: 0 es la del canto (la estrella de favoritos, en las DOS pestanas
+// -es el mismo mando en el mismo sitio-) y a su izquierda el lapiz (1) y el aspa
+// (2), que solo tienen los presets del usuario. Antes el aspa ocupaba el canto y
+// la estrella de los presets no existia; mover el aspa a la tercera columna es
+// lo que deja sitio al favorito sin tocar la geometria de las otras dos.
+static RECT navBadgeColRect(int vi, int col) {
     RECT r = navRowRect(vi);
-    if (primary) { r.left = r.right - 28; r.right = r.right - 2; }
-    else         { r.left = r.right - 54; r.right = r.right - 30; }
+    switch (col) {
+        case 0:  r.left = r.right - 28; r.right = r.right -  2; break;
+        case 1:  r.left = r.right - 54; r.right = r.right - 30; break;
+        default: r.left = r.right - 80; r.right = r.right - 56; break;
+    }
     r.top += 4; r.bottom -= 8;
     return r;
+}
+static RECT navBadgeRect(int vi, bool primary) {
+    return navBadgeColRect(vi, primary ? 0 : 1);
 }
 static bool rectHas(const RECT& r, int x, int y) {
     POINT p = { x, y };
@@ -7562,23 +7759,75 @@ static RECT pedSlotBox(int sx, int sy) {
     RECT r = { sx, sy, sx + PED_SLOT_W, sy + PED_SLOT_H };
     return r;
 }
+// El ROTULO del ampli de un grupo: nombre + caracter, la misma pareja que usa la
+// ficha de la fila de AMPLIFICADORES. Es el encabezado que la lista de presets
+// pone delante de los seis lotes (y de los presets del usuario) de un ampli.
+static void groupLabelW(int g, WCHAR* out, int n) {
+    if (!out || n <= 0) return;
+    if (g >= 0 && g < kAmpCount) swprintf_s(out, (size_t)n, L"%s \x00B7 %s", kAmpNames[g], kAmpSubs[g]);
+    else                         wcsncpy_s(out, (size_t)n, L"SIN AMPLIFICADOR", _TRUNCATE);
+}
+// El rotulo del lote en la banda del cabezal: QUE lote del ampli suena. Antes
+// era el indice global ("PRESET 31"), que no es una posicion que nadie pueda
+// buscar en ninguna parte; ahora es el mismo numero que ensena la lista.
+static void presetTagW(int idx, WCHAR* out, int n) {
+    if (!out || n <= 0) return;
+    const int g  = presetGroup(idx);
+    const int ig = presetInGroup(idx);
+    if (g < 0 || ig <= 0) { wcsncpy_s(out, (size_t)n, L"SIN AMPLIFICADOR", _TRUNCATE); return; }
+    swprintf_s(out, (size_t)n, L"%s \x00B7 %d", kAmpNames[g], ig);
+}
+// El texto del hueco del buscador. Es el mismo campo en las dos pestanas, asi
+// que tiene que decir lo que la pestana filtra: en PRESETS pedia "Buscar
+// amplificador...", que es justo lo que NO filtra esa pestana.
+static const WCHAR* searchHint() {
+    return (g_leftTab == 1) ? L"Buscar preset..." : L"Buscar amplificador...";
+}
+// La ranura de ENCABEZADO: en un arreglo de ranuras, el valor que no es una
+// entrada (no se selecciona ni se pulsa) sino el rotulo del grupo que empieza.
+static const int NavHeader = -1;
+// Las RANURAS de la lista, en orden de pintado: las entradas de listFilterIdx
+// (que es lo que seleccionan el clic y las flechas) mas una ranura de
+// ENCABEZADO delante de cada grupo de presets. El encabezado sale del
+// contenido -se inserta donde el ampli cambia respecto de la entrada anterior-,
+// asi que no puede desincronizarse de los presets que rotula. Devuelve cuantas.
+static int navRows(int* out) {
+    int idx[kMaxListEntries], cnt = 0;
+    listFilterIdx(idx, &cnt);
+    if (g_leftTab != 1) {              // amplificadores: sin encabezados
+        for (int i = 0; i < cnt; ++i) out[i] = idx[i];
+        return cnt;
+    }
+    int n = 0, last = -2;
+    for (int i = 0; i < cnt; ++i) {
+        const int g = presetGroup(idx[i]);
+        if (g != last) { out[n++] = NavHeader; last = g; }
+        out[n++] = idx[i];
+    }
+    return n;
+}
+static int listScrollMax();
 // Deja la fila `a` a la vista (la lista la seguiria con el raton; con el teclado
 // tiene que seguirla sola o el movimiento no se ve y no parece que pase nada)
 static void listFollow(int a) {
-    int idx[kMaxListEntries], cnt = 0;
-    listFilterIdx(idx, &cnt);
+    int rows[kMaxNavRows];
+    const int n = navRows(rows);
     int pos = -1;
-    for (int i = 0; i < cnt; ++i) if (idx[i] == a) { pos = i; break; }
+    for (int i = 0; i < n; ++i) if (rows[i] == a) { pos = i; break; }
     if (pos < 0) return;
     const int vis = listVisibleRows();
     if (pos < g_listScroll)                    g_listScroll = pos;
     if (pos >= g_listScroll + vis)             g_listScroll = pos - vis + 1;
+    if (g_listScroll > listScrollMax())        g_listScroll = listScrollMax();
     if (g_listScroll < 0)                      g_listScroll = 0;
 }
+// Tope del scroll: en RANURAS, no en entradas (los encabezados ocupan ranura y
+// el final de la lista se quedaba 13 ranuras fuera de alcance cuando esto
+// contaba solo presets).
 static int listScrollMax() {
-    int idx[kMaxListEntries], cnt = 0;
-    listFilterIdx(idx, &cnt);
-    int maxS = cnt - listVisibleRows();
+    int rows[kMaxNavRows];
+    const int n = navRows(rows);
+    const int maxS = n - listVisibleRows();
     return (maxS > 0) ? maxS : 0;
 }
 
@@ -8424,26 +8673,43 @@ static void paintWindow(HWND hwnd) {
                       kFTxt2, (G::REAL)(TOP_BOX_X + 60), (G::REAL)(TOP_BOX_Y + 7), 1.2f,
                       290.0f, TxRotulo);
 
-        // "05. " se separa a un chip: el nombre del preset queda alineado a la
-        // izquierda y deja de leerse como un texto suelto en mitad de la barra
+        // El chip del numero: QUE LOTE del ampli de arriba suena, el mismo numero
+        // que ensena la lista (1..6 los de fabrica, 7,8... los del usuario). El
+        // chip leia antes "05. " del NOMBRE del preset: los nombres del banco no
+        // llevan numero, asi que ese despiece no se ejecutaba nunca (chip muerto)
+        // y el unico numero que se veia era el indice global de la lista.
         G::SolidBrush tb(kFTxt);
         const WCHAR* nm = pname;
-        if (pname[0] && pname[1] && pname[2] == L'.' && pname[3] == L' ') {
+        const int inG = presetInGroup(g_presetIdx);
+        if (inG > 0) {
             G::SolidBrush cb(G::Color(160, 0xff, 0xa5, 0x1f));
             G::Pen cp(G::Color(150, kAcc.GetR(), kAcc.GetG(), kAcc.GetB()), 1.0f);
             roundRect(g, (G::REAL)TOP_BOX_X + 14.0f, (G::REAL)(TOP_BOX_Y + 17), 38.0f, 26.0f, kRWell, &cp, &cb);
-            WCHAR num[3] = { pname[0], pname[1], 0 };
+            WCHAR num[4]; swprintf_s(num, L"%d", inG);
             G::SolidBrush nb(kAccGlb);
             G::Font fNum(kFontMono, kTValor, G::FontStyleBold);
             g.DrawString(num, -1, &fNum, G::RectF((G::REAL)TOP_BOX_X + 14.0f, (G::REAL)(TOP_BOX_Y + 17), 38.0f, 26.0f), &sfC, &nb);
-            nm = pname + 4;
         }
         {
             G::StringFormat sfL;
             sfL.SetLineAlignment(G::StringAlignmentCenter);
             sfL.SetFormatFlags(G::StringFormatFlagsNoWrap | G::StringFormatFlagsNoClip);
-            g.DrawString(nm, -1, &fPreset,
+            // El nombre se ajusta a su caja: sin tope, un nombre largo del usuario
+            // (hasta 63 letras) se salia por encima de la flecha del divisor.
+            const std::wstring t = fitEllipsis(g, nm, fPreset, 0.0f, 276.0f);
+            g.DrawString(t.c_str(), -1, &fPreset,
                          G::RectF((G::REAL)TOP_BOX_X + 62.0f, (G::REAL)(TOP_BOX_Y + 18), 288.0f, 28.0f), &sfL, &tb);
+            // El PUNTO de MODIFICADO: el rig de ahora no es el del preset que
+            // suena. Va pegado al nombre, que es donde se mira.
+            if (presetDirty()) {
+                G::RectF mb3;
+                g.MeasureString(t.c_str(), -1, &fPreset, G::RectF(0.0f, 0.0f, 900.0f, 60.0f), nullptr, &mb3);
+                const G::REAL dx = (G::REAL)(TOP_BOX_X + 62) + mb3.Width + 10.0f;
+                if (dx < (G::REAL)(TOP_BOX_X + TOP_DIV_X) - 14.0f) {
+                    G::SolidBrush db(kFTxt);
+                    g.FillEllipse(&db, dx, (G::REAL)(TOP_BOX_Y + 29), 6.0f, 6.0f);
+                }
+            }
         }
         icChev(g, (G::REAL)TOP_BOX_X + TOP_ARROW_X + 16.0f,
                (G::REAL)TOP_BOX_Y + TOP_BOX_H*0.5f, 11.0f,
@@ -8488,9 +8754,13 @@ static void paintWindow(HWND hwnd) {
     {
         G::Font fTop(kFontTec, kTRotulo, G::FontStyleBold);
         {
-            const bool hov = zoneHit(74);              // GUARDAR
-            topBtn(g, (G::REAL)TOP_SAVE_X, 14.0f, 100.0f, 40.0f, L"GUARDAR", fTop,
-                   hov, false, kAcc);
+            // GUARDAR sobre un preset del usuario lo pisa; delante de un lote de
+            // fabrica no hay nada que pisar, asi que el boton dice lo que hace:
+            // GUARDAR COMO pregunta el nombre y crea uno nuevo.
+            const bool user  = isUserPreset(g_presetIdx);
+            const bool hov   = zoneHit(74);              // GUARDAR
+            topBtn(g, (G::REAL)TOP_SAVE_X, 14.0f, 100.0f, 40.0f,
+                   user ? L"GUARDAR" : L"GUARDAR COMO", fTop, hov, false, kAcc);
         }
         {
             const bool recOn = g_recActive.load();
@@ -8509,19 +8779,23 @@ static void paintWindow(HWND hwnd) {
 
     profMark("Recuento de cada unidad del rack");   //PFMARK
     // --- Recuento de cada unidad (capa viva: cambia con el preset) -----------
-    //  "3 / 6" en los estantes (plazas ocupadas sobre las plazas del rack) y
-    //  "PRESET 06" en el cabezal, alineado a la derecha de la banda como el
-    //  contador de un modulo de rack. Antes este renglon lo ocupaba el nombre
-    //  del ampli a 15pt, que se pisaba con la serigrafia de la unidad.
+    //  "3 / 6" en los estantes (plazas ocupadas sobre las plazas del rack) y el
+    //  LOTE del cabezal ("SPARKLE TWIN 3/6"), alineado a la derecha de la banda
+    //  como el contador de un modulo de rack. Antes este renglon ponia "PRESET
+    //  06", el indice global del banco: el 31 de 78 no es una posicion que nadie
+    //  pueda buscar. El nombre del ampli a 15pt que ocupaba este renglon se
+    //  pisaba con la serigrafia de la unidad.
     {
         G::Font fCnt(kFontMono, kTPico, G::FontStyleBold);
         G::SolidBrush cb(kFTxt3);
-        G::StringFormat sfCntR; sfCntR.SetAlignment(G::StringAlignmentFar);
+        G::StringFormat sfCntR;
+        sfCntR.SetAlignment(G::StringAlignmentFar);
+        sfCntR.SetFormatFlags(G::StringFormatFlagsNoWrap);
         const int bandY[3] = { PRE_SHELF_Y, AMP_UNIT_Y, POST_SHELF_Y };
         for (int i = 0; i < 3; ++i) {
-            WCHAR cnt[32];
+            WCHAR cnt[48];
             if (i == 1) {
-                swprintf_s(cnt, L"PRESET %02d", g_presetIdx + 1);
+                presetTagW(g_presetIdx, cnt, 48);
             } else {
                 const int used = (int)((i == 0) ? g_chainPre.size() : g_chainPost.size());
                 swprintf_s(cnt, L"%d / %d", used, PED_MAX_ROW);
@@ -8858,7 +9132,7 @@ static void paintWindow(HWND hwnd) {
         G::SolidBrush ib(g_ampFilter[0] ? kFTxt : kFTxt3);
         WCHAR ph[48];
         if (g_ampFilter[0]) wcscpy_s(ph, g_ampFilter);
-        else wcscpy_s(ph, L"Buscar amplificador...");
+        else wcscpy_s(ph, searchHint());
         g.DrawString(ph, -1, &fSrch,
                      G::RectF((G::REAL)SEARCH_X + 30.0f, (G::REAL)SEARCH_Y,
                               (G::REAL)SEARCH_W - 44.0f, (G::REAL)SEARCH_H), &sfL, &ib);
@@ -8874,42 +9148,62 @@ static void paintWindow(HWND hwnd) {
     profMark("Panel izquierdo: lista dinamica de amp");   //PFMARK
     // --- Panel izquierdo: lista dinamica de amps o presets ---
     {
-        int idx[kMaxListEntries], cnt = 0;
-        listFilterIdx(idx, &cnt);
-        const int vis = LIST_H / LIST_ROW_H;
-        if (g_listScroll > cnt - vis) g_listScroll = (cnt - vis > 0) ? cnt - vis : 0;
+        // El estado de la lista se lee en RANURAS (ver navRows): una ranura por
+        // entrada mas una por encabezado de grupo. cnt es el numero de FILAS.
+        int rows[kMaxNavRows];
+        const int cnt = navRows(rows);
+        const int vis = listVisibleRows();
+        if (g_listScroll > listScrollMax()) g_listScroll = listScrollMax();
         if (g_listScroll < 0) g_listScroll = 0;
         // Al cambiar de seleccion (amp o preset) se desplaza la lista para que
-        // el elemento activo quede siempre a la vista (p. ej. KRAFT V4).
+        // el elemento activo quede siempre a la vista (p. ej. KRAFT V4). La
+        // posicion es la de la RANURA: con los encabezados delante, la entrada 6
+        // ya no esta en la fila 6.
         {
             const int sel = (g_leftTab == 0) ? g_params.model.load() : g_presetIdx;
             int pos = -1;
-            for (int i = 0; i < cnt; ++i) if (idx[i] == sel) { pos = i; break; }
+            for (int i = 0; i < cnt; ++i) if (rows[i] == sel) { pos = i; break; }
             static int lastKey = -1;
             const int key = (g_leftTab << 24) | (pos & 0xFFFF);
             if (pos >= 0 && key != lastKey) {
                 if (pos < g_listScroll) g_listScroll = pos;
                 else if (pos >= g_listScroll + vis) g_listScroll = pos - vis + 1;
-                if (g_listScroll > cnt - vis) g_listScroll = (cnt - vis > 0) ? cnt - vis : 0;
+                if (g_listScroll > listScrollMax()) g_listScroll = listScrollMax();
                 if (g_listScroll < 0) g_listScroll = 0;
             }
             lastKey = (pos >= 0) ? key : -1;
         }
         G::Font fRowN(kFontUI, kTNombre, G::FontStyleBold);
         G::Font fRowS(kFontTec, kTPico);
+        G::StringFormat sfNum;
+        sfNum.SetAlignment(G::StringAlignmentFar);
+        sfNum.SetLineAlignment(G::StringAlignmentCenter);
         const int cur = g_params.model.load();
+        const bool dirty = presetDirty();
         for (int vi = 0; vi < vis; ++vi) {
             const int gi = g_listScroll + vi;
             if (gi >= cnt) break;
-            const int a = idx[gi];
+            const int a = rows[gi];
             const RECT rp = navRowPaintRect(vi);    // la fila, de UNA definicion
             const int rx = rp.left, ry = rp.top;
             const int rw = rp.right - rp.left, rh = rp.bottom - rp.top;
+            if (a == NavHeader) {
+                // ENCABEZADO del grupo: el ampli del que son los presets que
+                // vienen debajo. Ocupa su propia ranura (todas miden lo mismo,
+                // asi que la fila, el clic y el hover no cambian de formula) y
+                // sale del contenido: es el ampli de la entrada que le sigue.
+                WCHAR hdr[96];
+                groupLabelW(presetGroup(rows[gi + 1]), hdr, 96);
+                drawTxFit(g, hdr, G::FontStyleBold, kFTxt3,
+                          (G::REAL)(rx + 40), (G::REAL)(ry + 18), 1.1f,
+                          (G::REAL)(rw - 52), TxRotulo);
+                continue;      // no se selecciona ni se pulsa
+            }
             const bool sel = (g_leftTab == 0) ? (a == cur) : (a == g_presetIdx);
             const bool hov = rectHas(rp, g_mouseX, g_mouseY);
             // el hover entra/sale en kRampHover ms: la luz se vana/recupera sola,
             // en vez de encenderse y apagarse de golpe
-            const float hr = (gi >= 0 && gi < kMaxListEntries)
+            const float hr = (gi >= 0 && gi < kMaxNavRows)
                                ? g_anim.row[gi] : (hov ? 1.0f : 0.0f);
             if (sel) {
                 // SELECCIONADA: la fila SUBE un tono (kFSurf2) y lleva su barra ambar en el
@@ -8953,7 +9247,7 @@ static void paintWindow(HWND hwnd) {
                              nullptr, &sb3);
                 // estrella de favoritos
                 {
-                    const bool fav = ((g_favMask >> a) & 1) != 0;
+                    const bool fav = ampFav(a);
                     // A plena intensidad solo si es favorito o la fila esta bajo
                     // el raton: trece estrellas encendidas de seguido llenaban de
                     // ruido el borde derecho de la lista y competian con los
@@ -8966,32 +9260,53 @@ static void paintWindow(HWND hwnd) {
             } else {
                 WCHAR pn[128];
                 presetNameW(a, pn, 128);
-                WCHAR wi[8]; swprintf_s(wi, L"%02d", a + 1);
-                G::SolidBrush ib2(G::Color(0xff, 0x6e, 0x69, 0x63));
-                g.DrawString(wi, -1, &fRowS,
-                             G::RectF((G::REAL)(rx + 8), (G::REAL)(ry + 13), 26.0f, 30.0f), nullptr, &ib2);
                 const bool user  = isUserPreset(a);
                 const bool armed = (user && g_delArm == a);
-                G::SolidBrush nb3(sel ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7));
+                const bool psel  = (a == g_presetIdx);
+                // LA VARIANTE: el numero del lote DENTRO de su ampli (1..6), no
+                // el indice global. El 31 de 78 no le decia nada a nadie; el 3 de
+                // 6 lo pone el encabezado del grupo justo encima.
+                WCHAR wi[8];
+                swprintf_s(wi, L"%d", presetInGroup(a));
+                G::SolidBrush ib2(kFTxt2);
+                g.DrawString(wi, -1, &fRowS,
+                             G::RectF((G::REAL)(rx + 6), (G::REAL)ry + 4.0f, 26.0f, (G::REAL)rh - 4.0f),
+                             &sfNum, &ib2);
                 // El nombre se mide y se ajusta (Regla del Rotulo Encajado): con
                 // DrawString sin formato un nombre largo del usuario envolvia a la
                 // segunda linea, y esa linea caia fuera de la fila (fila de 48px,
-                // caja de 22px) sobre la fila siguiente.
-                drawTxFit(g, pn, G::FontStyleBold, sel ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7),
+                // caja de 22px) sobre la fila siguiente. La caja reserva la
+                // columna del aspa cuando el preset es del usuario (tres chapas).
+                const G::REAL nameEnd =
+                    drawTxFit(g, pn, G::FontStyleBold, sel ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7),
                               (G::REAL)(rx + 40), (G::REAL)(ry + 18), 0.5f,
-                              (G::REAL)(rw - (user ? 116 : 52)), TxNombre);
+                              (G::REAL)(rw - (user ? 143 : 52)), TxNombre);
+                // El PUNTO de MODIFICADO: el rig de ahora no es el del preset que
+                // suena (ver presetDirty). Va pegado al nombre, donde se mira.
+                if (dirty && psel) {
+                    G::SolidBrush db(kFTxt);
+                    g.FillEllipse(&db, nameEnd + 8.0f, (G::REAL)(ry + 26), 6.0f, 6.0f);
+                }
+                // LA ESTRELLA de favoritos del preset: la misma columna del canto
+                // que en AMPLIFICADORES. Debajo el lapiz (renombrar) y el aspa
+                // (borrar), que solo tienen los presets del usuario; el aspa pide
+                // dos clics (el primero arma la fila) para no llevarse un preset
+                // de un roce.
+                {
+                    const bool fav = presetFav(a);
+                    const bool hS = rectHas(navBadgeRect(vi, true), g_mouseX, g_mouseY);
+                    const G::Color stc = fav ? kAcc
+                                             : (hS ? kFTxt2 : G::Color(88, 0x8b, 0x87, 0x81));
+                    icStar(g, (G::REAL)rx + rw - 15.0f, (G::REAL)ry + 26.0f, 7.0f, stc, fav);
+                }
                 if (user) {
-                    // LAPIZ (renombrar) y ASPA (borrar) solo en los presets del
-                    // usuario. El aspa se pone en rojo al armar el borrado: borrar
-                    // pide dos clics, para no llevarse un preset de un roce.
                     const bool hE = rectHas(navBadgeRect(vi, false), g_mouseX, g_mouseY);
-                    const bool hX = rectHas(navBadgeRect(vi, true),  g_mouseX, g_mouseY);
+                    const bool hX = rectHas(navBadgeColRect(vi, 2),  g_mouseX, g_mouseY);
                     // Lapiz y aspa: vectores de la familia, con el MISMO centro
-                    // vertical que la estrella y el que declara navBadgeRect
-                    // (antes el aspa iba 7px alta y el lapiz 2px bajo).
+                    // vertical que la estrella y el que declara navBadgeRect.
                     icPencil(g, (G::REAL)rx + rw - 42.0f, (G::REAL)ry + 26.0f, 7.0f,
                              hE ? kFTxt : kFTxt3);
-                    icClose(g, (G::REAL)rx + rw - 15.0f, (G::REAL)ry + 26.0f, 7.0f,
+                    icClose(g, (G::REAL)rx + rw - 68.0f, (G::REAL)ry + 26.0f, 7.0f,
                             armed ? kHot : (hX ? kFTxt : kFTxt3));
                     if (armed) {
                         G::Pen ap(kHot, 1.5f);
@@ -9333,10 +9648,11 @@ static void paintWindow(HWND hwnd) {
         icChev(g, 350.0f, (G::REAL)BOT_BOX_Y + 23.0f, 13.0f, acCol, 1);
         icChev(g, 386.0f, (G::REAL)BOT_BOX_Y + 23.0f, 13.0f, acCol2, 2);
         bool fhov = zoneHit(73);               // favorito
-        const G::Color hbC = g_fav  ? kHot
+        const bool fv = presetFav(g_presetIdx);   // el PRESET que suena
+        const G::Color hbC = fv    ? kHot
                            : fhov  ? G::Color(0xff, 0xd8, 0x9c, 0x98)
                                    : G::Color(0xff, 0x82, 0x7d, 0x76);
-        icHeart(g, 427.0f, (G::REAL)BOT_BOX_Y + 23.0f, 7.5f, hbC, g_fav);
+        icHeart(g, 427.0f, (G::REAL)BOT_BOX_Y + 23.0f, 7.5f, hbC, fv);
 
         pressVeil(g, 24.0f, (G::REAL)BOT_BOX_Y, 306.0f, 44.0f, 8.0f);
         pressVeil(g, 334.0f, (G::REAL)BOT_BOX_Y + 4, 32.0f, 40.0f, 6.0f);
@@ -9671,12 +9987,12 @@ static void paintWindow(HWND hwnd) {
         }
     }
 
-    // --- Modal RENOMBRAR preset de usuario (tapa el resto) ---
+    // --- Modal de NOMBRE (RENOMBRAR un preset del usuario / GUARDAR COMO) ---
     if (g_renameOpen) {
         G::SolidBrush dim(G::Color((BYTE)(kVeil.GetA()*g_anim.modal), 0, 0, 0));
         g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
         glassPanel(g, (G::REAL)REN_X, (G::REAL)REN_Y, (G::REAL)REN_W, (G::REAL)REN_H, kRModal, true);
-        drawTxFit(g, L"RENOMBRAR PRESET", G::FontStyleBold, kFTxt,
+        drawTxFit(g, g_renameSave ? L"GUARDAR COMO" : L"RENOMBRAR PRESET", G::FontStyleBold, kFTxt,
                       (G::REAL)(REN_X + 28), (G::REAL)(REN_Y + 24), 1.4f, 320.0f, TxMarca);
         {   // campo activo: el hueco del sistema, con filete y cursor del acento
             G::SolidBrush wb2(kWellA);
@@ -9698,7 +10014,7 @@ static void paintWindow(HWND hwnd) {
             G::Font fB2(kFontTec, kTRotulo, G::FontStyleBold);
             const bool hOK = mouseIn(REN_OK_X, REN_OK_Y, REN_OK_X + REN_OK_W, REN_OK_Y + REN_OK_H);
             topBtn(g, (G::REAL)REN_OK_X, (G::REAL)REN_OK_Y, (G::REAL)REN_OK_W, (G::REAL)REN_OK_H,
-                   L"APLICAR", fB2, hOK, true, kAcc);
+                   g_renameSave ? L"GUARDAR" : L"APLICAR", fB2, hOK, true, kAcc);
             const bool hNO = mouseIn(REN_NO_X, REN_NO_Y, REN_NO_X + REN_NO_W, REN_NO_Y + REN_NO_H);
             topBtn(g, (G::REAL)REN_NO_X, (G::REAL)REN_NO_Y, (G::REAL)REN_NO_W, (G::REAL)REN_NO_H,
                    L"CANCELAR", fB2, hNO, false, kAcc);
@@ -10054,11 +10370,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_pkHoldOut = (vo > g_pkHoldOut) ? vo : g_pkHoldOut*0.93f;
         // rampas: animacion y logica de repintado comparten este tick
         const int nvis = LIST_H / LIST_ROW_H;
-        for (int vi = 0; vi < nvis && vi < 64; ++vi) {
+        for (int vi = 0; vi < nvis; ++vi) {
             const int gi = g_listScroll + vi;
             const int rx = COL_L_X + 8, ry = LIST_Y + vi*LIST_ROW_H;
             const int rw = COL_L_W - 16, rh = LIST_ROW_H - 4;
-            if (gi >= 0 && gi < kMaxListEntries)
+            if (gi >= 0 && gi < kMaxNavRows)
                 animStep(g_anim.row[gi], mouseIn(rx, ry, rx + rw, ry + rh) ? 1.0f : 0.0f, kRampHover);
         }
         const bool modalOpen = g_addOpen || g_settingsOpen || g_renameOpen ||
@@ -10148,15 +10464,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
-        // --- Modal RENOMBRAR: captura todos los clics ---
+        // --- Modal de nombre: captura todos los clics ---
         if (g_renameOpen) {
             if (x >= REN_OK_X && x <= REN_OK_X + REN_OK_W &&
                 y >= REN_OK_Y && y <= REN_OK_Y + REN_OK_H) {
-                renameUserPreset(g_renameIdx, g_renameBuf);
-                g_renameOpen = false; g_renameIdx = -1; g_delArm = -1;
+                if (g_renameSave) savePresetAs(g_renameBuf);
+                else              renameUserPreset(g_renameIdx, g_renameBuf);
+                g_renameOpen = false; g_renameSave = false; g_renameIdx = -1; g_delArm = -1;
             } else if (x >= REN_NO_X && x <= REN_NO_X + REN_NO_W &&
                        y >= REN_NO_Y && y <= REN_NO_Y + REN_NO_H) {
-                g_renameOpen = false; g_renameIdx = -1;
+                g_renameOpen = false; g_renameSave = false; g_renameIdx = -1;
             }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
@@ -10417,10 +10734,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
-        // GUARDAR preset de usuario
+        // GUARDAR (pisa el preset del usuario) / GUARDAR COMO (crea uno nuevo con
+        // nombre; ver el boton en la cabecera)
         RECT saveBtn = zoneRect(74);  // GUARDAR
         if (PtInRect(&saveBtn, pt)) {
-            saveUserPreset();
+            if (isUserPreset(g_presetIdx)) {
+                saveUserPreset();
+            } else {
+                WCHAR pn[128];
+                presetNameW(g_presetIdx, pn, 128);
+                openNameModal(-1, true, pn);
+                g_searchFocus = false;
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -10476,10 +10801,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // --- Panel izquierdo: tabs, buscador, filas de la lista y favoritos ---
         {
-            // tabs AMPLIFICADORES / PRESETS
-            const int halfTab = (COL_L_W - 16)/2;
+            // tabs AMPLIFICADORES / PRESETS y la estrella del filtro
             for (int i = 0; i < 2; ++i) {
-                RECT tr = { COL_L_X + 8 + i*halfTab, TAB_Y, COL_L_X + 8 + i*halfTab + halfTab - 4, TAB_Y + TAB_H };
+                RECT tr = tabRect(i);
                 if (PtInRect(&tr, pt)) {
                     if (g_leftTab != i) {
                         g_leftTab = i;
@@ -10487,6 +10811,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         g_scene.valid = false;   // el resaltado de la pestana vive en la escena estatica
                     }
                     g_searchFocus = false;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+            {
+                RECT sr = tabStarRect();
+                if (PtInRect(&sr, pt)) {
+                    // Filtro "solo favoritos" de la pestana que este activa. La
+                    // estrella vive en la escena estatica (ambar o tenue), asi que
+                    // hay que rehacerla.
+                    g_favOnly = !g_favOnly;
+                    g_listScroll = 0;
+                    g_searchFocus = false;
+                    g_scene.valid = false;
+                    g_sceneDirty.store(true);
                     InvalidateRect(hwnd, nullptr, FALSE);
                     return 0;
                 }
@@ -10502,21 +10841,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             RECT lBox = { COL_L_X + 8, LIST_Y, COL_L_X + 8 + (COL_L_W - 16), LIST_Y + LIST_H };
             if (PtInRect(&lBox, pt)) {
                 g_searchFocus = false;
-                int idx[kMaxListEntries], cnt = 0;
-                listFilterIdx(idx, &cnt);
+                int rows[kMaxNavRows];
+                const int cnt = navRows(rows);
                 const int vis = listVisibleRows();
                 // La banda de pulsacion de una fila es su ranura entera (ver
                 // navRowRect): esta division es su inversa exacta.
                 const int vi = (y - LIST_Y) / LIST_ROW_H;
                 const int gi = g_listScroll + vi;
                 if (vi >= 0 && vi < vis && gi >= 0 && gi < cnt) {
-                    const int a = idx[gi];
+                    const int a = rows[gi];
+                    if (a == NavHeader) {   // el encabezado de un grupo no se pulsa
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return 0;
+                    }
                     if (g_leftTab == 0) {
                         // estrella de favoritos (esquina derecha de la fila)
                         const RECT fr = navBadgeRect(vi, true);   // estrella
                         if (PtInRect(&fr, pt)) {
                             g_favMask ^= (1u << a);         // una sola fuente de favoritos
-                            g_fav = ((g_favMask >> a) & 1u) != 0;
                             g_sceneDirty.store(true);       // la estrella esta en la escena
                             InvalidateRect(hwnd, nullptr, FALSE);
                             return 0;
@@ -10527,11 +10869,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             rebuildKnobs();
                         }
                     } else {
-                        // presets de usuario: renombrar (lapiz) y borrar (aspa) a la
-                        // derecha, el mismo trato que la estrella de los amplis.
-                        // Borrar pide dos clics: el primero arma la fila.
+                        // Las tres chapas de un preset: ESTRELLA (favorito, la
+                        // misma columna del canto que en AMPLIFICADORES), LAPIZ
+                        // (renombrar) y ASPA (borrar), las dos ultimas solo en
+                        // los presets del usuario. Borrar pide dos clics: el
+                        // primero arma la fila.
+                        const RECT sr = navBadgeRect(vi, true);      // estrella
+                        if (PtInRect(&sr, pt)) {
+                            presetFavSet(a, !presetFav(a));
+                            saveIni();                    // el favorito se persiste al instante
+                            g_sceneDirty.store(true);     // la lista cambia si hay filtro
+                            InvalidateRect(hwnd, nullptr, FALSE);
+                            return 0;
+                        }
                         if (isUserPreset(a)) {
-                            const RECT xr = navBadgeRect(vi, true);   // aspa
+                            const RECT xr = navBadgeColRect(vi, 2);   // aspa
                             const RECT er = navBadgeRect(vi, false);  // lapiz
                             if (PtInRect(&xr, pt)) {
                                 if (g_delArm == a) { deleteUserPreset(a); g_delArm = -1; }
@@ -10540,11 +10892,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                 return 0;
                             }
                             if (PtInRect(&er, pt)) {
-                                g_renameIdx = a;
-                                wcsncpy_s(g_renameBuf, g_userPresets[a - kNumPresets].name, _TRUNCATE);
+                                const int ui = a - kNumPresets;
+                                openNameModal(a, false, g_userPresets[ui].name);
                                 g_searchFocus = false;
-                                modalCloseAll();   // un modal a la vez
-                                g_renameOpen = true;
                                 InvalidateRect(hwnd, nullptr, FALSE);
                                 return 0;
                             }
@@ -10762,12 +11112,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (PtInRect(&heartR, pt)) {
-            // El corazon y las estrellas de la lista eran DOS estados distintos:
-            // el corazon alternaba un bool que nada consumia y las estrellas no
-            // se guardaban. Ahora marcan lo mismo (el ampli actual) y se guardan.
-            const int m = g_params.model.load();
-            if (m >= 0 && m < 32) g_favMask ^= (1u << m);
-            g_fav = (m >= 0 && m < 32) && (((g_favMask >> m) & 1u) != 0);
+            // El corazon esta al lado de las flechas que mueven PRESETS, asi que
+            // marca el preset que suena -la misma estrella que la fila de ese
+            // preset en la lista-, no el ampli. Antes marcaba el ampli y la
+            // estrella de la lista de presets no existia: dos listas y un solo
+            // estado para las dos.
+            presetFavSet(g_presetIdx, !presetFav(g_presetIdx));
+            saveIni();
             g_sceneDirty.store(true);   // la estrella de la fila vive en la escena
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
@@ -10938,6 +11289,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             const int wd = GET_WHEEL_DELTA_WPARAM(wp) / 120;
             if (wd != 0) {
                 g_listScroll -= wd;
+                const int maxS = listScrollMax();   // en RANURAS (los encabezados cuentan)
+                if (g_listScroll > maxS) g_listScroll = maxS;
+                if (g_listScroll < 0)    g_listScroll = 0;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
@@ -10995,7 +11349,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (g_t3kConnOpen) { g_t3kConnOpen = false; g_t3kFocus = 0; }
                 else { g_t3kOpen = false; g_t3kFocus = 0; t3kImgFree(); }
             }
-            else if (g_renameOpen) { g_renameOpen = false; g_renameIdx = -1; }
+            else if (g_renameOpen) { g_renameOpen = false; g_renameSave = false; g_renameIdx = -1; }
             else if (g_searchFocus) g_searchFocus = false;
             else if (g_tunerOpen.load()) g_tunerOpen.store(false);
             else if (g_addOpen) g_addOpen = false;
@@ -11066,14 +11420,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_CHAR: {
-        // Escritura en el modal RENOMBRAR (tiene prioridad sobre todo lo demas)
+        // Escritura en el modal de nombre (tiene prioridad sobre todo lo demas)
         if (g_renameOpen) {
             const size_t n = wcslen(g_renameBuf);
             if (wp == L'\b') {
                 if (n) g_renameBuf[n - 1] = 0;
             } else if (wp == L'\r' || wp == L'\n') {
-                renameUserPreset(g_renameIdx, g_renameBuf);
-                g_renameOpen = false; g_renameIdx = -1; g_delArm = -1;
+                if (g_renameSave) savePresetAs(g_renameBuf);
+                else              renameUserPreset(g_renameIdx, g_renameBuf);
+                g_renameOpen = false; g_renameSave = false; g_renameIdx = -1; g_delArm = -1;
             } else if (wp >= 32 && wp != 127 && n < 60) {
                 g_renameBuf[n]     = (WCHAR)wp;
                 g_renameBuf[n + 1] = 0;
@@ -12146,6 +12501,186 @@ static void hTestZones() {
     buildZones();
 }
 
+// ---------------------------------------------------------------------------
+//  Q: los presets como LISTA. Cinco cosas que antes no existian o mentian:
+//   - la lista no estaba agrupada por ampli y numeraba con el indice global,
+//   - los presets del usuario caian al final, lejos de su ampli,
+//   - no habia favoritos de preset ni filtro,
+//   - no habia marca de MODIFICADO ni GUARDAR COMO,
+//   - la cabecera ponia "PRESET 31" y el buscador pedia "amplificador" en PRESETS.
+//  Monta su propia lista de presets de usuario (guardada y restaurada al salir:
+//  la lista real del usuario no se toca, y no escribe el .ini).
+// ---------------------------------------------------------------------------
+static void hTestPresets() {
+    const std::vector<UserPreset> bak = g_userPresets;
+    const int  bakIdx  = g_presetIdx;
+    const bool bakFav  = g_favOnly;
+    const bool bakF0   = g_favPreset[3];
+    const int  tab0    = g_leftTab;
+    WCHAR bakFilt[40];
+    wcsncpy_s(bakFilt, g_ampFilter, _TRUNCATE);
+    char d[320];
+
+    // Q0: el banco de fabrica: los seis lotes de un ampli son contiguos y en
+    // orden. Todo el agrupado se apoya en eso (y el generador lo promete).
+    int malorgan = 0;
+    for (int i = 0; i < kNumPresets; ++i) {
+        if (presetAmp(i) != i / kPresetsPerAmp) ++malorgan;
+        if (presetSlot(i) != (i % kPresetsPerAmp) + 1) ++malorgan;
+    }
+    sprintf_s(d, "13 x %d = %d presets, %d fuera de su ampli", kPresetsPerAmp, kNumPresets, malorgan);
+    hCheck(kNumPresets == kAmpCount*kPresetsPerAmp && malorgan == 0,
+           "Q0 los seis lotes de cada ampli son contiguos y en orden", d);
+
+    // Lista propia, determinista: un preset en el ampli 5 y otro en el 12 (el
+    // PERFIL, que el tope viejo de "model > 11" convertia en el ampli 0).
+    g_userPresets.clear();
+    { UserPreset u = {}; wcsncpy_s(u.name, L"PRUEBA EN EL 5", _TRUNCATE);      u.model = 5;  g_userPresets.push_back(u); }
+    { UserPreset u = {}; wcsncpy_s(u.name, L"PRUEBA EN PERFIL", _TRUNCATE);    u.model = 12; g_userPresets.push_back(u); }
+    { UserPreset u = {}; wcsncpy_s(u.name, L"OTRA EN EL 5", _TRUNCATE);        u.model = 5;  g_userPresets.push_back(u); }
+    wcscpy_s(g_ampFilter, L"");
+    g_favOnly = false;
+    g_leftTab = 1;
+
+    // Q1: la VARIANTE dentro de su ampli: 1..6 los de fabrica, y los del usuario
+    // continuan la cuenta de su propio ampli (7, 8...).
+    bool q1 = true;
+    for (int s = 0; s < kPresetsPerAmp; ++s)
+        if (presetInGroup(5*kPresetsPerAmp + s) != s + 1) q1 = false;
+    const bool q1b = (presetInGroup(kNumPresets)     == kPresetsPerAmp + 1);   // PRUEBA EN EL 5
+    const bool q1c = (presetInGroup(kNumPresets + 1) == kPresetsPerAmp + 1);   // PRUEBA EN PERFIL
+    const bool q1e = (presetInGroup(kNumPresets + 2) == kPresetsPerAmp + 2);   // OTRA EN EL 5
+    const bool q1d = (presetInGroup(kNumPresets - 1) == kPresetsPerAmp);       // ultimo de fabrica
+    sprintf_s(d, "ampli 5: %d..%d; los del usuario = %d y %d; el del PERFIL = %d",
+              presetInGroup(5*kPresetsPerAmp), presetInGroup(5*kPresetsPerAmp + 5),
+              presetInGroup(kNumPresets), presetInGroup(kNumPresets + 2),
+              presetInGroup(kNumPresets + 1));
+    hCheck(q1 && q1b && q1c && q1d && q1e, "Q1 la variante cuenta dentro del ampli (1..6, el del usuario sigue)", d);
+
+    // Q2: el ORDEN: por ampli, con los del usuario pegados a los suyos.
+    int ord[kMaxListEntries];
+    const int nord = presetOrder(ord);
+    int dup = 0, seen[kMaxListEntries] = {};
+    int posU5 = -1, posU5b = -1, posU12 = -1;
+    for (int i = 0; i < nord; ++i) {
+        if (ord[i] >= 0 && ord[i] < kMaxListEntries) { if (seen[ord[i]]) ++dup; seen[ord[i]] = 1; }
+        if (ord[i] == kNumPresets)     posU5  = i;
+        if (ord[i] == kNumPresets + 2) posU5b = i;
+        if (ord[i] == kNumPresets + 1) posU12 = i;
+    }
+    const bool in5  = (posU5  > 0 && presetGroup(ord[posU5  - 1]) == 5  && presetGroup(ord[posU5])  == 5);
+    const bool in5b = (posU5b > 0 && presetGroup(ord[posU5b - 1]) == 5  && presetGroup(ord[posU5b]) == 5);
+    const bool in12 = (posU12 > 0 && presetGroup(ord[posU12 - 1]) == 12 && presetGroup(ord[posU12]) == 12);
+    sprintf_s(d, "%d entradas (esperadas %d), duplicadas %d; los dos del ampli 5 en %d y %d y el del PERFIL en %d, pegados a su lote",
+              nord, presetTotal(), dup, posU5, posU5b, posU12);
+    hCheck(nord == presetTotal() && dup == 0 && in5 && in5b && in12,
+           "Q2 la lista ordena por ampli y mete los del usuario con los suyos", d);
+
+    // Q3: las RANURAS: un encabezado por grupo, justo delante de sus presets, y
+    // ninguno suelto (el encabezado sale del contenido, no de una tabla aparte).
+    int rows[kMaxNavRows];
+    const int nr = navRows(rows);
+    int heads = 0, entradas = 0, sueltos = 0;
+    for (int i = 0; i < nr; ++i) {
+        if (rows[i] == NavHeader) {
+            ++heads;
+            if (i + 1 >= nr || rows[i + 1] == NavHeader) ++sueltos;   // encabezado sin presets
+        } else ++entradas;
+    }
+    int grupos = 0, lastG = -2;
+    for (int i = 0; i < nr; ++i) {
+        if (rows[i] == NavHeader) continue;
+        const int g = presetGroup(rows[i]);
+        if (g != lastG) { ++grupos; lastG = g; }
+    }
+    // y en AMPLIFICADORES no hay encabezados: la lista es la de amps, sin rotulos
+    g_leftTab = 0;
+    int arows[kMaxNavRows];
+    const int anr = navRows(arows);
+    int aHead = 0;
+    for (int i = 0; i < anr; ++i) if (arows[i] == NavHeader) ++aHead;
+    g_leftTab = 1;
+    sprintf_s(d, "%d ranuras = %d encabezados + %d entradas; grupos %d, encabezados sueltos %d; en AMPLIFICADORES %d encabezados (de %d filas)",
+              nr, heads, entradas, grupos, sueltos, aHead, anr);
+    hCheck(nr == heads + entradas && entradas == presetTotal() &&
+           heads == grupos && sueltos == 0 && aHead == 0,
+           "Q3 cada grupo lleva su encabezado delante de sus presets", d);
+
+    // Q4: favoritos POR PRESET y el filtro. Se marcan dos de distinto tipo y el
+    // filtro tiene que dejar exactamente esos dos.
+    g_favPreset[3] = true;                    // un lote de fabrica
+    g_userPresets[0].fav = 1;                 // y uno del usuario
+    g_favOnly = true;
+    int fi[kMaxListEntries], fc = 0;
+    listFilterIdx(fi, &fc);
+    int soloMarca = 1;
+    for (int i = 0; i < fc; ++i) if (!presetFav(fi[i])) soloMarca = 0;
+    g_favOnly = false;
+    int fi2[kMaxListEntries], fc2 = 0;
+    listFilterIdx(fi2, &fc2);
+    sprintf_s(d, "con el filtro: %d filas, todas marcadas = %d; sin el: %d (en total %d)",
+              fc, soloMarca, fc2, presetTotal());
+    hCheck(fc == 2 && soloMarca && fc2 == presetTotal(),
+           "Q4 el filtro \"solo favoritos\" deja los presets marcados", d);
+    g_favPreset[3] = false; g_userPresets[0].fav = 0;
+
+    // Q5: el punto de MODIFICADO sigue al rig, no a lo que no es parte del preset
+    // (la MEZCLA). Recien marcado: limpio; una perilla: sucio; la MEZCLA: limpio.
+    rigMark();
+    const bool limpio = !presetDirty();
+    const int mm = g_params.model.load();
+    const float v0 = g_params.amp[mm][0].load();
+    g_params.amp[mm][0].store(v0 + 1.0f);
+    const bool sucio = presetDirty();
+    g_params.amp[mm][0].store(v0);
+    const float mix0 = g_params.mixCab.load();
+    g_params.mixCab.store(mix0 > 50.0f ? mix0 - 10.0f : mix0 + 10.0f);
+    const bool mixNo = !presetDirty();
+    g_params.mixCab.store(mix0);
+    sprintf_s(d, "recien aplicado limpio = %d; tras mover una perilla sucio = %d; tras la MEZCLA sigue limpio = %d",
+              limpio ? 1 : 0, sucio ? 1 : 0, mixNo ? 1 : 0);
+    hCheck(limpio && sucio && mixNo, "Q5 el punto de MODIFICADO sigue al rig, no a la MEZCLA", d);
+    rigMark();
+
+    // Q6: los rotulos: la banda del cabezal dice el ampli y el lote (no "PRESET
+    // 31", el indice global) y el encabezado del grupo, el ampli y su caracter.
+    WCHAR tag[48]; presetTagW(5*kPresetsPerAmp + 2, tag, 48);
+    WCHAR gl[96];  groupLabelW(5, gl, 96);
+    const std::wstring wt(tag), wg(gl);
+    const bool tagOk = wt.find(kAmpNames[5]) != std::wstring::npos &&
+                       wt.find(L"3") != std::wstring::npos &&
+                       wt.find(L"PRESET") == std::wstring::npos;
+    const bool glOk  = wg.find(kAmpNames[5]) != std::wstring::npos;
+    sprintf_s(d, "cabecera = \"%ls\"; encabezado = \"%ls\"", tag, gl);
+    hCheck(tagOk && glOk, "Q6 el rotulo dice el ampli y el lote, no el indice global", d);
+
+    // Q7: el hueco del buscador dice lo que la pestana filtra.
+    g_leftTab = 0; const std::wstring h0 = searchHint();
+    g_leftTab = 1; const std::wstring h1 = searchHint();
+    sprintf_s(d, "AMPLIFICADORES = \"%ls\"; PRESETS = \"%ls\"", h0.c_str(), h1.c_str());
+    hCheck(h0.find(L"amplificador") != std::wstring::npos &&
+           h1.find(L"preset") != std::wstring::npos &&
+           h1.find(L"amplificador") == std::wstring::npos,
+           "Q7 el buscador dice lo que filtra la pestana", d);
+
+    // Q8: la estrella del filtro vive en la banda de pestanas sin pisarlas.
+    const RECT t0 = tabRect(0), t1 = tabRect(1), st = tabStarRect();
+    sprintf_s(d, "pestanas [%d..%d] y [%d..%d]; estrella [%d..%d]",
+              (int)t0.left, (int)t0.right, (int)t1.left, (int)t1.right, (int)st.left, (int)st.right);
+    hCheck(t0.right <= t1.left && t1.right <= st.left &&
+           st.right <= COL_L_X + COL_L_W && st.left >= COL_L_X,
+           "Q8 la estrella del filtro y las pestanas no se pisan", d);
+
+    // la lista del usuario (y el filtro y el foco) quedan como estaban
+    g_userPresets = bak;
+    g_presetIdx = bakIdx;
+    g_favOnly = bakFav;
+    g_favPreset[3] = bakF0;
+    g_leftTab = tab0;
+    wcsncpy_s(g_ampFilter, bakFilt, _TRUNCATE);
+    rigMark();
+}
+
 // Puesta en escena de la interfaz: los mismos pasos que da WinMain, sin hilos ni
 // audio (loadIni es de solo lectura) y con el motor preparado antes de pintar (si
 // no, el scope y los medidores salen a cero). Lo comparten el comando render y la
@@ -12396,6 +12931,7 @@ static void hSelftest(int fs) {
     hTestPaste();
     hTestFlat();
     hTestZones();
+    hTestPresets();
     hTestExtraLeak(fs);
     // P2 va al final: inyecta NaN en el motor y aunque prepare(false) lo deja
     // recuperable, el historial de las lineas de retardo queda con residuos que
@@ -12550,6 +13086,18 @@ static int hRender(const char* outPath, const char* state, int winW, int winH) {
         else if (strcmp(state, "tuner") == 0)    g_tunerOpen.store(true);
         else if (strcmp(state, "settings") == 0) g_settingsOpen = true;
         else if (strcmp(state, "presets") == 0)  g_leftTab = 1;
+        else if (strcmp(state, "dirty") == 0) {          // el punto de MODIFICADO
+            g_leftTab = 1;
+            const int mm = g_params.model.load();
+            g_params.amp[mm][0].store(g_params.amp[mm][0].load() + 6.0f);
+        }
+        else if (strcmp(state, "favonly") == 0) {        // el filtro "solo favoritos"
+            g_leftTab = 1;
+            int ord[kMaxListEntries];
+            const int n = presetOrder(ord);
+            if (n > 2) { presetFavSet(ord[1], true); presetFavSet(ord[4], true); }
+            g_favOnly = true;
+        }
         else if (strcmp(state, "drag") == 0) {
             // Arrastre de pedal a medias: la tarjeta que sigue al raton. Es la unica
             // forma de mirar el fantasma, que solo existe mientras dura el gesto. Se
