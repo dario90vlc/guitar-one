@@ -1606,7 +1606,13 @@ struct UserPreset {
     int   cabModel, cabMic, cabDist;
     int   preCount;  int pre[6];
     int   postCount; int post[6];
-    int   fav;            // 1 = estrella marcada en la lista
+    int   favColor;       // color de favorito: 0 = ninguno, 1..4 (ver kFavColors)
+    // --- Metadatos del navegador (paso 18) ---
+    WCHAR author[32];     // quien lo hizo ("" = yo)
+    WCHAR comment[160];   // la nota libre del preset
+    unsigned int tags;    // mascara de caracter (ver kCharNames); 0 = sin etiqueta
+    long long created;    // fecha unix de creacion (0 = desconocida)
+    long long used;       // fecha unix del ultimo uso (0 = nunca)
 };
 static std::vector<UserPreset> g_userPresets;
 
@@ -1618,17 +1624,24 @@ static bool isUserPreset(int idx) { return idx >= kNumPresets && idx < presetTot
 // fabrica van en un arreglo fijo porque su indice no se mueve nunca; los del
 // usuario lo llevan en su propia ficha, porque su lista se recorta al borrar y
 // un bit por indice se correria de preset.
-static bool g_favPreset[kNumPresets] = {};
+// Los COLORES de favorito (paso 18): antes el favorito era un bool y la estrella
+// encendida; ahora es un punto con color, como las colecciones de Guitar Rig.
+// 0 = sin color; 1..4 = ambar, rojo, azul, verde (ver favColorAt).
+static const int kFavColors = 5;
+static unsigned char g_favPreset[kNumPresets] = {};
 static bool g_favOnly = false;         // el filtro "solo favoritos" del navegador
-static bool presetFav(int idx) {
-    if (idx < 0 || idx >= presetTotal()) return false;
-    return (idx < kNumPresets) ? g_favPreset[idx]
-                               : (g_userPresets[idx - kNumPresets].fav != 0);
+static int presetFavColor(int idx) {
+    if (idx < 0 || idx >= presetTotal()) return 0;
+    return (idx < kNumPresets) ? (int)g_favPreset[idx]
+                               : g_userPresets[idx - kNumPresets].favColor;
 }
-static void presetFavSet(int idx, bool v) {
+static bool presetFav(int idx) { return presetFavColor(idx) != 0; }
+static void presetFavSet(int idx, int color) {
     if (idx < 0 || idx >= presetTotal()) return;
-    if (idx < kNumPresets) g_favPreset[idx] = v;
-    else                   g_userPresets[idx - kNumPresets].fav = v ? 1 : 0;
+    if (color < 0) color = 0;
+    if (color > kFavColors - 1) color = kFavColors - 1;
+    if (idx < kNumPresets) g_favPreset[idx] = (unsigned char)color;
+    else                   g_userPresets[idx - kNumPresets].favColor = color;
 }
 // Amp (0..11) bajo el que se agrupa el preset; -1 = sin amp (grupo MIS PRESETS)
 static int presetGroup(int idx) {
@@ -1657,6 +1670,48 @@ static int presetInGroup(int idx) {
     for (int i = kNumPresets; i < idx; ++i)
         if (presetGroup(i) == g) ++n;
     return n + 1;
+}
+
+// --- Etiquetas y colores del navegador (paso 18) ----------------------------
+// El CARACTER de un preset: el vocabulario fijo que filtran las etiquetas de la
+// ventana, como los "Filter tags" de Guitar Rig. Los 78 de fabrica lo llevan por
+// el lote que ocupan -el banco esta generado como seis caracteres por ampli:
+// limpio, limpio, crunch, lead, ambiente y el cajon de sastre-; los del usuario
+// lo eligen en el Info pane.
+static const int kCharCount = 6;
+static const WCHAR* kCharNames[kCharCount] = {
+    L"LIMPIO", L"CRUNCH", L"LEAD", L"AMBIENTE", L"FUZZ", L"OTROS"
+};
+static unsigned char presetChar(int idx) {
+    if (idx < 0 || idx >= kNumPresets) return 0;
+    const int slot = idx % kPresetsPerAmp;
+    if (slot == 5) {
+        // El lote 6 no es uniforme: en unos amplis es un fuzz y en otros un
+        // tremolo, un wah o un muro. 4 = FUZZ, 5 = OTROS, un caracter por ampli.
+        static const unsigned char s5[kAmpCount] = { 4,4,5,5,4,5,4,5,4,5,5,5,5 };
+        const int a = idx / kPresetsPerAmp;
+        return (a >= 0 && a < kAmpCount) ? s5[a] : 5;
+    }
+    static const unsigned char bySlot[kPresetsPerAmp] = { 0,0,1,2,3,5 };
+    return bySlot[slot];
+}
+// La mascara de caracter de un preset: un bit por caracter. De fabrica sale de
+// su lote; el del usuario la lleva en su ficha (0 = sin etiqueta).
+static unsigned int presetTags(int idx) {
+    if (idx < 0 || idx >= presetTotal()) return 0;
+    if (idx < kNumPresets) return 1u << presetChar(idx);
+    return g_userPresets[idx - kNumPresets].tags;
+}
+// El color del punto de favorito. kAcc para el ambar: el unico color "vivo" del
+// lenguaje plano sigue siendo el mismo ambar de lo que suena.
+static G::Color favColorAt(int c) {
+    switch (c) {
+        case 1: return kAcc;
+        case 2: return G::Color(255, 0xff, 0x6b, 0x6b);   // rojo
+        case 3: return G::Color(255, 0x7a, 0xd0, 0xff);   // azul
+        case 4: return G::Color(255, 0x7a, 0xd9, 0x8a);   // verde
+        default: return kFTxt3;
+    }
 }
 
 // --- El ESTADO de un preset, ni mas ni menos ---------------------------------
@@ -1709,6 +1764,27 @@ static bool presetDirty() {
     RigState now;
     rigCapture(now);
     return memcmp(&now, &g_rigAtApply, sizeof(RigState)) != 0;
+}
+
+// --- Fechas y metadatos de un preset (paso 18) ------------------------------
+// Los de fabrica no se fechan (0): el orden RECIENTES deja los del usuario
+// delante y los de fabrica detras, en su orden curado.
+static long long nowUnix() { return (long long)time(nullptr); }
+static long long presetUsed(int idx) {
+    if (idx < 0 || idx >= presetTotal() || idx < kNumPresets) return 0;
+    return g_userPresets[idx - kNumPresets].used;
+}
+static long long presetCreated(int idx) {
+    if (idx < 0 || idx >= presetTotal() || idx < kNumPresets) return 0;
+    return g_userPresets[idx - kNumPresets].created;
+}
+static const WCHAR* presetAuthor(int idx) {
+    if (idx < 0 || idx >= presetTotal() || idx < kNumPresets) return L"";
+    return g_userPresets[idx - kNumPresets].author;
+}
+static const WCHAR* presetComment(int idx) {
+    if (idx < 0 || idx >= presetTotal() || idx < kNumPresets) return L"";
+    return g_userPresets[idx - kNumPresets].comment;
 }
 
 static void applyPreset(int idx) {
@@ -1766,6 +1842,7 @@ static void applyPreset(int idx) {
                  std::vector<int>(u.post, u.post + u.postCount));
     g_sceneDirty.store(true);   // hero/rack/knobs dependen del modelo
     rebuildKnobs();
+    g_userPresets[idx - kNumPresets].used = nowUnix();   // para el orden RECIENTES
     rigMark();                  // este es el rig del preset: no hay nada modificado
 }
 
@@ -3503,6 +3580,16 @@ static int iniGetInt(const wchar_t* sec, const wchar_t* key, int def) {
     wchar_t b[64]; GetPrivateProfileStringW(sec, key, L"", b, 64, g_iniPath.c_str());
     return b[0] ? _wtoi(b) : def;
 }
+// Un entero de 64 bits (las fechas unix). _wtoi corta a 32 bits y en 2038 se
+// daria la vuelta, asi que se lee a mano.
+static long long iniGetI64(const wchar_t* sec, const wchar_t* key, long long def) {
+    wchar_t b[64]; GetPrivateProfileStringW(sec, key, L"", b, 64, g_iniPath.c_str());
+    if (!b[0]) return def;
+    long long v = 0; int i = 0; bool neg = false;
+    if (b[0] == L'-') { neg = true; i = 1; }
+    for (; b[i] >= L'0' && b[i] <= L'9'; ++i) v = v*10 + (b[i] - L'0');
+    return neg ? -v : v;
+}
 
 static void saveIni() {
     iniBuildPath();
@@ -3574,9 +3661,12 @@ static void saveIni() {
     WritePrivateProfileStringW(L"cab", L"irPath", iniPathStore(g_cabIRPath).c_str(), g_iniPath.c_str());
     swprintf_s(buf, L"%08X", (unsigned)g_favMask);     WritePrivateProfileStringW(L"state", L"favMask", buf, g_iniPath.c_str());
     {
-        // Favoritos de preset de fabrica: una cadena de kNumPresets '0'/'1'.
+        // Favoritos de preset de fabrica: una cadena de kNumPresets digitos, el
+        // COLOR de cada uno ('0' = sin color). Antes era '0'/'1' y un .ini viejo
+        // se lee igual: '1' es el color 1 (ambar).
         WCHAR pf[kNumPresets + 8];
-        for (int i = 0; i < kNumPresets; ++i) pf[i] = g_favPreset[i] ? L'1' : L'0';
+        for (int i = 0; i < kNumPresets; ++i)
+            pf[i] = (WCHAR)(L'0' + (g_favPreset[i] > 4 ? 4 : (int)g_favPreset[i]));
         pf[kNumPresets] = 0;
         WritePrivateProfileStringW(L"state", L"presetFav", pf, g_iniPath.c_str());
     }
@@ -3623,8 +3713,16 @@ static void saveIni() {
         const UserPreset& u = g_userPresets[i];
         wchar_t sec[16]; swprintf_s(sec, L"user%u", (unsigned)i);
         WritePrivateProfileStringW(sec, L"name", u.name, g_iniPath.c_str());
-        swprintf_s(buf, L"%d", u.fav);    WritePrivateProfileStringW(sec, L"fav", buf, g_iniPath.c_str());
+        swprintf_s(buf, L"%d", u.favColor);    WritePrivateProfileStringW(sec, L"fav", buf, g_iniPath.c_str());
         swprintf_s(buf, L"%d", u.model);  WritePrivateProfileStringW(sec, L"model", buf, g_iniPath.c_str());
+        // Metadatos del navegador (paso 18). Las dos cadenas se borran cuando
+        // quedan vacias (el mismo patron que la cadena de pedales): si no, el
+        // .ini se quedaria con el autor que se acaba de quitar.
+        WritePrivateProfileStringW(sec, L"author",  u.author[0]  ? u.author  : nullptr, g_iniPath.c_str());
+        WritePrivateProfileStringW(sec, L"comment", u.comment[0] ? u.comment : nullptr, g_iniPath.c_str());
+        swprintf_s(buf, L"%u", u.tags);      WritePrivateProfileStringW(sec, L"tags",    buf, g_iniPath.c_str());
+        swprintf_s(buf, L"%lld", u.created); WritePrivateProfileStringW(sec, L"created", buf, g_iniPath.c_str());
+        swprintf_s(buf, L"%lld", u.used);    WritePrivateProfileStringW(sec, L"used",    buf, g_iniPath.c_str());
         swprintf_s(buf, L"%.4f", (double)u.master); WritePrivateProfileStringW(sec, L"master", buf, g_iniPath.c_str());
         swprintf_s(buf, L"%.4f,%.4f,%.4f,%.4f,%.4f,%.4f",
                    (double)u.amp[0], (double)u.amp[1], (double)u.amp[2],
@@ -3693,6 +3791,92 @@ static void namChainLoadFromIni() {
         }
     }
     namPublish();
+}
+
+// Carga los presets de usuario del .ini (SUSTITUYE la lista en memoria, no se
+// suma a ella). Es una funcion propia porque su contrato -que un preset viejo
+// sin las claves nuevas del navegador siga cargando- se prueba solo, sin
+// arrastrar el resto de loadIni (audio, ampli, efectos).
+static void userPresetsLoadFromIni() {
+    g_userPresets.clear();
+    int cnt = iniGetInt(L"user", L"count", 0);
+    if (cnt > kMaxUserPresets) cnt = kMaxUserPresets;
+    for (int i = 0; i < cnt; ++i) {
+        wchar_t sec[16]; swprintf_s(sec, L"user%d", i);
+        wchar_t wname[64] = L"";
+        GetPrivateProfileStringW(sec, L"name", L"", wname, 64, g_iniPath.c_str());
+        if (!wname[0]) continue;
+        UserPreset u = {};
+        wcsncpy_s(u.name, wname, _TRUNCATE);
+        u.model = iniGetInt(sec, L"model", -1);
+        if (u.model < 0 || u.model >= kAmpCount) u.model = -1;
+        u.favColor = iniGetInt(sec, L"fav", 0);   // color 0..4 ('fav=1' viejo = ambar)
+        if (u.favColor < 0 || u.favColor > kFavColors - 1)
+            u.favColor = (u.favColor != 0) ? 1 : 0;
+        GetPrivateProfileStringW(sec, L"author",  L"", u.author,  32,  g_iniPath.c_str());
+        GetPrivateProfileStringW(sec, L"comment", L"", u.comment, 160, g_iniPath.c_str());
+        u.tags = (unsigned int)iniGetInt(sec, L"tags", 0);
+        u.tags &= (1u << kCharCount) - 1;         // solo caracteres conocidos
+        u.created = iniGetI64(sec, L"created", 0);
+        u.used    = iniGetI64(sec, L"used", 0);
+        float mv2 = 70.0f; iniGetFlt(sec, L"master", &mv2, 1); u.master = mv2;
+        {
+            float dam[6] = { 0,0,0,0,0,0 };
+            iniGetFlt(sec, L"am", dam, 6);
+            bool any = false;
+            for (int k = 0; k < 5; ++k) if (dam[k] != 0.0f) any = true;
+            if (any && dam[5] == 0.0f) dam[5] = 50.0f;
+            for (int k = 0; k < 6; ++k) u.amp[k] = any ? dam[k] : 0.0f;
+        }
+        u.cabModel = 0; iniGetInt(sec, L"cabModel", u.cabModel);
+        u.cabMic   = 0; iniGetInt(sec, L"cabMic",   u.cabMic);
+        u.cabDist  = 1; iniGetInt(sec, L"cabDist",  u.cabDist);
+        if (u.cabModel < 0 || u.cabModel > 6) u.cabModel = 0;
+        if (u.cabMic < 0 || u.cabMic > 2) u.cabMic = 0;
+        if (u.cabDist < 0 || u.cabDist > 2) u.cabDist = 1;
+        for (int f = 0; f < 18; ++f) {
+            wchar_t key[16]; swprintf_s(key, L"f%d", f);
+            iniGetFlt(sec, key, u.fx[f], 2);
+        }
+        {
+            int on[18] = {};
+            iniGetIntL(sec, L"on", on, 18);
+            for (int f = 0; f < 18; ++f) u.fxOn[f] = (on[f] != 0);
+        }
+        {
+            int pre[6] = { 0,0,0,0,0,0 }, post[6] = { 0,0,0,0,0,0 };
+            iniGetIntL(sec, L"pre", pre, 6);
+            iniGetIntL(sec, L"post", post, 6);
+            wchar_t bp[128] = L"", bq[128] = L"";
+            GetPrivateProfileStringW(sec, L"pre", L"", bp, 128, g_iniPath.c_str());
+            GetPrivateProfileStringW(sec, L"post", L"", bq, 128, g_iniPath.c_str());
+            wchar_t* ctx = nullptr;
+            for (wchar_t* tok = wcstok_s(bp, L",", &ctx); tok && u.preCount < 6; tok = wcstok_s(nullptr, L",", &ctx)) {
+                int tv = _wtoi(tok);
+                if (tv >= 0 && tv < 18) u.pre[u.preCount++] = tv;
+            }
+            ctx = nullptr;
+            for (wchar_t* tok = wcstok_s(bq, L",", &ctx); tok && u.postCount < 6; tok = wcstok_s(nullptr, L",", &ctx)) {
+                int tv = _wtoi(tok);
+                if (tv >= 0 && tv < 18) u.post[u.postCount++] = tv;
+            }
+        }
+        g_userPresets.push_back(u);
+    }
+}
+
+// Los favoritos de PRESET de fabrica: una cadena de kNumPresets digitos, el
+// color de cada uno. Un .ini viejo trae '0'/'1' y se lee igual ('1' = color 1,
+// ambar). Funcion propia por lo mismo que la de presets: su migracion se prueba.
+static void presetFavLoadFromIni() {
+    wchar_t pf[kNumPresets + 8] = L"";
+    GetPrivateProfileStringW(L"state", L"presetFav", L"", pf, kNumPresets + 8, g_iniPath.c_str());
+    for (int i = 0; i < kNumPresets; ++i) {
+        const WCHAR c = pf[i];
+        int v = (c >= L'0' && c <= L'9') ? (int)(c - L'0') : 0;
+        if (v > kFavColors - 1) v = kFavColors - 1;
+        g_favPreset[i] = (unsigned char)v;
+    }
 }
 
 static void loadIni() {
@@ -3774,13 +3958,7 @@ static void loadIni() {
                 g_favMask |= (1u << mk);
         }
     }
-    {
-        // Favoritos de PRESET de fabrica: la cadena de kNumPresets caracteres
-        // ('0'/'1' por indice). Los del usuario van en su propia ficha (fav=1).
-        wchar_t pf[kNumPresets + 8] = L"";
-        GetPrivateProfileStringW(L"state", L"presetFav", L"", pf, kNumPresets + 8, g_iniPath.c_str());
-        for (int i = 0; i < kNumPresets; ++i) g_favPreset[i] = (pf[i] == L'1');
-    }
+    presetFavLoadFromIni();
     for (int a = 0; a < 13; ++a) {
         wchar_t key[16]; swprintf_s(key, L"a%d", a);
         float d[8] = { 0,0,0,0,0,0,50,50 };   // [6][7] = controles extra, neutros en 50
@@ -3836,63 +4014,7 @@ static void loadIni() {
         }
         if (bp[0] || bq[0]) publishChain(pv, qv);
     }
-    g_userPresets.clear();
-    int cnt = iniGetInt(L"user", L"count", 0);
-    if (cnt > kMaxUserPresets) cnt = kMaxUserPresets;
-    for (int i = 0; i < cnt; ++i) {
-        wchar_t sec[16]; swprintf_s(sec, L"user%d", i);
-        wchar_t wname[64] = L"";
-        GetPrivateProfileStringW(sec, L"name", L"", wname, 64, g_iniPath.c_str());
-        if (!wname[0]) continue;
-        UserPreset u = {};
-        wcsncpy_s(u.name, wname, _TRUNCATE);
-        u.model = iniGetInt(sec, L"model", -1);
-        if (u.model < 0 || u.model >= kAmpCount) u.model = -1;
-        u.fav = iniGetInt(sec, L"fav", 0) != 0 ? 1 : 0;
-        float mv2 = 70.0f; iniGetFlt(sec, L"master", &mv2, 1); u.master = mv2;
-        {
-            float dam[6] = { 0,0,0,0,0,0 };
-            iniGetFlt(sec, L"am", dam, 6);
-            bool any = false;
-            for (int k = 0; k < 5; ++k) if (dam[k] != 0.0f) any = true;
-            if (any && dam[5] == 0.0f) dam[5] = 50.0f;
-            for (int k = 0; k < 6; ++k) u.amp[k] = any ? dam[k] : 0.0f;
-        }
-        u.cabModel = 0; iniGetInt(sec, L"cabModel", u.cabModel);
-        u.cabMic   = 0; iniGetInt(sec, L"cabMic",   u.cabMic);
-        u.cabDist  = 1; iniGetInt(sec, L"cabDist",  u.cabDist);
-        if (u.cabModel < 0 || u.cabModel > 6) u.cabModel = 0;
-        if (u.cabMic < 0 || u.cabMic > 2) u.cabMic = 0;
-        if (u.cabDist < 0 || u.cabDist > 2) u.cabDist = 1;
-        for (int f = 0; f < 18; ++f) {
-            wchar_t key[16]; swprintf_s(key, L"f%d", f);
-            iniGetFlt(sec, key, u.fx[f], 2);
-        }
-        {
-            int on[18] = {};
-            iniGetIntL(sec, L"on", on, 18);
-            for (int f = 0; f < 18; ++f) u.fxOn[f] = (on[f] != 0);
-        }
-        {
-            int pre[6] = { 0,0,0,0,0,0 }, post[6] = { 0,0,0,0,0,0 };
-            iniGetIntL(sec, L"pre", pre, 6);
-            iniGetIntL(sec, L"post", post, 6);
-            wchar_t bp[128] = L"", bq[128] = L"";
-            GetPrivateProfileStringW(sec, L"pre", L"", bp, 128, g_iniPath.c_str());
-            GetPrivateProfileStringW(sec, L"post", L"", bq, 128, g_iniPath.c_str());
-            wchar_t* ctx = nullptr;
-            for (wchar_t* tok = wcstok_s(bp, L",", &ctx); tok && u.preCount < 6; tok = wcstok_s(nullptr, L",", &ctx)) {
-                int tv = _wtoi(tok);
-                if (tv >= 0 && tv < 18) u.pre[u.preCount++] = tv;
-            }
-            ctx = nullptr;
-            for (wchar_t* tok = wcstok_s(bq, L",", &ctx); tok && u.postCount < 6; tok = wcstok_s(nullptr, L",", &ctx)) {
-                int tv = _wtoi(tok);
-                if (tv >= 0 && tv < 18) u.post[u.postCount++] = tv;
-            }
-        }
-        g_userPresets.push_back(u);
-    }
+    userPresetsLoadFromIni();
     int pidx = iniGetInt(L"state", L"preset", 0);
     // Migracion del sistema viejo (un preset por amp, indices de usuario en 12):
     // el indice guardado apunta ahora al lote del amp que sonaba.
@@ -3968,7 +4090,15 @@ static bool writeUserPreset(int slot, const WCHAR* name) {
     u.preCount  = s.preCount;  for (int i = 0; i < s.preCount;  ++i) u.pre[i]  = s.pre[i];
     u.postCount = s.postCount; for (int i = 0; i < s.postCount; ++i) u.post[i] = s.post[i];
     if (slot >= (int)g_userPresets.size()) g_userPresets.resize(slot + 1);
-    u.fav = g_userPresets[slot].fav;        // el favorito es de la FILA, no del rig
+    // Lo que NO es el rig y sobrevive a GUARDAR: el color de favorito y los
+    // metadatos del navegador. La fecha de creacion se estrena la primera vez;
+    // la de uso es ahora.
+    u.favColor = g_userPresets[slot].favColor;
+    wcsncpy_s(u.author,  g_userPresets[slot].author,  _TRUNCATE);
+    wcsncpy_s(u.comment, g_userPresets[slot].comment, _TRUNCATE);
+    u.tags    = g_userPresets[slot].tags;
+    u.created = g_userPresets[slot].created ? g_userPresets[slot].created : nowUnix();
+    u.used    = nowUnix();
     wcsncpy_s(u.name, name, _TRUNCATE);
     g_userPresets[slot] = u;
     g_presetIdx = kNumPresets + slot;
@@ -7645,6 +7775,98 @@ static int presetOrder(int* out) {
             out[n++] = kNumPresets + i;
     return n;
 }
+
+// --- El navegador de presets (paso 18): filtros y orden ----------------------
+// El estado de la ventana superpuesta. Los filtros se COMBINAN (AND entre
+// grupos, OR dentro de cada uno), como los Filter tags de Guitar Rig; -1 / 0
+// significan "cualquiera".
+static int   g_brwSort   = 0;      // 0 curado 1 A-Z 2 Z-A 3 ampli 4 recientes
+static int   g_brwColor  = -1;     // -1 cualquiera, 0..4 color de favorito
+static int   g_brwOrigin = -1;     // -1 cualquiera, 0 fabrica, 1 mio
+static unsigned int g_brwChar = 0; // mascara de caracter; 0 = cualquiera
+static unsigned int g_brwAmp  = 0; // mascara de ampli;    0 = cualquiera
+static WCHAR g_brwText[64] = L"";  // el buscador (nombre + ampli + etiquetas + autor)
+// El nombre en minusculas, para el buscador y el orden alfabetico.
+static void presetNameLow(int idx, WCHAR* out, int n) {
+    if (!out || n <= 0) return;
+    WCHAR pn[128]; presetNameW(idx, pn, 128);
+    int j = 0;
+    for (; j + 1 < n && pn[j]; ++j) out[j] = lowerW(pn[j]);
+    out[j] = 0;
+}
+// Anade una cadena en minusculas a un pajar, separada por un espacio.
+static void catLow(WCHAR* dst, const WCHAR* src, size_t cap) {
+    size_t n = wcslen(dst);
+    if (n + 1 >= cap) return;
+    if (n) { dst[n++] = L' '; dst[n] = 0; }
+    for (size_t i = 0; src[i] && n + 1 < cap; ++i) dst[n++] = lowerW(src[i]);
+    dst[n] = 0;
+}
+// Pasa el preset por todos los filtros del navegador.
+static bool presetMatches(int idx) {
+    if (g_brwColor >= 0 && presetFavColor(idx) != g_brwColor) return false;
+    if (g_brwOrigin == 0 && isUserPreset(idx)) return false;
+    if (g_brwOrigin == 1 && !isUserPreset(idx)) return false;
+    if (g_brwChar && !(presetTags(idx) & g_brwChar)) return false;
+    if (g_brwAmp) {
+        const int g = presetGroup(idx);
+        if (g < 0 || !(g_brwAmp & (1u << g))) return false;
+    }
+    if (g_brwText[0]) {
+        // El buscador mira lo que el navegador ENSENA: nombre, ampli, caracteres
+        // y autor (como el de Guitar Rig, que tambien busca en los metadatos).
+        WCHAR hay[320] = L"";
+        presetNameLow(idx, hay, 320);
+        const int g = presetGroup(idx);
+        if (g >= 0) catLow(hay, kAmpNames[g], 320);
+        const unsigned int tg = presetTags(idx);
+        for (int c = 0; c < kCharCount; ++c)
+            if (tg & (1u << c)) catLow(hay, kCharNames[c], 320);
+        catLow(hay, presetAuthor(idx), 320);
+        WCHAR needle[64]; int j = 0;
+        for (; j + 1 < 64 && g_brwText[j]; ++j) needle[j] = lowerW(g_brwText[j]);
+        needle[j] = 0;
+        if (!wcsstr(hay, needle)) return false;
+    }
+    return true;
+}
+// El comparador del orden. Devuelve false en los empates para que el orden
+// curado (el de partida) se conserve (stable_sort).
+static bool browseLess(int a, int b) {
+    switch (g_brwSort) {
+        case 1: case 2: {
+            WCHAR na[128], nb[128];
+            presetNameLow(a, na, 128); presetNameLow(b, nb, 128);
+            const int c = wcscmp(na, nb);
+            if (c == 0) return false;
+            return (g_brwSort == 1) ? (c < 0) : (c > 0);
+        }
+        case 3: {
+            const int ga = presetGroup(a), gb = presetGroup(b);
+            if (ga != gb) return ga < gb;
+            const int ia = presetInGroup(a), ib = presetInGroup(b);
+            return ia < ib;
+        }
+        case 4: {
+            const long long ua = presetUsed(a), ub = presetUsed(b);
+            if (ua != ub) return ua > ub;
+            const long long ca = presetCreated(a), cb = presetCreated(b);
+            return ca > cb;
+        }
+        default: return false;
+    }
+}
+// Los indices que el navegador ensena: filtrados y ordenados. Es el unico
+// sitio que decide que sale y en que orden (pintado, clic y teclado leen esto).
+static int browseOrder(int* out) {
+    int ord[kMaxListEntries];
+    const int tot = presetOrder(ord);
+    int n = 0;
+    for (int k = 0; k < tot; ++k) if (presetMatches(ord[k])) out[n++] = ord[k];
+    if (g_brwSort != 0 && n > 1) std::stable_sort(out, out + n, browseLess);
+    return n;
+}
+
 static void listFilterIdx(int* out, int* pCount) {
     int n = 0;
     WCHAR lowF[40]; int fi = 0;
@@ -9275,9 +9497,10 @@ static void paintWindow(HWND hwnd) {
                 // dos clics (el primero arma la fila) para no llevarse un preset
                 // de un roce.
                 {
-                    const bool fav = presetFav(a);
+                    const int  fc  = presetFavColor(a);
+                    const bool fav = (fc != 0);
                     const bool hS = rectHas(navBadgeRect(vi, true), g_mouseX, g_mouseY);
-                    const G::Color stc = fav ? kAcc
+                    const G::Color stc = fav ? favColorAt(fc)
                                              : (hS ? kFTxt2 : G::Color(88, 0x8b, 0x87, 0x81));
                     icStar(g, (G::REAL)rx + rw - 15.0f, (G::REAL)ry + 26.0f, 7.0f, stc, fav);
                 }
@@ -10872,7 +11095,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         // primero arma la fila.
                         const RECT sr = navBadgeRect(vi, true);      // estrella
                         if (PtInRect(&sr, pt)) {
-                            presetFavSet(a, !presetFav(a));
+                            // Un clic pasa al COLOR siguiente (y vuelve a "sin
+                            // color"): el favorito es una coleccion, no un bit.
+                            presetFavSet(a, (presetFavColor(a) + 1) % kFavColors);
                             saveIni();                    // el favorito se persiste al instante
                             g_sceneDirty.store(true);     // la lista cambia si hay filtro
                             InvalidateRect(hwnd, nullptr, FALSE);
@@ -11112,8 +11337,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // marca el preset que suena -la misma estrella que la fila de ese
             // preset en la lista-, no el ampli. Antes marcaba el ampli y la
             // estrella de la lista de presets no existia: dos listas y un solo
-            // estado para las dos.
-            presetFavSet(g_presetIdx, !presetFav(g_presetIdx));
+            // estado para las dos. Un clic pasa al color siguiente.
+            presetFavSet(g_presetIdx, (presetFavColor(g_presetIdx) + 1) % kFavColors);
             saveIni();
             g_sceneDirty.store(true);   // la estrella de la fila vive en la escena
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -12631,7 +12856,7 @@ static void hTestPresets() {
     const std::vector<UserPreset> bak = g_userPresets;
     const int  bakIdx  = g_presetIdx;
     const bool bakFav  = g_favOnly;
-    const bool bakF0   = g_favPreset[3];
+    const unsigned char bakF0 = g_favPreset[3];
     const int  tab0    = g_leftTab;
     WCHAR bakFilt[40];
     wcsncpy_s(bakFilt, g_ampFilter, _TRUNCATE);
@@ -12722,23 +12947,28 @@ static void hTestPresets() {
            heads == grupos && sueltos == 0 && aHead == 0,
            "Q3 cada grupo lleva su encabezado delante de sus presets", d);
 
-    // Q4: favoritos POR PRESET y el filtro. Se marcan dos de distinto tipo y el
-    // filtro tiene que dejar exactamente esos dos.
-    g_favPreset[3] = true;                    // un lote de fabrica
-    g_userPresets[0].fav = 1;                 // y uno del usuario
+    // Q4: favoritos POR PRESET, con COLOR, y el filtro. Se marcan dos de distinto
+    // tipo y de distinto color; el filtro deja exactamente esos dos, y cada uno
+    // conserva SU color (el bool viejo no podia distinguirlos).
+    g_favPreset[3] = 2;                       // un lote de fabrica, en rojo
+    g_userPresets[0].favColor = 3;            // y uno del usuario, en azul
     g_favOnly = true;
     int fi[kMaxListEntries], fc = 0;
     listFilterIdx(fi, &fc);
-    int soloMarca = 1;
+    int soloMarca = 1, coloresOk = 0;
     for (int i = 0; i < fc; ++i) if (!presetFav(fi[i])) soloMarca = 0;
+    if (fc == 2) {
+        coloresOk = (presetFavColor(fi[0]) == 2 && presetFavColor(fi[1]) == 3) ? 1 : 0;
+    }
     g_favOnly = false;
     int fi2[kMaxListEntries], fc2 = 0;
     listFilterIdx(fi2, &fc2);
-    sprintf_s(d, "con el filtro: %d filas, todas marcadas = %d; sin el: %d (en total %d)",
-              fc, soloMarca, fc2, presetTotal());
-    hCheck(fc == 2 && soloMarca && fc2 == presetTotal(),
-           "Q4 el filtro \"solo favoritos\" deja los presets marcados", d);
-    g_favPreset[3] = false; g_userPresets[0].fav = 0;
+    sprintf_s(d, "con el filtro: %d filas, todas marcadas = %d; colores %d/%d conservados = %d; sin el: %d (en total %d)",
+              fc, soloMarca, fc == 2 ? presetFavColor(fi[0]) : -1, fc == 2 ? presetFavColor(fi[1]) : -1,
+              coloresOk, fc2, presetTotal());
+    hCheck(fc == 2 && soloMarca && coloresOk && fc2 == presetTotal(),
+           "Q4 el filtro \"solo favoritos\" deja los presets marcados, con su color", d);
+    g_favPreset[3] = 0; g_userPresets[0].favColor = 0;
 
     // Q5: el punto de MODIFICADO sigue al rig, no a lo que no es parte del preset
     // (la MEZCLA). Recien marcado: limpio; una perilla: sucio; la MEZCLA: limpio.
@@ -12795,6 +13025,197 @@ static void hTestPresets() {
     g_leftTab = tab0;
     wcsncpy_s(g_ampFilter, bakFilt, _TRUNCATE);
     rigMark();
+}
+
+// ---------------------------------------------------------------------------
+//  T: el modelo del navegador de presets (paso 18).
+//  El caracter de fabrica sale del lote del preset; los favoritos son COLORES y
+//  viajan por el .ini; un preset del usuario lleva metadatos (autor, comentario,
+//  etiquetas, fechas); y el orden/filtro de la ventana combina etiquetas. Se
+//  prueba la vuelta completa por el .ini contra un temporal, como hIniContract.
+// ---------------------------------------------------------------------------
+static void hTestBrowse() {
+    char d[380];
+
+    // T1: el caracter del banco. Los cinco primeros lotes de cada ampli son el
+    // arco del generador (limpio, limpio, crunch, lead, ambiente) y el lote 6 es
+    // fuzz en los amplis 0,1,4,6,8 y "otros" en el resto.
+    {
+        static const unsigned char want5[kAmpCount]      = { 4,4,5,5,4,5,4,5,4,5,5,5,5 };
+        static const unsigned char wantSlot[kPresetsPerAmp] = { 0,0,1,2,3,5 };
+        int malos = 0;
+        for (int i = 0; i < kNumPresets; ++i) {
+            const int slot = i % kPresetsPerAmp;
+            const int a    = i / kPresetsPerAmp;
+            const unsigned char w = (slot == 5) ? want5[a] : wantSlot[slot];
+            if (presetChar(i) != w) ++malos;
+        }
+        sprintf_s(d, "%d de %d con el caracter del lote equivocado", malos, kNumPresets);
+        hCheck(kNumPresets == 78 && malos == 0,
+               "T1 el caracter de fabrica sale del lote del preset", d);
+    }
+
+    // T2: la mascara de etiquetas. De fabrica es el bit de su caracter; un preset
+    // del usuario lleva la que le pongan (0 = sin etiqueta).
+    {
+        const std::vector<UserPreset> bak = g_userPresets;
+        g_userPresets.clear();
+        UserPreset u = {}; wcsncpy_s(u.name, L"CON ETIQUETAS", _TRUNCATE);
+        u.model = 3; u.tags = (1u << 1) | (1u << 4);
+        g_userPresets.push_back(u);
+        const bool fab = (presetTags(2) == (1u << 1));               // lote 3 = crunch
+        const bool mio = (presetTags(kNumPresets) == ((1u << 1) | (1u << 4)));
+        sprintf_s(d, "fabrica(crunch)=%u, mio=%u", presetTags(2), presetTags(kNumPresets));
+        hCheck(fab && mio, "T2 la mascara de etiquetas es la del caracter o la del usuario", d);
+        g_userPresets = bak;
+    }
+
+    // T3 + T4: la vuelta completa por el .ini y la migracion de un .ini viejo.
+    {
+        const std::wstring tmpDir = exeDirW() + L"\\_dsp_out";
+        CreateDirectoryW(tmpDir.c_str(), nullptr);
+        const std::wstring tmp = tmpDir + L"\\browse_contract.txt";
+        const std::wstring realPath = g_iniPath;
+        const std::wstring realIR   = g_cabIRPath;
+        const std::vector<UserPreset> bakUsers = g_userPresets;
+        unsigned char bakFav[kNumPresets];
+        for (int i = 0; i < kNumPresets; ++i) bakFav[i] = g_favPreset[i];
+        const int bakIdx = g_presetIdx;
+        DeleteFileW(tmp.c_str());
+        g_iniPath = tmp;
+
+        // T3: un preset con TODOS los metadatos, guardado y releido por la via real.
+        {
+            g_userPresets.clear();
+            UserPreset u = {};
+            wcsncpy_s(u.name, L"MI CRUNCH", _TRUNCATE);
+            u.model = 4; u.favColor = 3;
+            wcsncpy_s(u.author,  L"YO", _TRUNCATE);
+            wcsncpy_s(u.comment, L"Cuerpo del 800 con brillo", _TRUNCATE);
+            u.tags = (1u << 1) | (1u << 4);
+            u.created = 1700000000; u.used = 1700000123;
+            g_userPresets.push_back(u);
+            g_favPreset[5] = 2; g_favPreset[9] = 4;
+            g_presetIdx = kNumPresets;
+            saveIni();
+            g_userPresets.clear();
+            for (int i = 0; i < kNumPresets; ++i) g_favPreset[i] = 0;
+            userPresetsLoadFromIni();
+            presetFavLoadFromIni();
+            bool ok = (g_userPresets.size() == 1);
+            if (ok) {
+                const UserPreset& r = g_userPresets[0];
+                ok = wcscmp(r.name, L"MI CRUNCH") == 0 && r.model == 4 && r.favColor == 3 &&
+                     wcscmp(r.author, L"YO") == 0 &&
+                     wcscmp(r.comment, L"Cuerpo del 800 con brillo") == 0 &&
+                     r.tags == ((1u << 1) | (1u << 4)) &&
+                     r.created == 1700000000 && r.used == 1700000123;
+            }
+            const bool favOk = (g_favPreset[5] == 2 && g_favPreset[9] == 4 && g_favPreset[0] == 0);
+            sprintf_s(d, "preset releido=%d (n=%d), favoritos 5=%d 9=%d 0=%d",
+                      (int)ok, (int)g_userPresets.size(), g_favPreset[5], g_favPreset[9], g_favPreset[0]);
+            hCheck(ok && favOk, "T3 metadatos y color de favorito vuelven del .ini intactos", d);
+        }
+
+        // T4: un .ini de ANTES del navegador (presetFav '0'/'1' y user fav=1, sin
+        // ninguna clave nueva) tiene que cargar: color 1 (ambar) y metadatos vacios.
+        {
+            DeleteFileW(tmp.c_str());
+            std::string doc = "[state]\r\npresetFav=";
+            for (int i = 0; i < kNumPresets; ++i) doc.push_back(i == 3 ? '1' : '0');
+            doc.append("\r\n[user]\r\ncount=1\r\n[user0]\r\nname=VIEJO\r\nmodel=5\r\nfav=1\r\n");
+            HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr,
+                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            DWORD wrc = 0;
+            if (f != INVALID_HANDLE_VALUE) {
+                WriteFile(f, doc.data(), (DWORD)doc.size(), &wrc, nullptr);
+                CloseHandle(f);
+            }
+            g_userPresets.clear();
+            for (int i = 0; i < kNumPresets; ++i) g_favPreset[i] = 0;
+            userPresetsLoadFromIni();
+            presetFavLoadFromIni();
+            const bool ok = (g_userPresets.size() == 1) &&
+                            (g_userPresets[0].favColor == 1) &&
+                            (g_userPresets[0].author[0] == 0) &&
+                            (g_userPresets[0].tags == 0) &&
+                            (g_userPresets[0].created == 0) &&
+                            (g_favPreset[3] == 1) && (g_favPreset[2] == 0);
+            sprintf_s(d, "n=%d favColor=%d fav3=%d autor='%ls'",
+                      (int)g_userPresets.size(),
+                      g_userPresets.empty() ? -1 : g_userPresets[0].favColor,
+                      g_favPreset[3], g_userPresets.empty() ? L"?" : g_userPresets[0].author);
+            hCheck(ok, "T4 un .ini de antes del navegador carga en color 1 (ambar)", d);
+        }
+
+        g_userPresets = bakUsers;
+        for (int i = 0; i < kNumPresets; ++i) g_favPreset[i] = bakFav[i];
+        g_presetIdx = bakIdx;
+        g_iniPath = realPath;
+        g_cabIRPath = realIR;
+        DeleteFileW(tmp.c_str());
+    }
+
+    // T5: browseOrder. Los filtros se COMBINAN (AND entre grupos) y el orden se
+    // aplica; el conjunto filtrado es el mismo que leen el pintado y el clic.
+    {
+        const std::vector<UserPreset> bak = g_userPresets;
+        const int bs = g_brwSort, bc = g_brwColor, bo = g_brwOrigin;
+        const unsigned int bch = g_brwChar, bam = g_brwAmp;
+        WCHAR bt[64]; wcsncpy_s(bt, g_brwText, _TRUNCATE);
+
+        g_userPresets.clear();
+        { UserPreset u = {}; wcsncpy_s(u.name, L"ALFA", _TRUNCATE); u.model = 5; u.tags = (1u << 0); u.used = 100; g_userPresets.push_back(u); }
+        { UserPreset u = {}; wcsncpy_s(u.name, L"ZETA", _TRUNCATE); u.model = 5; u.tags = (1u << 1); u.favColor = 2; u.used = 200; g_userPresets.push_back(u); }
+
+        int o[kMaxListEntries];
+        g_brwSort = 0; g_brwColor = -1; g_brwOrigin = -1; g_brwChar = 0; g_brwAmp = 0; g_brwText[0] = 0;
+        const int nAll = browseOrder(o);
+
+        g_brwOrigin = 1;                                    // solo los mios
+        const int nMio = browseOrder(o);
+
+        g_brwChar = (1u << 1);                              // y solo el CRUNCH -> ZETA
+        const int nCr = browseOrder(o);
+        const bool crZeta = (nCr == 1 && wcscmp(g_userPresets[o[0] - kNumPresets].name, L"ZETA") == 0);
+
+        g_brwChar = 0; g_brwColor = 2;                      // color rojo -> ZETA
+        const int nCol = browseOrder(o);
+
+        g_brwColor = -1; g_brwOrigin = -1; g_brwAmp = (1u << 5);   // ampli 5: 6 + 2
+        const int nAmp = browseOrder(o);
+
+        g_brwAmp = 0; g_brwText[0] = 0;
+        wcsncpy_s(g_brwText, L"zeta", _TRUNCATE);           // el buscador
+        const int nTxt = browseOrder(o);
+        g_brwText[0] = 0;
+
+        g_brwSort = 4;                                      // RECIENTES: ZETA, ALFA, ...
+        const int nRec = browseOrder(o);
+        const bool recOk = (nRec == presetTotal()) &&
+                           wcscmp(g_userPresets[o[0] - kNumPresets].name, L"ZETA") == 0 &&
+                           wcscmp(g_userPresets[o[1] - kNumPresets].name, L"ALFA") == 0;
+
+        g_brwSort = 1;                                      // A-Z: el menor primero
+        const int nAz = browseOrder(o);
+        WCHAR menor[128] = L""; int mAmp = -1;
+        for (int i = 0; i < presetTotal(); ++i) {
+            WCHAR nm[128]; presetNameLow(i, nm, 128);
+            if (!menor[0] || wcscmp(nm, menor) < 0) { wcscpy_s(menor, nm); mAmp = i; }
+        }
+        const bool azOk = (nAz == presetTotal() && o[0] == mAmp);
+
+        sprintf_s(d, "todo=%d(=%d) mios=%d crunch+mios=%d(%d) rojo=%d ampli5=%d texto=%d recientes=%d(%d) A-Z=%d(%d)",
+                  nAll, presetTotal(), nMio, nCr, (int)crZeta, nCol, nAmp, nTxt, nRec, (int)recOk, nAz, (int)azOk);
+        hCheck(nAll == presetTotal() && nMio == 2 && nCr == 1 && crZeta && nCol == 1 &&
+               nAmp == kPresetsPerAmp + 2 && nTxt == 1 && recOk && azOk,
+               "T5 el navegador filtra combinando etiquetas y ordena", d);
+
+        g_brwSort = bs; g_brwColor = bc; g_brwOrigin = bo;
+        g_brwChar = bch; g_brwAmp = bam;
+        wcsncpy_s(g_brwText, bt, _TRUNCATE);
+        g_userPresets = bak;
+    }
 }
 
 // Puesta en escena de la interfaz: los mismos pasos que da WinMain, sin hilos ni
@@ -13049,6 +13470,7 @@ static void hSelftest(int fs) {
     hTestZones();
     hTestDesign();
     hTestPresets();
+    hTestBrowse();
     hTestExtraLeak(fs);
     // P2 va al final: inyecta NaN en el motor y aunque prepare(false) lo deja
     // recuperable, el historial de las lineas de retardo queda con residuos que
@@ -13212,7 +13634,7 @@ static int hRender(const char* outPath, const char* state, int winW, int winH) {
             g_leftTab = 1;
             int ord[kMaxListEntries];
             const int n = presetOrder(ord);
-            if (n > 2) { presetFavSet(ord[1], true); presetFavSet(ord[4], true); }
+            if (n > 2) { presetFavSet(ord[1], 2); presetFavSet(ord[4], 3); }
             g_favOnly = true;
         }
         else if (strcmp(state, "drag") == 0) {
