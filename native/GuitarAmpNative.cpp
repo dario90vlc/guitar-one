@@ -4649,8 +4649,10 @@ static const int COL_R_X = 1076, COL_R_W = 340;     // panel CABINA
 
 // Panel izquierdo: tabs + busqueda + lista
 static const int TAB_Y = 86,  TAB_H = 30;
-static const int SEARCH_X = 34, SEARCH_Y = 124, SEARCH_W = 280, SEARCH_H = 32;
-static const int LIST_Y = 164, LIST_H = PANEL_Y + PANEL_H - LIST_Y - 36;
+// 12px de aire entre pestanas, buscador y lista: el mismo ritmo que el resto
+// del diseno (kAir, RACK_GAP). Con 8 el navegador se leia apretado de arriba.
+static const int SEARCH_X = 34, SEARCH_Y = 128, SEARCH_W = 280, SEARCH_H = 32;
+static const int LIST_Y = 172, LIST_H = PANEL_Y + PANEL_H - LIST_Y - 36;
 static const int HINT_Y = PANEL_Y + PANEL_H - 24;   // leyenda de atajos al pie del navegador
 // Fila de la lista: 56 y no 48. El aire es la mitad del rediseno, y con 56 la
 // fila deja de ser un renglon apretado: caben 11 amplis sin scroll (11x56 = 616).
@@ -4919,18 +4921,56 @@ static const int AMP_EXTRA_R  = 22;   // ~80px de arte: cabe entre los impresos
 // El cabezal ocupa el ancho de la torre: su frontal real (1200x540) manda.
 static G::REAL artKnobR() { return 35.0f*(G::REAL)ART_W/744.0f; }
 
-// Panel derecho: CABINA (preview + IR + micro + distancia + mezcla + scope)
+// Panel derecho: CABINA (preview + IR + micro + distancia + mezcla + scope).
+// UN solo ancho de contenido (el panel menos 8px por lado) para todo lo que va
+// dentro: el previo, la rejilla de pastillas, la mezcla y el visualizador. La
+// pista de la mezcla vivia en su propio margen (18) y el visualizador en otro
+// (40): la mitad de abajo del panel leia como tres piezas sueltas.
 static const int CAB_TAB_Y = 86;
-static const int CAB_PV_X = COL_R_X + 8, CAB_PV_Y = 154, CAB_PV_W = COL_R_W - 16, CAB_PV_H = 312;
-static const int CAB_BTN_X = COL_R_X + 8,   CAB_BTN_Y = 480, CAB_BTN_W = 150, CAB_BTN_H = 30;
-static const int CAB_SEL_X = COL_R_X + 166, CAB_SEL_Y = 480, CAB_SEL_W = 166, CAB_SEL_H = 30;
-static const int CAB_MIC_X = COL_R_X + 8,   CAB_MIC_Y = 520, CAB_MIC_W = 150, CAB_MIC_H = 30;
-static const int CAB_DST_X = COL_R_X + 166, CAB_DST_Y = 520, CAB_DST_W = 166, CAB_DST_H = 30;
-static const int CAB_LBL_X = COL_R_X + 8, CAB_LBL_Y = 132;
-// slider MEZCLA (diseno: filas de mezcla) en el panel CABINA
-static const int MIX_SL_X = COL_R_X + 18, MIX_SL_Y = 590, MIX_SL_W = COL_R_W - 36, MIX_SL_H = 8;
-static const int MIX_SL_PAD = 8;   // margen de captura del arrastre
-static const int SCOPE_X = COL_R_X + 40, SCOPE_Y = 620, SCOPE_W = 260, SCOPE_H = 198;
+static const int CAB_LBL_X = COL_R_X + 8, CAB_LBL_Y = 130;
+// El previo baja de 312 a 292: los 20px que suelta son para el bloque de
+// MEZCLA, que caia pegado a su rotulo y al de SALIDA (dos rotulos a 6px).
+static const int CAB_PV_X = COL_R_X + 8, CAB_PV_Y = 154, CAB_PV_W = COL_R_W - 16, CAB_PV_H = 292;
+static const int CAB_BTN_X = COL_R_X + 8,   CAB_BTN_Y = 470, CAB_BTN_W = 150, CAB_BTN_H = 30;
+static const int CAB_SEL_X = COL_R_X + 166, CAB_SEL_Y = 470, CAB_SEL_W = 166, CAB_SEL_H = 30;
+static const int CAB_MIC_X = COL_R_X + 8,   CAB_MIC_Y = 512, CAB_MIC_W = 150, CAB_MIC_H = 30;
+static const int CAB_DST_X = COL_R_X + 166, CAB_DST_Y = 512, CAB_DST_W = 166, CAB_DST_H = 30;
+static const int CAB_SEP_Y = 566;   // filete que cierra el bloque de cabina
+
+// --- MEZCLA: un bloque de TRES lineas, con su propio aire -------------------
+//   rotulo + valor  /  la pista con su mango  /  los dos extremos
+// El mango viaja SIEMPRE dentro de la pista: el recorrido util se mete media
+// manija por cada extremo. Antes su centro se calculaba sobre el ancho entero,
+// asi que al 100% (el valor de fabrica) medio mango quedaba fuera del carril.
+static const int MIX_SL_X = COL_R_X + 8, MIX_SL_W = COL_R_W - 16;   // ancho de contenido
+static const int MIX_SL_H = 12;                                     // la pista
+static const int MIX_LBL_Y = 580, MIX_LBL_H = 16;                   // rotulo + valor
+static const int MIX_SL_Y  = 602;                                   // la pista
+static const int MIX_LEG_Y = 620;                                   // los dos extremos
+static const int MIX_HND_W = 7, MIX_HND_H = 20;                     // el mango
+static const int MIX_INSET = 6;    // media manija + 2px de aire por extremo
+static const int MIX_SL_PAD = 10;  // margen de captura del arrastre y de la rueda
+static const int MIX_BLK_Y = 576, MIX_BLK_B = 634;   // la caja del bloque, entera
+
+// El recorrido de la mezcla: UNA formula para pintar, arrastrar y la rueda.
+// (estaba escrita a mano en tres sitios, con dos geometrias distintas)
+static G::REAL mixCapX(G::REAL v01) {
+    if (v01 < 0.0f) v01 = 0.0f;
+    if (v01 > 1.0f) v01 = 1.0f;
+    return (G::REAL)MIX_SL_X + (G::REAL)MIX_INSET +
+           v01*(G::REAL)(MIX_SL_W - 2*MIX_INSET);
+}
+static float mixSliderFrac(int mx) {
+    G::REAL v = ((G::REAL)mx - ((G::REAL)MIX_SL_X + (G::REAL)MIX_INSET))/
+                (G::REAL)(MIX_SL_W - 2*MIX_INSET);
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    return (float)v;
+}
+
+// Visualizador SALIDA: mismo ancho de contenido, y el alto que deja el bloque
+// de la mezcla. Era 198 y una rejilla de 40px por lado.
+static const int SCOPE_X = COL_R_X + 8, SCOPE_Y = 664, SCOPE_W = COL_R_W - 16, SCOPE_H = 154;
 
 // --- Estado de la lista (panel izquierdo) ---
 static int   g_leftTab = 0;         // 0=AMPLIFICADORES 1=PRESETS
@@ -6473,13 +6513,9 @@ static void drawCabPreview(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::R
 // La plantilla cacheada trae el cuerpo, el glifo, el nombre y la pista del
 // switch; aqui van las que cambian de estado (perilla del switch y perillas de
 // los parametros). El fantasma de arrastre pinta exactamente las mismas.
-static G::REAL mixSliderFrac(int mx) {
-    const G::REAL x0 = (G::REAL)(MIX_SL_X + 10), span = (G::REAL)(MIX_SL_W - 20);
-    G::REAL v = ((G::REAL)mx - x0)/span;
-    if (v < 0.0f) v = 0.0f;
-    if (v > 1.0f) v = 1.0f;
-    return v;
-}
+// (aqui vivia mixSliderFrac, que nadie llamaba: el recorrido de la MEZCLA se
+//  calculaba a mano en los dos sitios del raton. Ahora la formula es UNA y vive
+//  junto a sus constantes, arriba.)
 
 // Mando APARCADO: el hueco serigrafiado del frontal que no controla ningun
 // parametro. Se lee como un mando del ampli (el arte lo pide) pero apagado y
@@ -7228,7 +7264,7 @@ static void buildStaticScene(int W, int H) {
                            spk, inch, g_params.cabMic.load(), g_params.cabDist.load(), userIR,
                            colAmp(g_params.model.load()));
         }
-        hairSep(g, (G::REAL)(COL_R_X + 12), (G::REAL)(CAB_MIC_Y + CAB_MIC_H + 16),
+        hairSep(g, (G::REAL)(COL_R_X + 12), (G::REAL)CAB_SEP_Y,
                 (G::REAL)(COL_R_W - 24), 22);
         // bases de botones/pills (texto, hover y estado en capa dinamica)
         {
@@ -7237,18 +7273,32 @@ static void buildStaticScene(int W, int H) {
             glassPillBody(g, (G::REAL)CAB_MIC_X, (G::REAL)CAB_MIC_Y, (G::REAL)CAB_MIC_W, (G::REAL)CAB_MIC_H, false, false, kAcc);
             glassPillBody(g, (G::REAL)CAB_DST_X, (G::REAL)CAB_DST_Y, (G::REAL)CAB_DST_W, (G::REAL)CAB_DST_H, false, false, kAcc);
         }
-        // slider MIX (diseno: filas de mezcla) + su etiqueta
+        // --- MEZCLA: rotulo + pista + extremos (el relleno, el mango y el valor
+        //     los pinta la capa viva) ---
         {
-            G::Font fMixLbl(L"Segoe UI", 8.5f, G::FontStyleBold);
-            G::SolidBrush ltb(G::Color(255, 0x78, 0x78, 0x7e));
+            G::Font fMixLbl(L"Segoe UI", 9.5f, G::FontStyleBold);
+            G::SolidBrush ltb(kFTxt3);
             g.DrawString(L"MEZCLA", -1, &fMixLbl,
-                         G::RectF((G::REAL)MIX_SL_X, (G::REAL)MIX_SL_Y - 22.0f, (G::REAL)MIX_SL_W, 14.0f),
+                         G::RectF((G::REAL)MIX_SL_X, (G::REAL)MIX_LBL_Y, 160.0f, (G::REAL)MIX_LBL_H),
                          nullptr, &ltb);
+            // Los dos extremos: que mezcla esto. Sin ellos "MEZCLA" es un numero
+            // sin direccion (la barra sube hacia la cabina, no hacia "mas").
+            {
+                G::Font fEnd(L"Segoe UI", 8.0f);
+                G::StringFormat sfR; sfR.SetAlignment(G::StringAlignmentFar);
+                g.DrawString(L"DIRECTO", -1, &fEnd,
+                             G::RectF((G::REAL)MIX_SL_X, (G::REAL)MIX_LEG_Y, 110.0f, 14.0f),
+                             nullptr, &ltb);
+                g.DrawString(L"CABINA", -1, &fEnd,
+                             G::RectF((G::REAL)(MIX_SL_X + MIX_SL_W - 110), (G::REAL)MIX_LEG_Y,
+                                      110.0f, 14.0f), &sfR, &ltb);
+            }
             // la pista del fader es un HUECO del sistema, no una pieza azul:
             // el azul marino no existe en la paleta (la app no tiene 2do acento)
             G::SolidBrush tr(kWellA);
             G::Pen trp(kWellLn, 1.0f);
-            roundRect(g, MIX_SL_X, MIX_SL_Y, MIX_SL_W, MIX_SL_H, 4.0f, &trp, &tr);
+            roundRect(g, (G::REAL)MIX_SL_X, (G::REAL)MIX_SL_Y, (G::REAL)MIX_SL_W,
+                      (G::REAL)MIX_SL_H, (G::REAL)MIX_SL_H*0.5f, &trp, &tr);
         }
         // scope SALIDA: fondo con degradado, rejilla tenue y linea base
         {
@@ -9097,42 +9147,41 @@ static void paintWindow(HWND hwnd) {
         }
     }
 
-    profMark("Slider MEZCLA (panel derecho): relleno");   //PFMARK
-    // --- Slider MEZCLA (panel derecho): relleno + thumb con el accent del amp ---
+    profMark("Bloque MEZCLA (panel derecho): recorrido, mango y valor");   //PFMARK
+    // --- MEZCLA: el recorrido, el mango y el valor --------------------------
+    // El valor ya se lee SIEMPRE en la linea del rotulo (antes solo aparecia
+    // mientras arrastrabas): la cifra es el dato del control, no una ayuda.
     {
-        const G::Color ac = colAmp(g_params.model.load());
-        float v01 = g_params.mixCab.load()/100.0f;
-        if (v01 < 0.0f) v01 = 0.0f;
-        if (v01 > 1.0f) v01 = 1.0f;
-        const int fillW = (int)(MIX_SL_W*v01 + 0.5f);
-        if (fillW > 0) {
-            // Relleno PLANO con el unico acento vivo: nada de degradados.
-            G::SolidBrush fb(kAcc);
-            roundRect(g, (G::REAL)MIX_SL_X, (G::REAL)MIX_SL_Y, (G::REAL)fillW, (G::REAL)MIX_SL_H,
-                      2.0f, nullptr, &fb);
+        const bool vivo = g_mixDrag || zoneHit(101);      // pulsado o bajo el raton
+        const G::REAL capX = mixCapX((G::REAL)(g_params.mixCab.load()/100.0f));
+        // El recorrido: la parte de cabina de la mezcla. Un tono calido quedo
+        // (gris de mando tibio, no marron sobre el pozo) y al arrastrar sube al
+        // ambar vivo: lo pulsado es lo que lleva el acento.
+        const G::REAL fw = capX - (G::REAL)MIX_SL_X - 1.0f;
+        if (fw > 2.0f) {
+            G::SolidBrush fb(flatTint(kFSurf3, kAcc, g_mixDrag ? 0.80f : 0.00f));
+            roundRect(g, (G::REAL)MIX_SL_X + 1.0f, (G::REAL)MIX_SL_Y + 1.0f, fw,
+                      (G::REAL)(MIX_SL_H - 2), (G::REAL)(MIX_SL_H - 2)*0.5f, nullptr, &fb);
         }
-        const G::REAL tx = (G::REAL)MIX_SL_X + v01*(G::REAL)MIX_SL_W;
-        const G::REAL ty = (G::REAL)MIX_SL_Y + (G::REAL)MIX_SL_H*0.5f;
-        const bool hov = zoneHit(101);         // slider MEZCLA
-        // Thumb: disco blanco plano con aro negro de 2px; el aro pasa al acento
-        // al pasar el raton o arrastrar. Sin sombra ni brillo (monocromo radical).
-        const G::REAL th = (hov || g_mixDrag) ? 9.0f : 8.0f;
+        // El mango: una tecla plana de 7x20, centrada en el valor y SIEMPRE
+        // dentro de la pista (el recorrido va metido media manija por extremo).
         {
-            G::SolidBrush tb(kFTxt);
-            g.FillEllipse(&tb, tx - th, ty - th, th*2.0f, th*2.0f);
+            const G::REAL hw = (G::REAL)MIX_HND_W, hh = (G::REAL)MIX_HND_H;
+            const G::REAL hx = capX - hw*0.5f;
+            const G::REAL hy = (G::REAL)MIX_SL_Y + (G::REAL)MIX_SL_H*0.5f - hh*0.5f;
+            G::SolidBrush hb(kFTxt);
+            roundRect(g, hx, hy, hw, hh, 3.0f, nullptr, &hb);
+            G::Pen hp(vivo ? kAcc : G::Color(255, 0x0b, 0x0b, 0x0c), vivo ? 1.6f : 1.0f);
+            roundRect(g, hx, hy, hw, hh, 3.0f, &hp, nullptr);
         }
-        G::Pen tp((hov || g_mixDrag) ? kAcc : G::Color(255, 0x0b, 0x0b, 0x0c),
-                  (hov || g_mixDrag) ? 3.0f : 2.0f);
-        g.DrawEllipse(&tp, tx - th, ty - th, th*2.0f, th*2.0f);
-        if (g_mixDrag) {
+        // El valor, a la derecha de la linea del rotulo
+        {
             WCHAR wv[32];
-            swprintf_s(wv, L"%.0f", g_params.mixCab.load());
-            const G::REAL bw2 = 64.0f, bh2 = 24.0f;
-            G::REAL bx2 = tx - bw2*0.5f;
-            if (bx2 < (G::REAL)COL_R_X + 8.0f) bx2 = (G::REAL)COL_R_X + 8.0f;
-            if (bx2 > (G::REAL)(COL_R_X + COL_R_W) - 8.0f - bw2) bx2 = (G::REAL)(COL_R_X + COL_R_W) - 8.0f - bw2;
-            G::REAL by2 = (G::REAL)MIX_SL_Y - bh2 - 8.0f;
-            drawValuePop(g, bx2, by2, bw2, bh2, wv, kAcc);
+            swprintf_s(wv, L"%.0f %%", g_params.mixCab.load());
+            G::Font fVal(L"Segoe UI", 9.5f, G::FontStyleRegular);
+            const G::REAL vw = measureSpaced(g, wv, fVal, 0.15f);
+            drawSpaced(g, wv, fVal, vivo ? kAcc : kFTxt,
+                       (G::REAL)(MIX_SL_X + MIX_SL_W) - vw, (G::REAL)MIX_LBL_Y + 1.0f, 0.15f);
         }
     }
 
@@ -9610,8 +9659,8 @@ static void buildZones() {
     zoneSetBox(92, CAB_SEL_X, CAB_SEL_Y, CAB_SEL_W, CAB_SEL_H);            // pill CAB
     zoneSetBox(77, CAB_MIC_X, CAB_MIC_Y, CAB_MIC_W, CAB_MIC_H);            // pill MIC
     zoneSetBox(93, CAB_DST_X, CAB_DST_Y, CAB_DST_W, CAB_DST_H);            // pill DIST
-    zoneSetBox(101, MIX_SL_X - MIX_SL_PAD, MIX_SL_Y - 10,
-                  MIX_SL_W + MIX_SL_PAD*2, MIX_SL_H + 20);                 // slider MEZCLA
+    zoneSetBox(101, MIX_SL_X - MIX_SL_PAD, MIX_BLK_Y,
+                  MIX_SL_W + MIX_SL_PAD*2, MIX_BLK_B - MIX_BLK_Y);         // bloque MEZCLA
 
     // --- pie: preset y su navegacion ---
     zoneSetBox(70, 24,  BOT_BOX_Y,     306, 44);                           // preset inferior
@@ -9940,6 +9989,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (dv > -1e8f) {
             g_knobs[dbl].value->store(dv);
             g_dragIdx = -1;
+            if (GetCapture() == hwnd) ReleaseCapture();
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        // Lo mismo para la MEZCLA: volver al 100% (todo cabina).
+        if (zoneHitAt(101, dx, dy)) {
+            g_params.mixCab.store(100.0f);
+            g_mixDrag = false;
             if (GetCapture() == hwnd) ReleaseCapture();
             InvalidateRect(hwnd, nullptr, FALSE);
         }
@@ -10594,13 +10650,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
-        // Slider MEZCLA: arrastre horizontal (coordenadas del clic, no el hover)
-        if (zoneHitAt(101, x, y)) {   // slider MEZCLA
+        // Bloque MEZCLA: arrastre horizontal (coordenadas del clic, no el hover)
+        if (zoneHitAt(101, x, y)) {   // bloque MEZCLA
             g_mixDrag = true;
-            float v = (float)(x - MIX_SL_X)*(100.0f/(float)MIX_SL_W);
-            if (v < 0.0f) v = 0.0f;
-            if (v > 100.0f) v = 100.0f;
-            g_params.mixCab.store(v);
+            g_params.mixCab.store(mixSliderFrac(x)*100.0f);
             SetCapture(hwnd);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
@@ -10644,13 +10697,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (g_mixDrag) {
-            float v = (float)(g_mouseX - MIX_SL_X)*(100.0f/(float)MIX_SL_W);
-            if (v < 0.0f) v = 0.0f;
-            if (v > 100.0f) v = 100.0f;
-            g_params.mixCab.store(v);
-            // regiones: slider + tooltip de valor (cuelga hasta 30px arriba)
-            RECT r = { MIX_SL_X - 40, MIX_SL_Y - 34,
-                       COL_R_X + COL_R_W, MIX_SL_Y + MIX_SL_H + 12 };
+            g_params.mixCab.store(mixSliderFrac(g_mouseX)*100.0f);
+            // regiones: el bloque entero (valor, pista y extremos)
+            RECT r = { MIX_SL_X - 4, MIX_BLK_Y - 4,
+                       MIX_SL_X + MIX_SL_W + 4, MIX_BLK_B + 4 };
             InvalidateRect(hwnd, &r, FALSE);
             return 0;
         }
@@ -10784,9 +10834,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-        // Rueda sobre el slider MEZCLA: el mismo criterio que los mandos
+        // Rueda sobre el bloque MEZCLA: el mismo criterio que los mandos
         if (pt.x >= MIX_SL_X - MIX_SL_PAD && pt.x <= MIX_SL_X + MIX_SL_W + MIX_SL_PAD &&
-            pt.y >= MIX_SL_Y - 10 && pt.y <= MIX_SL_Y + MIX_SL_H + 10) {
+            pt.y >= MIX_BLK_Y && pt.y <= MIX_BLK_B) {
             const int wd = GET_WHEEL_DELTA_WPARAM(wp) / 120;
             if (wd != 0) {
                 const float fine = (wp & MK_SHIFT) ? 0.1f : 1.0f;
@@ -11875,6 +11925,21 @@ static void hTestFlat() {
         const bool tOk = same(t1, t2, 0) && t1.GetR() > t1.GetG() && t1.GetG() > t1.GetB();
         hCheck(tOk, "J6 el tinte de activo es estable y tira a ambar",
                tOk ? "flatTint es estable" : "flatTint no es estable");
+
+        // J7: el mango de MEZCLA corre DENTRO de su pista. El recorrido se
+        // calculaba sobre el ancho entero, asi que al 100% (el valor de fabrica)
+        // medio mango quedaba fuera del carril.
+        {
+            const G::REAL m0 = mixCapX(0.0f), m1 = mixCapX(1.0f);
+            const bool dentro =
+                (m0 - (G::REAL)MIX_HND_W*0.5f) > (G::REAL)MIX_SL_X &&
+                (m1 + (G::REAL)MIX_HND_W*0.5f) < (G::REAL)(MIX_SL_X + MIX_SL_W);
+            const float ida = mixSliderFrac((int)mixCapX(0.5f));   // ida y vuelta
+            const bool vuelta = (ida > 0.49f && ida < 0.51f);
+            sprintf_s(d, "centro a 0%% = %.0f, a 100%% = %.0f, ida y vuelta = %.2f",
+                      (double)m0, (double)m1, (double)ida);
+            hCheck(dentro && vuelta, "J7 el mango de MEZCLA corre dentro de su pista", d);
+        }
     }
     G::GdiplusShutdown(tok);
 }
