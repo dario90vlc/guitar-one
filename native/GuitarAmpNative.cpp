@@ -5316,6 +5316,14 @@ static const int FOOT_Y = 846, FOOT_H = 70;   // debajo de la banda de cadena (8
 //  donde estaba (FOOT_Y+44 = 890): la caja y los mandos bajan 4px de alto y
 //  ganan el aire, sin mover ni un centro.
 static const int BOT_LBL_Y  = FOOT_Y + 6;     // 852: linea comun de rotulos
+// El rotulo del pie, en UN solo sitio: familia, tamano y alto de la caja. El
+// pintado y la prueba T11 leen de aqui, asi que no pueden discrepar. La caja
+// tiene que dar cabida a la LINEA entera de la fuente (ascendente + descendente
+// + interlineado), no solo a las mayusculas: con una caja de 14 px y una fuente
+// de linea mas alta, el pintado recorta por abajo la ultima fila de las letras.
+static const WCHAR*  kFootLblFam = kFontTec;     // Bahnschrift SemiCondensed
+static const G::REAL kFootLblPt  = kTRotulo;     // 9,5 (papel de rotulo: mayusculas)
+static const int     BOT_LBL_H   = 20;
 static const int BOT_BOX_Y  = FOOT_Y + 24;    // 870: caja de preset (40px)
 static const int BOT_MTR_Y  = FOOT_Y + 31;    // 877: pista en 888..893 (centro 890)
 static const int BOT_STAT_Y = WIN_H - 26;
@@ -6326,8 +6334,15 @@ static void flatMeterTrack(G::Graphics& g, G::Font& fLbl, const WCHAR* label,
     // de canales (rotulos en UNA linea, controles debajo) en vez de etiquetas
     // sueltas a distinta altura. Tono medio: el rotulo no compite con el valor,
     // que es lo unico que se mueve.
+    // La caja va en LA MISMA linea que el resto de rotulos del pie (BOT_LBL_Y,
+    // que es BOT_MTR_Y menos 25) y con el alto de BOT_LBL_H. Antes era y-29 con
+    // 14 px: cuatro pixeles mas arriba que los demas y mas corta que la linea de
+    // su fuente, asi que el pintado le recortaba la fila de abajo de las letras.
     G::SolidBrush lb(kFTxt3);
-    g.DrawString(label, -1, &fLbl, G::RectF(x, y - 29.0f, 140.0f, 14.0f), nullptr, &lb);
+    g.DrawString(label, -1, &fLbl,
+                 G::RectF(x, (G::REAL)(y - (BOT_MTR_Y - BOT_LBL_Y)), 140.0f,
+                          (G::REAL)BOT_LBL_H),
+                 nullptr, &lb);
 }
 
 static void flatMeterFill(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w,
@@ -7125,7 +7140,6 @@ static void buildStaticScene(int W, int H) {
 
     G::Font fLogo(kFontTec, kTMarca, G::FontStyleBold);
     G::Font fH2(kFontTec, kTMarca, G::FontStyleBold);
-    G::Font fKnob(kFontUI, kTCuerpo);
     G::Font fBold(kFontUI, kTCuerpo, G::FontStyleBold);
 
     // ---- ENTORNO: el fondo es una sala de rack, no un escenario con focos ----
@@ -7712,28 +7726,32 @@ static void buildStaticScene(int W, int H) {
     // --- Footer del diseno: panel + preset + medidores + CLIP + MASTER ---
     {
         glassPanel(g, 24.0f, (G::REAL)FOOT_Y, (G::REAL)(WIN_W - 48), (G::REAL)FOOT_H, kRPanel, true);
-        drawMeterTrack(g, fKnob, L"INPUT",  (G::REAL)MTR_IN_X,  (G::REAL)BOT_MTR_Y, (G::REAL)MTR_IN_W);
-        drawMeterTrack(g, fKnob, L"OUTPUT", (G::REAL)MTR_OUT_X, (G::REAL)BOT_MTR_Y, (G::REAL)MTR_OUT_W);
-        drawMeterTrack(g, fKnob, L"GATE",   (G::REAL)MTR_GT_X,  (G::REAL)BOT_MTR_Y, (G::REAL)MTR_GT_W);
+        // UN solo estilo de rotulo en todo el pie: kFootLblFam/kFootLblPt (papel
+        // de rotulo: mayusculas cortas), tono medio, centrado sobre su control o
+        // sobre el arranque de su pista, y todos en la linea comun (BOT_LBL_Y)
+        // dentro de una caja que da cabida a la linea entera (BOT_LBL_H). Los
+        // medidores rotulaban con el papel de CUERPO y su caja les recortaba la
+        // fila de abajo: el pie tenia, sin querer, dos rotulos distintos.
+        G::Font fFootLbl(kFootLblFam, kFootLblPt);
+        G::SolidBrush tb(kFTxt3);
+        G::StringFormat sfMC; sfMC.SetAlignment(G::StringAlignmentCenter);
+        drawMeterTrack(g, fFootLbl, L"INPUT",  (G::REAL)MTR_IN_X,  (G::REAL)BOT_MTR_Y, (G::REAL)MTR_IN_W);
+        drawMeterTrack(g, fFootLbl, L"OUTPUT", (G::REAL)MTR_OUT_X, (G::REAL)BOT_MTR_Y, (G::REAL)MTR_OUT_W);
+        drawMeterTrack(g, fFootLbl, L"GATE",   (G::REAL)MTR_GT_X,  (G::REAL)BOT_MTR_Y, (G::REAL)MTR_GT_W);
         // etiqueta CLIP (el LED vivo lo pinta la capa dinamica)
         {
             // CLIP: rotulo centrado sobre su LED y en LA MISMA linea que los
             // demas del pie (antes iba a 8,5pt y a otra altura, pegado al GATE).
-            G::Font fClipL(kFontTec, kTRotulo);
-            G::SolidBrush ctb(kFTxt3);
             G::StringFormat sfCC; sfCC.SetAlignment(G::StringAlignmentCenter);
-            g.DrawString(L"CLIP", -1, &fClipL,
-                         G::RectF((G::REAL)CLIP_LED_X - 35.0f, (G::REAL)BOT_LBL_Y, 80.0f, 14.0f),
-                         &sfCC, &ctb);
+            g.DrawString(L"CLIP", -1, &fFootLbl,
+                         G::RectF((G::REAL)CLIP_LED_X - 35.0f, (G::REAL)BOT_LBL_Y, 80.0f,
+                                  (G::REAL)BOT_LBL_H),
+                         &sfCC, &tb);
         }
         drawKnobBody(g, (G::REAL)MASTER_X, (G::REAL)MASTER_Y, (G::REAL)MASTER_R);
-        // Un solo estilo de rotulo en todo el pie (10,5pt regular, tono medio),
-        // centrado sobre su control y en la linea comun de rotulos.
-        G::Font fFootLbl(kFontTec, kTRotulo);
-        G::SolidBrush tb(kFTxt3);
-        G::StringFormat sfMC; sfMC.SetAlignment(G::StringAlignmentCenter);
         g.DrawString(L"MASTER", -1, &fFootLbl,
-                     G::RectF((G::REAL)(MASTER_X - 60), (G::REAL)BOT_LBL_Y, 120.0f, 14.0f),
+                     G::RectF((G::REAL)(MASTER_X - 60), (G::REAL)BOT_LBL_Y, 120.0f,
+                              (G::REAL)BOT_LBL_H),
                      &sfMC, &tb);
         // Perilla de TRIM de entrada: cuerpo en la escena estatica, puntero y
         // aro los pinta la capa dinamica como al resto. Se llama TRIM y no INPUT
@@ -7743,7 +7761,8 @@ static void buildStaticScene(int W, int H) {
         {
             G::StringFormat sfT; sfT.SetAlignment(G::StringAlignmentCenter);
             g.DrawString(L"TRIM", -1, &fFootLbl,
-                         G::RectF((G::REAL)(IN_TRIM_X - 45), (G::REAL)BOT_LBL_Y, 90.0f, 14.0f),
+                         G::RectF((G::REAL)(IN_TRIM_X - 45), (G::REAL)BOT_LBL_Y, 90.0f,
+                                  (G::REAL)BOT_LBL_H),
                          &sfT, &tb);
         }
     }
@@ -13980,6 +13999,34 @@ static void hTestBrowse() {
         g_userPresets = bak;
         g_iniPath = realPath;
         DeleteFileW(tmp.c_str());
+    }
+
+    // T11: la caja del rotulo del pie da cabida a la LINEA entera del texto. El
+    // defecto que caza: los medidores rotulaban con el papel de CUERPO (Segoe UI
+    // 10,5, linea de 20,4 px) dentro de una caja de 14 px, y el pintado les
+    // recortaba la fila de abajo de las letras. Se veia como "el texto se corta
+    // por abajo" en INPUT, OUTPUT y GATE, y solo en esos tres: los rotulos de los
+    // mandos iban con el papel de rotulo, cuya linea si entraba en la caja.
+    {
+        G::GdiplusStartupInput gsi;
+        ULONG_PTR tok = 0;
+        if (G::GdiplusStartup(&tok, &gsi, nullptr) == G::Ok) {
+            G::REAL lineH = 0, lineW = 0;
+            {   // los objetos de GDI+ se sueltan ANTES del shutdown (trampa 0xC0000005)
+                G::Bitmap bmp(8, 8, PixelFormat32bppARGB);
+                G::Graphics g(&bmp);
+                G::Font f(kFootLblFam, kFootLblPt);
+                G::RectF box(0, 0, 1000, 1000), out;
+                g.MeasureString(L"OUTPUT", -1, &f, box, nullptr, &out);
+                lineH = out.Height;
+                lineW = out.Width;
+            }
+            sprintf_s(d, "la linea de \"OUTPUT\" mide %.1f px en una caja de %d px (ancho %.1f)",
+                      lineH, BOT_LBL_H, lineW);
+            hCheck(lineH <= (G::REAL)BOT_LBL_H - 2.0f,
+                   "T11 la caja del rotulo del pie da cabida a la linea entera", d);
+            G::GdiplusShutdown(tok);
+        }
     }
 }
 
