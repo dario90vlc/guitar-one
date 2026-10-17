@@ -100,6 +100,35 @@ extern "C" BOOL __stdcall GetOpenFileNameW(LPOPENFILENAMEW);
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <cstdlib>
+#include <new>
+
+// ============================================================================
+//  AUDITORIA DE RESERVAS DEL CAMINO DE TIEMPO REAL (solo el banco de pruebas)
+//  T13 y T15 comprueban que procesar un bloque de audio no llama a new. El hilo
+//  de audio no puede reservar memoria: un malloc puede tardar cientos de
+//  microsegundos y con buffer de 512 muestras a 48 kHz el bloque entero son
+//  10,7 ms, asi que una reserva que caiga mal es un crujido audible mientras se
+//  toca. La auditoria esta APAGADA salvo dentro de la ventana que mide la prueba,
+//  que es cuando alguien mira el contador.
+// ============================================================================
+#ifdef GA_HARNESS
+static std::atomic<long long> g_allocCount{0};
+static std::atomic<bool>      g_allocAuditOn{false};
+static void* hAlloc(size_t n) {
+    if (g_allocAuditOn.load(std::memory_order_relaxed))
+        g_allocCount.fetch_add(1, std::memory_order_relaxed);
+    void* p = std::malloc(n ? n : 1);
+    if (!p) throw std::bad_alloc();
+    return p;
+}
+void* operator new(size_t n) { return hAlloc(n); }
+void* operator new[](size_t n) { return hAlloc(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, size_t) noexcept { std::free(p); }
+void operator delete[](void* p, size_t) noexcept { std::free(p); }
+#endif
 
 namespace G = Gdiplus;
 
@@ -244,6 +273,9 @@ using NamChain = std::vector<std::shared_ptr<NamSlot>>;
 static NamChain g_namUi;                                   // la cadena que edita la UI
 static std::shared_ptr<const NamChain> g_namLive;          // instantanea para el audio
 static std::mutex g_namMutex;
+// Cuantas veces ha cogido el hilo de audio la instantanea del perfil. Tiene que
+// ser UNA por bloque: cogerla por muestra es un cerrojo por muestra (T12).
+static std::atomic<long long> g_namSnapGets{0};
 static int  g_namSel = -1;                                 // bloque seleccionado
 static int  g_namDelArm = -1;                              // bloque armado para quitar (2 clics)
 static int  g_namDropIdx = -1;                             // celda elegida para lo que se baje (-1 = al final)
@@ -3207,6 +3239,12 @@ struct AmpChain {
         //  que pide el fichero; VOLUME es la salida. Sin perfil: silencio.
         const bool namAmp = (m == 12);
         std::shared_ptr<const NamChain> namCh = namAmp ? std::atomic_load(&g_namLive) : nullptr;
+        // T12: hoy esta carga es POR MUESTRA. En MSVC un std::atomic_load sobre un
+        // shared_ptr es un spin-lock, y el hilo de audio compitiendo 48.000 veces
+        // por segundo con la interfaz (que es quien lo suelta, desde prioridad
+        // normal) es un crujido esperando a pasar: la instantanea tiene que ser
+        // del BLOQUE. El contador deja el fallo a la vista en el autotest.
+        if (namAmp) g_namSnapGets.fetch_add(1, std::memory_order_relaxed);
         if (namAmp && namCh && !namCh->empty()) {
             // GAIN del cabezal = trim de entrada a la cadena (+-12 dB)
             const float trimDb = (g_params.amp[12][0].load() - 50.0f)*0.24f;
@@ -4360,6 +4398,31 @@ static void tunerAnalyze() {
 }
 
 // ============================================================================
+//  Limite del BLOQUE de audio
+// ============================================================================
+// El hilo de audio trabaja por bloques: al principio de cada uno copia la
+// cadena de pedales publicada y refresca la instantanea del perfil, y despues
+// procesa las muestras con esa foto fija. Antes ese trabajo estaba en linea
+// dentro del bucle de captura; aqui esta aislado porque es EL sitio donde el
+// camino de tiempo real no puede coger cerrojos ni reservar memoria, y ademas
+// se puede probar (T12/T13 llaman a esta misma funcion).
+//
+// Instantaneas del bloque: solo las toca el hilo de audio.
+static std::vector<int> g_preSnap, g_postSnap;
+
+static void audioBlockBegin() {
+    // Cadena de pedales publicada por la UI, copiada al bloque.
+    std::vector<int> pre, post;
+    {
+        std::lock_guard<std::mutex> lk(g_chainMutex);
+        pre  = g_chainPre;
+        post = g_chainPost;
+    }
+    g_preSnap  = std::move(pre);
+    g_postSnap = std::move(post);
+}
+
+// ============================================================================
 //  Hilo de audio: captura -> DSP -> reproduccion (WASAPI event-driven)
 // ============================================================================
 // Balistica de VU, expresada en TIEMPO y no por bloque. Antes la caida era un
@@ -4713,13 +4776,8 @@ static DWORD WINAPI AudioThread(LPVOID) {
         // --- Captura ---
         if (capCap && (w == WAIT_OBJECT_0 + 1 || !useBoth || w == WAIT_TIMEOUT)) {
             const bool en = g_audioEnabled.load();   // silencio global de la app
-            // Copiar la cadena de pedales una vez por bloque (no por muestra)
-            std::vector<int> preSnap, postSnap;
-            {
-                std::lock_guard<std::mutex> lk(g_chainMutex);
-                preSnap = g_chainPre;
-                postSnap = g_chainPost;
-            }
+            // Cadena y perfil del bloque: UNA vez por bloque, no por muestra
+            audioBlockBegin();
             UINT32 packet = 0;
             capCap->GetNextPacketSize(&packet);
             while (packet > 0) {
@@ -4773,7 +4831,7 @@ static DWORD WINAPI AudioThread(LPVOID) {
                             // Apagado: entrada sigue medida (para verificar el dispositivo)
                             // y se empuja silencio para que el ring y la sesion no se rompan
                             if (!std::isfinite(s)) s = 0.0f;    // una muestra basura del dispositivo
-                            float y = en ? g_amp.process(s, preSnap, postSnap) : 0.0f;
+                            float y = en ? g_amp.process(s, g_preSnap, g_postSnap) : 0.0f;
                             if (!std::isfinite(y)) {
                                 // Tapar la salida no basta: un NaN que entre en el estado de un
                                 // biquad o de un buffer realimentado (delay, reverb, tanque) se
@@ -14269,6 +14327,82 @@ static void hTestType() {
     G::GdiplusShutdown(tok);
 }
 
+// ---------------------------------------------------------------------------
+//  T12/T13: el camino de tiempo real. Procesar un bloque de audio (cadena de
+//  pedales + cabezal PERFIL con una captura de verdad) no puede coger cerrojos
+//  ni reservar memoria, y la instantanea del perfil se coge UNA vez por bloque,
+//  no por muestra. Un fallo aqui no suena como el clic de un mando: suena a
+//  crujido suelto mientras se toca, porque el hilo de audio pierde el buffer
+//  esperando a la interfaz o pagando un malloc.
+// ---------------------------------------------------------------------------
+static void hTestRtPath(int fs) {
+    namChainClear();
+    std::wstring msg;
+    namChainAdd(L"perfiles/wavenet_condition_dsp.nam", msg);
+    {
+        std::lock_guard<std::mutex> lk(g_namMutex);
+        char d[200];
+        sprintf_s(d, "la cadena del PERFIL tiene %d captura(s)%s", (int)g_namUi.size(),
+                  g_namUi.empty() ? " - no se pudo cargar el .nam" : "");
+        hCheck(g_namUi.size() == 1, "T12 hay una captura en la cadena del PERFIL", d);
+    }
+    // Dos parejas de pedales publicadas: el flanger y el delay reservan sus
+    // buffers la PRIMERA vez que suenan, asi que quedan dentro del calentamiento.
+    const std::vector<int> pre  = { 3, 8 };
+    const std::vector<int> post = { 4, 5 };
+    publishChain(pre, post);
+    initDspDefaults();
+    g_params.model.store(12);
+    g_amp.prepare((float)fs);
+
+    const int    NB   = 512;
+    const double step = 2.0*M_PI*220.0/(double)fs;
+    // Calentamiento (dos bloques): la primera vuelta de cada pedal y del IR del
+    // gabinete reserva lo suyo. Esa reserva es de una vez y no es lo que se mide.
+    for (int b = 0; b < 2; ++b) {
+        audioBlockBegin();
+        for (int i = 0; i < NB; ++i)
+            g_amp.process(0.25f*(float)std::sin(step*(double)i), g_preSnap, g_postSnap);
+    }
+
+    // T12: una sola lectura de la instantanea del perfil en todo el bloque.
+    g_namSnapGets.store(0);
+    double pk = 0.0;
+    audioBlockBegin();
+    for (int i = 0; i < NB; ++i) {
+        const float y = g_amp.process(0.25f*(float)std::sin(step*(double)i),
+                                      g_preSnap, g_postSnap);
+        const double a = std::fabs((double)y);
+        if (a > pk) pk = a;
+    }
+    {
+        char d[240];
+        sprintf_s(d, "%lld lectura(s) del perfil en %d muestras; pico de salida %.4f",
+                  g_namSnapGets.load(), NB, pk);
+        hCheck(g_namSnapGets.load() <= 1 && pk > 0.005,
+               "T12 la instantanea del perfil se coge una vez por bloque", d);
+    }
+#ifdef GA_HARNESS
+    // T13: cero reservas de memoria dentro del bloque.
+    g_allocCount.store(0);
+    g_allocAuditOn.store(true);
+    audioBlockBegin();
+    for (int i = 0; i < NB; ++i)
+        g_amp.process(0.25f*(float)std::sin(step*(double)i), g_preSnap, g_postSnap);
+    g_allocAuditOn.store(false);
+    {
+        char d[200];
+        sprintf_s(d, "%lld reserva(s) de memoria en un bloque de %d muestras",
+                  g_allocCount.load(), NB);
+        hCheck(g_allocCount.load() == 0, "T13 procesar un bloque no reserva memoria", d);
+    }
+#endif
+    // Deja el motor como estaba.
+    namChainClear();
+    publishChain(std::vector<int>(), std::vector<int>());
+    hPrepare(fs, 0);
+}
+
 static void hSelftest(int fs) {
     printf("\n== autotest de correcciones ==\n");
     hNamRejects();
@@ -14284,6 +14418,7 @@ static void hSelftest(int fs) {
     hTestPresets();
     hTestBrowse();
     hTestExtraLeak(fs);
+    hTestRtPath(fs);
     // P2 va al final: inyecta NaN en el motor y aunque prepare(false) lo deja
     // recuperable, el historial de las lineas de retardo queda con residuos que
     // contaminarian a cualquier prueba posterior que mida el ampli.
