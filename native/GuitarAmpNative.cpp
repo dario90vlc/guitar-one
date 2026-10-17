@@ -260,8 +260,9 @@ static std::string asciiOf(const wchar_t* w) {
 //  El cabezal PERFIL ya no es un solo fichero: es una CADENA de bloques, como
 //  la de TONE3000. Cada bloque es una captura, con su encendido y su nivel, y
 //  el orden se cambia moviendolo. El audio los recorre en serie.
-//  El hilo de audio solo ve una instantanea inmutable (punteros compartidos);
-//  el hilo de UI es el que carga, reordena y publica.
+//  El hilo de audio NO toca los punteros compartidos (ver g_namAudio: coger un
+//  shared_ptr atomico es un spin-lock). Lo que ve es una instantanea inmutable
+//  por bloque; el hilo de UI es el que carga, reordena y publica.
 #include "nam.h"
 struct NamSlot {
     std::shared_ptr<nam::Model> model;
@@ -276,6 +277,18 @@ static std::mutex g_namMutex;
 // Cuantas veces ha cogido el hilo de audio la instantanea del perfil. Tiene que
 // ser UNA por bloque: cogerla por muestra es un cerrojo por muestra (T12).
 static std::atomic<long long> g_namSnapGets{0};
+// Puntero CRUDO para el camino de tiempo real. std::atomic_load sobre un
+// shared_ptr NO es libre de cerrojo (MSVC lo implementa con un spin-lock): ahi
+// el hilo de audio se jugaba el buffer contra la interfaz, que es quien lo
+// suelta, desde prioridad normal. Cargar este atomico es un MOV: sin cerrojo y
+// sin tocar el contador de referencias. Lo que apunta se mantiene vivo con la
+// lista de retirados (g_namRetiro).
+static std::atomic<const NamChain*> g_namAudio{nullptr};
+// Bloques de audio empezados. Lo lee la interfaz para no soltar una cadena que
+// un bloque en vuelo todavia pueda estar usando.
+static std::atomic<long long> g_audioBlocks{0};
+struct NamRetiro { std::shared_ptr<const NamChain> ch; long long epoch; };
+static std::vector<NamRetiro> g_namRetiro;                  // solo hilo UI
 static int  g_namSel = -1;                                 // bloque seleccionado
 static int  g_namDelArm = -1;                              // bloque armado para quitar (2 clics)
 static int  g_namDropIdx = -1;                             // celda elegida para lo que se baje (-1 = al final)
@@ -287,7 +300,13 @@ static int  namChainAddAt(const WCHAR* path, int pos, std::wstring& msg);
 static void namPublish()
 {
     std::lock_guard<std::mutex> lk(g_namMutex);
-    std::atomic_store(&g_namLive, std::make_shared<const NamChain>(g_namUi));
+    std::shared_ptr<const NamChain> nu = std::make_shared<const NamChain>(g_namUi);
+    std::atomic_store(&g_namLive, nu);                        // lo que pinta la interfaz
+    // La cadena nueva entra en la lista de retirados (que es quien la mantiene
+    // viva) y se publica el puntero crudo. La anterior no se suelta aqui: se
+    // suelta en namRetiroFlush(), cuando el hilo de audio ya paso por delante.
+    g_namRetiro.push_back({ nu, g_audioBlocks.load(std::memory_order_acquire) });
+    g_namAudio.store(nu.get(), std::memory_order_release);
     g_namSel = (g_namSel >= (int)g_namUi.size()) ? (int)g_namUi.size() - 1 : g_namSel;
 }
 
@@ -2829,6 +2848,9 @@ static const float kFxTrimDb[18] = {
 static float kFxTrimLin[18] = { 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 };
 
 struct AmpChain {
+    // Instantanea del perfil NAM del BLOQUE en curso. La deja audioBlockBegin()
+    // (una carga atomica por bloque, no por muestra) y NO la toca nadie mas.
+    const NamChain* namBlk = nullptr;
     TubeStage  tube;
     NoiseGate  gate;
     Compressor comp;
@@ -3238,13 +3260,11 @@ struct AmpChain {
         //  despues. El mando GAIN es un trim de entrada (+-12 dB) sobre el nivel
         //  que pide el fichero; VOLUME es la salida. Sin perfil: silencio.
         const bool namAmp = (m == 12);
-        std::shared_ptr<const NamChain> namCh = namAmp ? std::atomic_load(&g_namLive) : nullptr;
-        // T12: hoy esta carga es POR MUESTRA. En MSVC un std::atomic_load sobre un
-        // shared_ptr es un spin-lock, y el hilo de audio compitiendo 48.000 veces
-        // por segundo con la interfaz (que es quien lo suelta, desde prioridad
-        // normal) es un crujido esperando a pasar: la instantanea tiene que ser
-        // del BLOQUE. El contador deja el fallo a la vista en el autotest.
-        if (namAmp) g_namSnapGets.fetch_add(1, std::memory_order_relaxed);
+        // Instantanea del BLOQUE (audioBlockBegin): antes era un
+        // std::atomic_load(&g_namLive) por muestra, que en MSVC es un spin-lock y
+        // ponia al hilo de audio a competir con la interfaz 48.000 veces por
+        // segundo. Aqui solo se lee el puntero que dejo el bloque (T12).
+        const NamChain* namCh = namAmp ? namBlk : nullptr;
         if (namAmp && namCh && !namCh->empty()) {
             // GAIN del cabezal = trim de entrada a la cadena (+-12 dB)
             const float trimDb = (g_params.amp[12][0].load() - 50.0f)*0.24f;
@@ -4411,6 +4431,12 @@ static void tunerAnalyze() {
 static std::vector<int> g_preSnap, g_postSnap;
 
 static void audioBlockBegin() {
+    // Marca de bloque ANTES de leer el perfil: asi la interfaz sabe que bloques
+    // han empezado cuando retira una cadena (ver namRetiroFlush).
+    g_audioBlocks.fetch_add(1, std::memory_order_release);
+    // Instantanea del perfil del bloque: una sola carga atomica, sin cerrojo.
+    g_amp.namBlk = g_namAudio.load(std::memory_order_acquire);
+    g_namSnapGets.fetch_add(1, std::memory_order_relaxed);
     // Cadena de pedales publicada por la UI, copiada al bloque.
     std::vector<int> pre, post;
     {
@@ -9412,6 +9438,25 @@ static bool brwWheel(int delta) {
     return true;
 }
 
+// Cadena del perfil retirada: se suelta cuando han empezado al menos DOS bloques
+// de audio desde que se sustituyo. El hilo de audio lee el puntero al principio
+// de cada bloque, asi que dos bloques despues el que pudiera estar usando la
+// cadena vieja ya termino. Soltarla antes seria liberar memoria que un bloque en
+// vuelo esta leyendo. Si el motor no esta sonando no hay bloque en vuelo y se
+// suelta todo menos la ultima (la publicada ahora).
+static void namRetiroFlush() {
+    const bool vivo = g_params.audioActive.load(std::memory_order_relaxed);
+    const long long now = g_audioBlocks.load(std::memory_order_acquire);
+    size_t k = 0;
+    for (size_t i = 0; i < g_namRetiro.size(); ++i) {
+        const bool ultima = (i + 1 == g_namRetiro.size());
+        if (!ultima && (!vivo || now >= g_namRetiro[i].epoch + 2)) continue;   // se suelta
+        if (k != i) g_namRetiro[k] = std::move(g_namRetiro[i]);
+        ++k;
+    }
+    g_namRetiro.resize(k);
+}
+
 static void paintWindow(HWND hwnd) {
     LARGE_INTEGER pf0; QueryPerformanceCounter(&pf0);
     PAINTSTRUCT ps;
@@ -9783,6 +9828,8 @@ static void paintWindow(HWND hwnd) {
         // borrado diferido de IRs retirados (un frame de margen: el audio ya cambio)
         for (CabIR* r : g_cabRetirados) delete r;
         g_cabRetirados.clear();
+        // Cadenas del perfil retiradas: las que el hilo de audio ya dejo atras.
+        namRetiroFlush();
         // estado del IR (a continuacion de "CABINA ACTIVA", sin solaparla)
         {
             WCHAR wir[140];
