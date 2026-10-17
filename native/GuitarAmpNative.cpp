@@ -1568,10 +1568,75 @@ static std::atomic<float> g_tunerLevel{0.0f};   // RMS de la ventana analizada
 static std::mutex       g_chainMutex;
 static std::vector<int> g_chainPre;     // tipos en orden ANTES del amp
 static std::vector<int> g_chainPost;    // tipos en orden DESPUES del amp
+
+// --- Publicacion de la cadena SIN CERROJO (para el hilo de audio) ------------
+// El hilo de audio no puede coger el candado de arriba (es de la interfaz) ni
+// reservar memoria: si la interfaz lo tiene cogido y el sistema la desaloja, el
+// hilo de audio espera y pierde el buffer; y copiar a vectores locales dentro
+// del candado son DOS malloc por bloque en tiempo real. Aqui la interfaz escribe
+// una instantanea de tamaño fijo con un contador de secuencia (impar mientras
+// escribe) y el hilo de audio la copia a buffers con la capacidad ya reservada:
+// ni espera ni reserva.
+static const int kChainMax = 20;    // 18 tipos de pedal posibles, con margen
+struct ChainPub {
+    std::atomic<unsigned> seq{0};
+    int npre = 0, npost = 0;
+    int pre[kChainMax] = {};
+    int post[kChainMax] = {};
+};
+static ChainPub g_chainPub;
+// Instantaneas del bloque: solo las toca el hilo de audio. La capacidad se
+// reserva en AmpChain::prepare, asi que copiar aqui NO reserva memoria (T13).
+static std::vector<int> g_preSnap, g_postSnap;
+
 static void publishChain(const std::vector<int>& pre, const std::vector<int>& post) {
-    std::lock_guard<std::mutex> lock(g_chainMutex);
-    g_chainPre = pre;
-    g_chainPost = post;
+    {
+        std::lock_guard<std::mutex> lock(g_chainMutex);
+        g_chainPre = pre;
+        g_chainPost = post;
+    }
+    // Instantanea para el hilo de audio (seqlock): con el contador impar, quien
+    // lee sabe que hay una escritura a medias y vuelve a empezar. La secuencia
+    // es par cuando el contenido esta completo.
+    const unsigned s = g_chainPub.seq.load(std::memory_order_relaxed);
+    g_chainPub.seq.store(s + 1, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+    const size_t np = pre.size()  > (size_t)kChainMax ? (size_t)kChainMax : pre.size();
+    const size_t nq = post.size() > (size_t)kChainMax ? (size_t)kChainMax : post.size();
+    for (size_t i = 0; i < np; ++i) g_chainPub.pre[i]  = pre[i];
+    for (size_t i = 0; i < nq; ++i) g_chainPub.post[i] = post[i];
+    g_chainPub.npre  = (int)np;
+    g_chainPub.npost = (int)nq;
+    std::atomic_thread_fence(std::memory_order_release);
+    g_chainPub.seq.store(s + 2, std::memory_order_release);
+}
+
+// Copia la instantanea publicada a los buffers del bloque. La llama el hilo de
+// audio al principio de cada bloque (audioBlockBegin). Sin cerrojo y sin
+// reservar; solo reintenta si la interfaz estaba escribiendo justo entonces.
+//
+// La copia va PRIMERO a temporales y solo se publica cuando la lectura cuadra:
+// al copiar directamente sobre los buffers del bloque, un reintento fallido
+// dejaria dentro una cadena que nadie publico (el PRE de una y el POST de otra,
+// que es lo que caza T14). Si no se consigue, se deja intacta la copia anterior,
+// que es una cadena valida de hace un bloque.
+static std::atomic<long long> g_chainSnapMisses{0};   // lecturas que no cuadraron
+static bool chainSnapRead() {
+    for (int intento = 0; intento < 16; ++intento) {
+        const unsigned s1 = g_chainPub.seq.load(std::memory_order_acquire);
+        if (s1 & 1u) continue;                         // escribiendo: a reintentar
+        const int np = g_chainPub.npre, nq = g_chainPub.npost;
+        int p[kChainMax], q[kChainMax];
+        for (int i = 0; i < np; ++i) p[i] = g_chainPub.pre[i];
+        for (int i = 0; i < nq; ++i) q[i] = g_chainPub.post[i];
+        if (g_chainPub.seq.load(std::memory_order_acquire) != s1) continue;
+        // Capacidad reservada en prepare: assign no reserva memoria (T13).
+        g_preSnap.assign(p, p + np);
+        g_postSnap.assign(q, q + nq);
+        return true;
+    }
+    g_chainSnapMisses.fetch_add(1, std::memory_order_relaxed);
+    return false;
 }
 static void rebuildKnobs();   // definida mas abajo (capa UI)
 static bool chainHas(int t) {
@@ -2917,6 +2982,10 @@ struct AmpChain {
 
     void prepare(float sampleRate, bool rebuildCabs = true) {
         fs = sampleRate;
+        // Instantanea de la cadena de pedales: la capacidad se reserva UNA vez
+        // (el hilo de audio copia aqui en cada bloque y no puede reservar: T13).
+        if (g_preSnap.capacity()  < (size_t)kChainMax) g_preSnap.reserve((size_t)kChainMax);
+        if (g_postSnap.capacity() < (size_t)kChainMax) g_postSnap.reserve((size_t)kChainMax);
         os.prepare(fs); os.reset();
         for (int i = 0; i < 4; ++i) u4[i] = 0.0f;
         // El sag ahora se evalua a 4x: las constantes van a esa tasa
@@ -4426,10 +4495,6 @@ static void tunerAnalyze() {
 // dentro del bucle de captura; aqui esta aislado porque es EL sitio donde el
 // camino de tiempo real no puede coger cerrojos ni reservar memoria, y ademas
 // se puede probar (T12/T13 llaman a esta misma funcion).
-//
-// Instantaneas del bloque: solo las toca el hilo de audio.
-static std::vector<int> g_preSnap, g_postSnap;
-
 static void audioBlockBegin() {
     // Marca de bloque ANTES de leer el perfil: asi la interfaz sabe que bloques
     // han empezado cuando retira una cadena (ver namRetiroFlush).
@@ -4437,15 +4502,8 @@ static void audioBlockBegin() {
     // Instantanea del perfil del bloque: una sola carga atomica, sin cerrojo.
     g_amp.namBlk = g_namAudio.load(std::memory_order_acquire);
     g_namSnapGets.fetch_add(1, std::memory_order_relaxed);
-    // Cadena de pedales publicada por la UI, copiada al bloque.
-    std::vector<int> pre, post;
-    {
-        std::lock_guard<std::mutex> lk(g_chainMutex);
-        pre  = g_chainPre;
-        post = g_chainPost;
-    }
-    g_preSnap  = std::move(pre);
-    g_postSnap = std::move(post);
+    // Cadena de pedales del bloque: copia sin cerrojo y sin reservar memoria.
+    chainSnapRead();
 }
 
 // ============================================================================
@@ -14450,6 +14508,42 @@ static void hTestRtPath(int fs) {
     hPrepare(fs, 0);
 }
 
+// ---------------------------------------------------------------------------
+//  T14: la publicacion de la cadena es coherente bajo carrera. El hilo de audio
+//  copia la instantanea SIN cerrojo: si esa lectura pudiera pillar una escritura
+//  a medias, el bloque procesaria una cadena que nadie publico (por ejemplo el
+//  PRE de una y el POST de otra). Aqui un hilo publica dos cadenas distintas sin
+//  parar y el bloqueo comprueba que lo que lee es UNA de las dos, entera.
+// ---------------------------------------------------------------------------
+static void hTestChainPub(int fs) {
+    const std::vector<int> aPre = { 0, 1, 2 },  aPost = { 4, 5 };
+    const std::vector<int> bPre = { 9, 10, 11 }, bPost = { 16, 17, 0 };
+    publishChain(aPre, aPost);
+    std::atomic<bool>      stop{false};
+    std::atomic<long long> pubs{0};
+    std::thread w([&] {
+        while (!stop.load()) { publishChain(aPre, aPost); publishChain(bPre, bPost); pubs.fetch_add(2); }
+    });
+    int malos = 0, vioA = 0, vioB = 0;
+    const int vueltas = 100000;
+    g_chainSnapMisses.store(0);
+    for (int v = 0; v < vueltas; ++v) {
+        audioBlockBegin();
+        if      (g_preSnap == aPre && g_postSnap == aPost) ++vioA;
+        else if (g_preSnap == bPre && g_postSnap == bPost) ++vioB;
+        else                                                ++malos;
+    }
+    stop.store(true);
+    w.join();
+    char d[240];
+    sprintf_s(d, "%d bloques con %lld publicaciones: %d cadena A, %d cadena B, %d mezclas (%lld sin cuadrar)",
+              vueltas, pubs.load(), vioA, vioB, malos, g_chainSnapMisses.load());
+    hCheck(malos == 0 && vioA > 0 && vioB > 0,
+           "T14 la cadena publicada se lee entera (sin mezclas)", d);
+    publishChain(std::vector<int>(), std::vector<int>());
+    hPrepare(fs, 0);
+}
+
 static void hSelftest(int fs) {
     printf("\n== autotest de correcciones ==\n");
     hNamRejects();
@@ -14466,6 +14560,7 @@ static void hSelftest(int fs) {
     hTestBrowse();
     hTestExtraLeak(fs);
     hTestRtPath(fs);
+    hTestChainPub(fs);
     // P2 va al final: inyecta NaN en el motor y aunque prepare(false) lo deja
     // recuperable, el historial de las lineas de retardo queda con residuos que
     // contaminarian a cualquier prueba posterior que mida el ampli.
