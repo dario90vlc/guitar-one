@@ -10,7 +10,8 @@
 //  - Panel AJUSTES estilo app kAcc (motor, frecuencia, buffer, dispositivos)
 //  - Compilar: cl /O2 /EHsc /std:c++17 GuitarAmpNative.cpp
 //              /Fe:GuitarAmp.exe /link ole32.lib oleaut32.lib uuid.lib
-//              user32.lib gdi32.lib propsys.lib gdiplus.lib
+//              user32.lib gdi32.lib propsys.lib gdiplus.lib avrt.lib
+//              (avrt.lib = MMCSS "Pro Audio", la prioridad del hilo de audio)
 // ============================================================================
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX              // sin macros min/max de windows: el DSP usa std::min/std::max
@@ -2379,6 +2380,20 @@ struct CabConv {
         inF.assign(NB, 0.0f); outF.assign(NB*2, 0.0f);
         inN = 0; outIdx = 0; blk = 0;
     }
+    // Reserva los buffers UNA vez (los tamaños son fijos: N y BLOCK). A partir de
+    // aqui ensureFor() solo copia y limpia: cambiar de cabina o cargar otro IR no
+    // reserva memoria en el hilo de audio (T16), que es cuando mas duele, porque
+    // el cambio lo pide la interfaz mientras se esta tocando.
+    void prepare() {
+        const int NB = CabIR::BLOCK, N = CabIR::N;
+        hist.assign((size_t)(N - NB), 0.0f);
+        irRe.assign((size_t)N, 0.0f); irIm.assign((size_t)N, 0.0f);
+        fRe.assign((size_t)N, 0.0f);  fIm.assign((size_t)N, 0.0f);
+        oRe.assign((size_t)N, 0.0f);  oIm.assign((size_t)N, 0.0f);
+        inF.assign((size_t)NB, 0.0f); outF.assign((size_t)(NB*2), 0.0f);
+        irCur = nullptr;
+        inN = 0; outIdx = 0; blk = 0;
+    }
     // Overlap-save: escribe el bloque valido (NB muestras) en dst
     inline void processBlockTo(float* dst) {
         const int NB = CabIR::BLOCK, N = CabIR::N, tail = N - NB;
@@ -2987,6 +3002,9 @@ struct AmpChain {
         // (el hilo de audio copia aqui en cada bloque y no puede reservar: T13).
         if (g_preSnap.capacity()  < (size_t)kChainMax) g_preSnap.reserve((size_t)kChainMax);
         if (g_postSnap.capacity() < (size_t)kChainMax) g_postSnap.reserve((size_t)kChainMax);
+        // Cabina con IR: sus buffers son de tamaño fijo, se reservan aqui y
+        // cambiar de cabina o de IR ya no reserva en el hilo de audio (T16).
+        g_cabConv.prepare();
         os.prepare(fs); os.reset();
         for (int i = 0; i < 4; ++i) u4[i] = 0.0f;
         // El sag ahora se evalua a 4x: las constantes van a esa tasa
@@ -4854,6 +4872,9 @@ static DWORD WINAPI AudioThread(LPVOID) {
     // nominal y la del dispositivo difieran en modo exclusivo); si aun asi
     // quedara corto, push() descarta lo mas antiguo, que es lo de siempre.
     g_recRing.ensure((size_t)(fs * 4.0f) + 4096);
+    // El scratch de intercalado de la grabadora tambien se reserva aqui, con el
+    // maximo que puede traer un bloque: grabar no reserva en el hilo de audio.
+    g_recScratch.resize(maxFrames*2, 0.0f);
     // Afinador + visualizador: preparar por sesion
     tunerPrepare(fs);
     g_scopeRing.resize((size_t)(fs * 0.06f) + 1024);
@@ -14597,6 +14618,40 @@ static void hTestRtPriority() {
            "T15 el hilo de audio consigue prioridad de tiempo real (MMCSS)", d);
 }
 
+// ---------------------------------------------------------------------------
+//  T16: el convolucionador de la cabina se reserva al PREPARAR la sesion, no en
+//  la primera muestra que pasa por el. Sus buffers son de tamaño fijo (N y
+//  BLOCK) pero se reservaban de forma perezosa dentro del callback: seis
+//  reservas en el primer bloque, justo cuando el usuario empieza a tocar. Aqui
+//  se comprueba el contrato de prepare(): despues de el, dar de alta un IR (y
+//  cambiar de cabina) no reserva nada, y el convolucionador sigue sonando.
+// ---------------------------------------------------------------------------
+static void hTestCabConvPrep(int fs) {
+#ifdef GA_HARNESS
+    hPrepare(fs, 0);                      // las 54 IRs fisicas ya estan generadas
+    CabConv cv;
+    cv.prepare();                         // lo que hace el arranque de sesion
+    g_allocCount.store(0);
+    g_allocAuditOn.store(true);
+    cv.ensureFor(&g_procIR2[0]);          // primer IR de la sesion
+    cv.ensureFor(&g_procIR2[9]);          // ...y un cambio de cabina en marcha
+    g_allocAuditOn.store(false);
+    // Y ademas tiene que sonar: sin esto, un prepare() vacio pasaria la prueba.
+    float pk = 0.0f;
+    for (int i = 0; i < 300; ++i) {
+        const float y = cv.process((i == 0) ? 1.0f : 0.0f);
+        const float a = std::fabs(y);
+        if (a > pk) pk = a;
+    }
+    char d[220];
+    sprintf_s(d, "%lld reserva(s) al dar de alta el IR; pico de la respuesta %.5f",
+              g_allocCount.load(), pk);
+    hCheck(g_allocCount.load() == 0 && pk > 0.0f,
+           "T16 la cabina se reserva al preparar, no en el primer bloque", d);
+    hPrepare(fs, 0);
+#endif
+}
+
 static void hSelftest(int fs) {
     printf("\n== autotest de correcciones ==\n");
     hNamRejects();
@@ -14615,6 +14670,7 @@ static void hSelftest(int fs) {
     hTestRtPath(fs);
     hTestChainPub(fs);
     hTestRtPriority();
+    hTestCabConvPrep(fs);
     // P2 va al final: inyecta NaN en el motor y aunque prepare(false) lo deja
     // recuperable, el historial de las lineas de retardo queda con residuos que
     // contaminarian a cualquier prueba posterior que mida el ampli.
