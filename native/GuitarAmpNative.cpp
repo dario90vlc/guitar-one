@@ -21,6 +21,7 @@
 #include <mmdeviceapi.h>
 #include <endpointvolume.h>   // solo para LEER el volumen del endpoint (nunca escribirlo)
 #include <audioclient.h>
+#include <avrt.h>             // MMCSS: la prioridad de tiempo real del hilo de audio
 #include <mmreg.h>
 #include <propsys.h>
 #include <propidl.h>
@@ -4639,15 +4640,47 @@ static DWORD WINAPI volWatchProc(LPVOID) {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+//  Prioridad de tiempo real del hilo de audio
+// ---------------------------------------------------------------------------
+// SetThreadPriority(TIME_CRITICAL) no basta: en un pico del sistema (mientras la
+// interfaz pinta, por ejemplo) el hilo de audio puede quedarse fuera y ese
+// desalojo se oye como un crujido. Aqui se pide la prioridad por sesion, para
+// que las esperas entre sesiones (los Sleep del arranque y del cierre) no corran
+// con el hilo subido de prioridad.
+//
+// Se pide la clase "Pro Audio" de MMCSS, que es la que usa cualquier host de
+// audio serio: el sistema le reserva CPU y lo mantiene por delante del trabajo
+// normal. Si el registro no se concede, queda la prioridad de siempre (que ya es
+// mejor que la normal, solo que sin reserva de CPU).
+static bool g_rtBoostMmcss = false;   // lo que consiguio la ultima sesion
+static HANDLE audioRtEnter() {
+    DWORD tarea = 0;
+    HANDLE h = AvSetMmThreadCharacteristicsW(L"Pro Audio", &tarea);
+    if (h) {
+        g_rtBoostMmcss = true;
+        return h;
+    }
+    g_rtBoostMmcss = false;
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    return nullptr;
+}
+static void audioRtLeave(HANDLE h) {
+    if (h) { AvRevertMmThreadCharacteristics(h); return; }
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);   // reserva: se quita
+}
+
 static DWORD WINAPI AudioThread(LPVOID) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     // Sin denormales: evita crackles por caidas de CPU con senal en silencio
     _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
     _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    // La prioridad la pone audioRtEnter() al arrancar cada sesion (no aqui: los
+    // caminos de espera de este hilo no deben correr con prioridad de tiempo real).
 
     while (!g_audioQuit.load()) {
     g_deviceChanged.store(false);
+    HANDLE mmcss = nullptr;      // registro de prioridad de la sesion
 
     IMMDeviceEnumerator* enumerator = nullptr;
     if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
@@ -4828,6 +4861,8 @@ static DWORD WINAPI AudioThread(LPVOID) {
     if (capCli) capCli->Start();
     if (renCli) renCli->Start();
     g_params.audioActive.store(true);
+    // Prioridad de tiempo real de la sesion (MMCSS si esta; T15).
+    mmcss = audioRtEnter();
     volSnapshot("arranque del motor:");   // nivel del endpoint al abrir el stream
     g_paLastEv = 0;   // GA_PROF: reiniciar el medidor de huecos de audio
 
@@ -5013,6 +5048,7 @@ static DWORD WINAPI AudioThread(LPVOID) {
     }
 
     g_params.audioActive.store(false);
+    audioRtLeave(mmcss);                 // se suelta ANTES de las esperas del cierre
     volSnapshot("parada del motor:");    // y al cerrarlo: si algo lo bajo, se ve el antes/despues
     if (capCli) capCli->Stop();
     if (renCli) renCli->Stop();
@@ -14544,6 +14580,23 @@ static void hTestChainPub(int fs) {
     hPrepare(fs, 0);
 }
 
+// ---------------------------------------------------------------------------
+//  T15: el hilo de audio pide MMCSS ("Pro Audio"). Con SetThreadPriority a secas,
+//  el sistema puede desalojar el hilo en un pico (mientras la interfaz pinta, por
+//  ejemplo) y ese desalojo se oye como un crujido suelto. Se pide de verdad
+//  desde este hilo y se mira si el sistema lo concede.
+// ---------------------------------------------------------------------------
+static void hTestRtPriority() {
+    HANDLE h = audioRtEnter();
+    const bool ok = (h != nullptr);
+    audioRtLeave(h);
+    char d[200];
+    sprintf_s(d, "MMCSS \"Pro Audio\": %s (prioridad de reserva: TIME_CRITICAL)",
+              ok ? "concedido" : "NO concedido");
+    hCheck(ok && g_rtBoostMmcss,
+           "T15 el hilo de audio consigue prioridad de tiempo real (MMCSS)", d);
+}
+
 static void hSelftest(int fs) {
     printf("\n== autotest de correcciones ==\n");
     hNamRejects();
@@ -14561,6 +14614,7 @@ static void hSelftest(int fs) {
     hTestExtraLeak(fs);
     hTestRtPath(fs);
     hTestChainPub(fs);
+    hTestRtPriority();
     // P2 va al final: inyecta NaN en el motor y aunque prepare(false) lo deja
     // recuperable, el historial de las lineas de retardo queda con residuos que
     // contaminarian a cualquier prueba posterior que mida el ampli.
