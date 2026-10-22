@@ -1,8 +1,29 @@
 # Plan: amplificador de PERFILES (Neural Amp Modeler) como 13.º ampli
 
-> Estado: **fases 1-3 hechas y verificadas** (motor, integracion en la app y UI).
-> Fase 4 (SIMD) pendiente; fase 5 (presets del amp 13) hecha con el banco generado. No hay código de NAM en el motor todavía. Lo que sigue está
-> verificado contra fuentes (formato y core) y **medido** en esta máquina (coste).
+> Estado: **hecho y verificado** (motor, integracion en la app, UI, cadena de
+> bloques y explorador TONE3000). Lo que sigue se verifico contra fuentes
+> (formato y core) y se **midio** con el banco offline de esta maquina.
+>
+> Formatos que carga `native/nam.h` hoy, todos comparados **muestra a muestra**
+> contra el core oficial (`_dsp_test.exe nam2 <fichero>`, oraculo `_nmaref/ref.exe`):
+>
+> | Fichero de referencia | Arquitectura | Error rel. medido |
+> |---|---|---|
+> | `wavenet_a1_standard.nam` | WaveNet 0.5 | 4,8e-06 |
+> | `wavenet_condition_dsp.nam` | WaveNet A2 (FiLM) | 3,0e-07 |
+> | `m_A2.nam` | **SlimmableContainer** + kernel/activacion por capa | 3,1e-07 |
+> | `m_slimmable_container.nam` | **SlimmableContainer** | 2,4e-06 |
+> | `m_lstm.nam` | LSTM | 3,5e-06 |
+> | `m_my_model.nam` | WaveNet (8 canales) | 4,8e-06 |
+> | `nested_alone.nam` | WaveNet 3 canales | 3,5e-07 |
+>
+> Se rechazan con mensaje (y no se ejecutan a medias): `WaveNet` con gating,
+> `WaveNet` slimmable, y cualquier `architecture` desconocida.
+>
+> Ademas: la ruta del fichero se abre en Unicode (antes `fopen` la leia con la
+> pagina de codigos local y una carpeta con acentos fallaba), `sample_rate` se
+> lee del fichero (antes quedaba clavado en 48000) y la senal se convierte a la
+> tasa del modelo antes de entrar en el (antes se ejecutaba a la tasa del motor).
 
 ## 1. Qué es un `.nam`, verificado en la fuente
 

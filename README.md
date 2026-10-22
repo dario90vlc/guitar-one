@@ -1,206 +1,150 @@
-# GUITAR ONE — simulador de amplificadores (app de escritorio para Windows)
+# GUITAR ONE
 
-Aplicación **nativa de Windows (Win32 + GDI+, sin navegador)** con 13 amplificadores,
-pedalboard, cabina con IR, afinador y grabación a WAV. **No es un plugin VST3**,
-no necesita JUCE ni ningún framework.
+**Simulador de amplificadores de guitarra para Windows.** Aplicación **nativa**
+(Win32 + GDI+): un solo `.exe`, sin frameworks, sin instalador y sin ninguna
+dependencia que instalar. Trece cabezales —doce voces modeladas y un cabezal que
+carga **capturas neuronales `.nam`**—, pedalboard de 18 tipos, cabina con
+respuesta de impulso, afinador y grabación a WAV.
 
-> Antes este README describía un plugin JUCE de 3 amplificadores que ya no es el
-> producto: ese árbol (`src/`, `CMakeLists.txt`, `build.ps1`, `standalone.html`,
-> `preview.html`) está obsoleto. El producto vivo está en `native/`.
+![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows&logoColor=white)
+![C%2B%2B17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
+![Sin dependencias](https://img.shields.io/badge/dependencias-ninguna-2ea043)
+![Licencia MIT](https://img.shields.io/badge/licencia-MIT-e3b341)
+![Autotest](https://img.shields.io/badge/autotest-89%20comprobaciones-2ea043)
 
-## Qué hay
+![Ventana principal de GUITAR ONE](docs/img/main.png)
 
-- **13 amplificadores**: 12 voces modeladas (clean, crunch y alta ganancia) con su
-  frontal real y su banco de 6 presets de fábrica (78 en total) más el cabezal
-  **PERFIL**, que monta cadenas de capturas `.nam` del Neural Amp Modeler.
-- **Pedalboard de 18 tipos** en dos filas, *antes* y *después* del ampli, con
-  arrastre para reordenar y para cruzar el cabezal.
-- **Cabina**: 6 modelos procedurales + IR de usuario desde WAV (PCM 8/16/24/32 y
-  float 32/64, mono o estéreo), 3 micros × 3 distancias, MEZCLA, convolución
-  overlap-save.
-- **Cadena de capturas**: añadir `.nam` (locales o bajados de TONE3000), encender
-  y apagar cada bloque, reordenarlo con `<` `>` y quitarlo con `x`.
-- **Explorador TONE3000** con los mismos 7 filtros que su web, tendencias públicas
-  sin clave, descarga a la cadena y lista pública de favoritos/favoritos.
-- Afinador cromático modal, grabación a WAV, ajustes de audio (WASAPI compartido o
-  exclusivo, 44,1–192 kHz, buffer 128–4096), presets de usuario con guardar,
-  renombrar y borrar.
+---
 
-### Audio
+## Qué es
 
-WASAPI event-driven en un hilo aparte. **La latencia depende del buffer** que
-elijas en Ajustes: a 48 kHz, buffer 128 = 2,7 ms por tramo y 512 = 10,7 ms; la
-propia pantalla muestra el recorrido total (~21 ms con 512). No hay ASIO. La
-etapa no lineal del ampli va sobremuestreada a 4×.
+Un rack de estudio en una ventana. El sonido entra por arriba (estante **antes del
+amplificador**), pasa por el cabezal, sale por el estante **después del
+amplificador** y termina en la banda de cadena, que resume el recorrido y guarda
+el afinador. El orden del sonido se ve sin etiquetarlo, y cada unidad se lee
+montada —banda de título, tornillos, filete— en vez de pegada al fondo.
 
-## Compilación
+El color grande lo pone el equipo: los frontales reales de los amplificadores
+(dibujados en SVG y compilados a PNG), la tela de la cabina y las caras de los
+pedales. El chrome es grafito plano y un único ámbar que solo aparece en lo que
+suena o en lo que se puede tocar.
 
-Requisitos: Visual Studio 2022 Build Tools (`cl`). Nada más.
+**No es un plugin VST3** y no necesita ningún host: es una aplicación que se abre
+y suena.
+
+## Capturas
+
+| Cabezal con su frontal real | Cabezal PERFIL (capturas `.nam`) |
+|---|---|
+| ![Cabezal](docs/img/main.png) | ![Perfil](docs/img/perfil.png) |
+
+| Catálogo de presets | Tus presets de TONE3000 |
+|---|---|
+| ![Presets](docs/img/presets.png) | ![TONE3000](docs/img/presets-tone3000.png) |
+
+| Paleta de pedales | Ajustes de audio | Afinador |
+|---|---|---|
+| ![Pedales](docs/img/pedales.png) | ![Ajustes](docs/img/ajustes.png) | ![Afinador](docs/img/afinador.png) |
+
+*(Las capturas se generan con el propio binario: `_dsp_test.exe render <png>`
+pinta la ventana completa con el mismo código de dibujo que usa la app, en una
+ventana fuera de pantalla.)*
+
+## Lo que trae
+
+### Amplificadores
+
+- **13 cabezales**: 12 voces modeladas (limpio, crunch y alta ganancia) con su
+  frontal real, sus seis mandos propios y **6 presets de fábrica cada uno** (78 en
+  total), más el cabezal **PERFIL**.
+- Cada voz es un preamp de **dos etapas de tubo en cascada** con bias real,
+  tone stack, presencia, bright cap, *sag* de potencia y resonancia de carga; el
+  tramo no lineal va **sobremuestreado 4×** con filtro de diezmado real.
+- **Nivel igualado entre voces** (±0,15 dB medidos): cambiar de amplificador no
+  pega saltos de volumen.
+
+### Cabezal PERFIL: capturas neuronales (NAM)
+
+- Carga `.nam` del [Neural Amp Modeler](https://github.com/sdatkinson/NeuralAmpModelerCore)
+  hechos por la comunidad, incluidos los **A2** que publica TONE3000.
+- **Cadena de hasta 4 capturas** en serie, con encendido, nivel y orden (`<` `>`).
+- **Explorador TONE3000** integrado (mismos 7 filtros de equipo que su web):
+  tendencias públicas sin clave, descarga e inserción en la cadena, y tu
+  biblioteca local de presets `*.t3kpreset`.
+- La **frecuencia del fichero se respeta**: si la captura es de 48 kHz y el motor
+  va a 44,1, se convierte antes y después del modelo (interpolador polifásico).
+
+### Pedalboard y cabina
+
+- **18 tipos de pedal** en dos filas (antes y después del ampli), con arrastre
+  para reordenar y para cruzar el cabezal. Todos con nivel compensado.
+- **Cabina**: 6 modelos procedurales + **IR de usuario desde WAV** (PCM 8/16/24/32
+  y float 32/64, mono o estéreo), 3 micrófonos × 3 distancias y **MEZCLA**
+  directo/cabina, con convolución overlap-save.
+
+### Lo demás
+
+- **Presets**: 78 de fábrica + los tuyos (guardar, renombrar, borrar, color de
+  favorito) + los de tu cuenta de TONE3000, **todos en la misma lista** con
+  filtros por etiqueta, amplificador y origen, buscador y orden.
+- **Afinador cromático** modal, **grabación a WAV**, visualizador y medidores.
+- **Ajustes de audio**: WASAPI compartido o exclusivo, 44,1–192 kHz, buffer
+  128–4096, selección de dispositivos y botón para **recargar los recién
+  conectados** sin reiniciar.
+- Interfaz redimensionable, con escala según DPI, y paleta de teclado.
+
+## Requisitos
+
+- **Windows 10 u 11 de 64 bits.**
+- Nada más: el `.exe` enlaza únicamente DLLs del sistema (`ole32`, `user32`,
+  `gdi32`, `gdiplus`, `comdlg32`, `dwmapi`, `winhttp`, `crypt32`, `shell32`,
+  `avrt`, `kernel32`). **No** hace falta VC++ Redistributable, ni .NET, ni
+  instalar nada.
+- Tarjeta de sonido con WASAPI (cualquier interfaz USB sirve). No hay ASIO.
+
+## Descargar y ejecutar
+
+1. Descarga el ZIP de la última release y descomprímelo donde quieras.
+2. Doble clic en **`GuitarAmp.exe`**.
+3. Pulsa **AUDIO ON** en la cabecera: la app arranca en silencio a propósito.
+
+La carpeta `amps_frontales\` tiene que ir al lado del `.exe` (son los frontales).
+Si falta, la app funciona igual pero con caras dibujadas por código.
+
+**Los perfiles son de sus autores.** Las capturas `.nam` y los presets de
+TONE3000 **no se incluyen**: se descargan de su web desde el explorador integrado
+(botón **T3K**) o se añaden desde disco.
+
+## Compilar
+
+Solo hace falta **Visual Studio 2022 Build Tools** (`cl`). Nada más: no hay
+dependencias que descargar, ni CMake, ni vcpkg.
 
 ```powershell
-# App
-.\_build.ps1                              # cl /utf-8 /O2 /EHsc /std:c++17, firma local
-# Banco offline del DSP (sin UI ni audio)
-.\native\_build_dsp.ps1
-.\native\_dsp_test.exe all                # respuesta, THD, aliasing, IR, WAV, FX, coste
-.\native\_dsp_test.exe extra              # hueco impreso de cada ampli (0 sin accion)
-.\native\_dsp_test.exe selftest           # autotest: sale != 0 si algo falla
-.\native\_dsp_test.exe render <png> [estado]   # foto de la ventana entera
+.\_build.ps1                 # app: cl /utf-8 /O2 /EHsc /std:c++17 + firma local si hay certificado
+.\native\_build_dsp.ps1      # banco de medida del DSP (sin UI ni audio)
 ```
 
-`render` pinta la ventana completa con el **mismo `paintWindow` que usa la app**
-(en una ventana fuera de pantalla) y la guarda en PNG: sirve para revisar y
-enseñar la interfaz sin abrirla, y para comparar antes/después de un rediseño.
-`estado` retrata además un modal: `add`, `tuner`, `settings` o `presets`.
+`_build.ps1` deja `native\GuitarAmp.exe`. Para generar el paquete de release
+(`dist\GuitarAmp-<ver>-win64\` + ZIP, con el `.exe` y los 26 PNG que carga):
 
 ```powershell
-.\native\_dsp_test.exe render _dsp_out\ui.png              # ventana principal
-.\native\_dsp_test.exe render _dsp_out\add.png add         # panel AÑADIR PEDAL
+.\_mkdist.ps1 -Version 1.0.0
 ```
 
-Los tres comandos valen **desde cualquier carpeta**: el banco ancla sus datos
-(`_nmaref/`, `perfiles/`, `_dsp_out/`) al directorio del ejecutable, no al
-directorio actual. El ejecutable sale en `native\GuitarAmp.exe`.
-
-## Uso
-
-1. Ejecuta `Ejecutar GuitarAmp.bat` (o `native\GuitarAmp.exe`).
-2. Pulsa **AUDIO ON** en la cabecera: la app arranca con el audio apagado a
-   propósito, para que decidas tú cuándo suena.
-3. Elige ampli en la lista de la izquierda, monta pedales en las dos filas y
-   ajusta cabina. Para cambiar de micro/descargar IR, los mandos están en la
-   columna derecha.
-
-### Cómo se ajustan los mandos
+## Uso rápido
 
 | Gesto | Qué hace |
 |---|---|
-| Arrastrar arriba/abajo | Ajusta el mando (1 px = 0,4 % del recorrido) |
-| SHIFT + arrastrar | Ajuste fino (un cuarto) mientras arrastras |
-| Rueda del ratón | 1 % del recorrido por muesca (SHIFT: un cuarto de punto) |
-| Doble clic | Devuelve el mando al valor con el que se cargó |
-
-### Teclado
-
-| Tecla | Qué hace |
-|---|---|
+| Clic en un amplificador de la lista | Cambia de cabezal (con sus presets) |
+| `←` `→` | Preset anterior / siguiente |
+| `↑` `↓` | Mueve la lista de la izquierda |
+| Rueda sobre la torre | Reordena el pedal bajo el cursor |
+| **PRESETS** | Catálogo: fábrica, míos y los de tu TONE3000 |
+| **+ AÑADIR** de un estante | Paleta de pedales |
+| **T3K** del cabezal PERFIL | Explorador de TONE3000 |
+| Arrastrar un mando | 1 px = 0,4 % del recorrido (SHIFT: ajuste fino) |
+| Doble clic en un mando | Vuelve al valor con el que se cargó |
 | ESPACIO | Enciende o apaga el audio |
-| ← / → | Preset anterior / siguiente |
-| ↑ / ↓ | Navega la lista de la izquierda (amplis o presets) |
 | ESC | Cierra el modal abierto |
 
-La ventana es redimensionable (teclado y ratón dejan de estar congelados a
-1440×956: en un portátil de 1366×768 el diseño no cabe siquiera). El sistema de
-diseño completo está en [DESIGN.md](DESIGN.md) y el estado del producto en
-[PRODUCT.md](PRODUCT.md).
-
-
-## Perfiles NAM (capturas neuronales)
-
-La app nativa monta un decimotercer cabezal, **PERFIL**, que carga ficheros
-`.nam` del [Neural Amp Modeler](https://www.neuralampmodeler.com/) y sustituye
-el nucleo no lineal del amplificador por la captura. El resto del motor se
-queda: pedales antes, tono (BASS/MIDDLE/TREBLE) despues, cabina a la salida.
-
-- **Que se soporta**: `WaveNet` (**A1 y A2 completo**, incluido `condition_dsp`:
-  el submodelo de condicion que traen las capturas A2 con mandos), `LSTM` y
-  `ConvNet` (con y sin batchnorm). Lo que el formato define y este motor todavia
-  no evalua (gating, `SlimmableContainer`, `Sequential`, PReLU) se **rechaza con
-  un mensaje claro**: nunca se adivina ni se deja sonar mal.
-- **Verificacion**: la salida coincide muestra a muestra con el core oficial
-  compilado, canal a canal, con el oraculo de `_nmaref/` (diferencia medida
-  3e-07 relativa en A2, 5e-06 en A1, 3e-06 en LSTM; redondeo de float32). Se
-  ejecuta con `_dsp_test.exe nam2 <modelo.nam>` y forma parte del `selftest`.
-  Ademas se comprueba el numero de pesos que exige la config contra el fichero:
-  si no cuadra, el modelo se rechaza.
-- **Niveles**: se usa `input_level_dbu`/`output_level_dbu`/`loudness` del
-  fichero para que dos capturas no suenen con 20 dB de diferencia. El mando
-  GAIN es un trim de +-12 dB sobre ese nivel; VOLUME es la salida.
-- **Coste medido** (48 kHz, un nucleo): LSTM ~2 %, WaveNet A1 estandar (2
-  arrays, 20 capas, 13.8k pesos) ~44 %. Los modelos ligeros son la
-  recomendacion por defecto; la optimizacion SIMD esta pendiente.
-- **Uso**: elegir el cabezal PERFIL en la lista, pulsar CARGAR PERFIL y elegir
-  un `.nam`. La ruta se guarda en el `.ini` y se recarga al arrancar. La
-  pantalla del frontal es la **tarjeta del perfil, en el lenguaje de TONE3000**:
-  chips de tipo de equipo y de motor (`NAM` / `A2`), titulo, material con el
-  autor que modele el fichero, y frecuencia a la derecha (en rojo si no es la
-  de la sesion). En vacio dice cuantos `.nam` hay en la libreria (`perfiles/`).
-  Cada celda de la cadena lleva su badge de tipo arriba a la derecha.
-
-La app **no incluye ninguna captura**: la licencia de cada perfil es de su
-autor. En `native/perfiles/` hay dos de ejemplo del propio core (MIT).
-
-
-## Explorador TONE3000 (buscador de perfiles dentro de la app)
-
-El cabezal PERFIL trae un boton **T3K** que abre un explorador con los **mismos
-filtros que la web de TONE3000**: Amp + Cab, Amp Head, Cabinet, Pedal, Outboard,
-Spaces y Experimental (los siete valores del enum `Gear` de su API: `amp-cab`,
-`amp`, `cab`, `pedal`, `outboard`, `space`, `experimental`).
-
-**Sin clave ya es util**: el panel abre con las **tendencias publicas**
-(`/tones/trending`), con la foto, el titulo, el tipo de equipo, el formato, las
-descargas y el autor de cada tono, y los chips filtran esa lista. Buscar y
-descargar es lo que pide sesion.
-
-Por pagina se pintan **las tarjetas que caben** (dos filas de tres) y la
-busqueda pide exactamente esas: el paginador y lo que se ve cuentan lo mismo, asi
-que ninguna pagina trae tonos que no haya forma de alcanzar.
-
-- **Conexion**: OAuth 2.0 con el **flujo de dispositivo** (RFC 8628), que es el
-  que su documentacion da para apps sin redireccion. Con el campo **vacio** la app
-  usa la clave publicable que lleva dentro: al pulsar **CONECTAR** aparece un codigo
-  y **se abre el navegador con el codigo ya rellenado**; al confirmarlo recibe el
-  token y lo guarda cifrado (DPAPI, base64 con prefijo `enc:` en el `.ini`).
-  Pegando con **Ctrl+V** una **clave secreta** (`t3k_cs_...`) o un **token**, entra
-  directo por `Authorization: Bearer`, sin navegador. La clave **legacy**
-  (`?api_key=...`) **no vale**: su API v1 pide cabecera `Authorization` y contesta
-  `Missing or invalid Authorization header` (comprobado con la clave real).
-- **Busqueda**: `/tones/search` con `format=nam` y `architecture=1`, filtrada
-  por el chip activo. La busqueda **exige token**: sin el, el servidor devuelve
-  401 (comprobado).
-- **Descarga**: `/models?tone_id=` -> `model_url` con el Bearer -> el `.nam` se
-  guarda en `perfiles/` y se carga directo en el cabezal PERFIL.
-- **Red**: todo va en un hilo aparte (WinHTTP); la interfaz nunca se bloquea.
-
-**Aviso de terminos**: la capa gratuita de la API permite los flujos OAuth con
-`prompt` (`select_tone`, `load_tone`) y las listas acotadas (`favorited`,
-`downloaded`, `created`, `trending`, `latest`). El endpoint `/tones/search`
-queda **fuera** de esa capa: para publicar una integracion que lo use hay que
-escribir a support@tone3000.com. Para uso propio es decision del usuario.
-
-
-## Cadena de capturas del cabezal PERFIL
-
-El cabezal PERFIL no es un solo fichero: es una **cadena de bloques**, con el
-mismo planteamiento que la de TONE3000. Cada bloque es una captura con su
-encendido y su nivel, y el orden se cambia moviendolo.
-
-- **+ AÑADIR**: carga un `.nam` como bloque nuevo (o baja uno desde TONE3000).
-- **T3K**: abre el explorador de TONE3000. Vive junto a `+ AÑADIR` y **delante**
-  de los bloques: la cadena crece hacia la derecha y el boton no queda tapado
-  por la primera captura.
-- **`<` `>`**: mueve el bloque en la cadena (el audio los recorre en ese orden).
-- **LED**: enciende o apaga el bloque sin perderlo.
-- **`x`**: lo quita.
-- La **pantalla** del frontal muestra el bloque seleccionado (nombre, material y
-  frecuencia), y cada bloque lleva sus propios ajustes de nivel normalizados con
-  los metadatos del fichero.
-
-La cadena se guarda en el `.ini` (orden, ruta, encendido y nivel) y se recarga
-al arrancar. Medido con el banco offline: dos bloques (WaveNet A1 + LSTM) en
-serie cuestan **45,9 % de un nucleo** (x2,2 tiempo real) y apagar el segundo
-bloque cambia la salida, como debe.
-
-## Licencia
-
-MIT - Ver archivo LICENSE para más detalles.
-
-## Contribuciones
-
-Las contribuciones son bienvenidas. Por favor, abre un issue o pull request.
-
-## Créditos
-
-- JUCE Framework (https://juce.com)
-- Modelos basados en amplificadores clásicos

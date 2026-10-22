@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 # Raiz del repo = carpeta de este script (no una ruta de esta maquina: el build
 # tiene que funcionar en cualquier equipo donde se clone el repo).
 $root = Join-Path $PSScriptRoot 'native'
@@ -15,9 +15,22 @@ if (-not $vc) { Write-Output 'BUILD_FAILED no se encuentra vcvars64.bat (Visual 
 
 Set-Location $root
 Get-Process GuitarAmp -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# --- Recursos del .exe: icono y ficha de version --------------------------
+# Sin un .res enlazado el Explorador y la barra de tareas muestran el icono
+# generico de Windows hasta que la app arranca (y en la barra de titulo, siempre).
+$rc = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\rc.exe' -ErrorAction SilentlyContinue |
+      Sort-Object { [Version]$_.Directory.Parent.Name } -Descending |
+      Select-Object -First 1 -ExpandProperty FullName
+if (-not $rc) { Write-Output 'BUILD_FAILED no se encuentra rc.exe (Windows SDK)'; exit 1 }
+# rc.exe no trae las rutas del SDK: windows.h sale de <Kits>\10\Include\<ver>\um y shared.
+$sdkInc = Join-Path 'C:\Program Files (x86)\Windows Kits\10\Include' (Split-Path (Split-Path (Split-Path $rc -Parent) -Parent) -Leaf)
+& $rc /nologo /I "$sdkInc\um" /I "$sdkInc\shared" /fo GuitarAmp.res GuitarAmp.rc
+if ($LASTEXITCODE -ne 0) { Write-Output ('BUILD_FAILED rc ' + $LASTEXITCODE); exit 1 }
+
 # /utf-8: la fuente esta en UTF-8. Sin esta bandera MSVC la lee con la pagina de
 # codigos local y cualquier literal ancho con tilde sale corrupto.
-$cmd = 'call "' + $vc + '" >nul 2>&1 && cl /nologo /utf-8 /O2 /EHsc /std:c++17 GuitarAmpNative.cpp /Fe:GuitarAmp.exe /link ole32.lib oleaut32.lib uuid.lib user32.lib gdi32.lib propsys.lib gdiplus.lib comdlg32.lib dwmapi.lib winhttp.lib bcrypt.lib crypt32.lib shell32.lib'
+$cmd = 'call "' + $vc + '" >nul 2>&1 && cl /nologo /utf-8 /O2 /EHsc /std:c++17 GuitarAmpNative.cpp /Fe:GuitarAmp.exe /link ole32.lib oleaut32.lib uuid.lib user32.lib gdi32.lib propsys.lib gdiplus.lib comdlg32.lib dwmapi.lib winhttp.lib bcrypt.lib crypt32.lib shell32.lib avrt.lib GuitarAmp.res'
 cmd /c $cmd
 if ($LASTEXITCODE -ne 0) { Write-Output ('BUILD_FAILED ' + $LASTEXITCODE); exit 1 }
 

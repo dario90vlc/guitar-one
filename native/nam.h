@@ -223,6 +223,39 @@ inline float actApply(const Act& a, float x)
 }
 
 // Nombre de una activacion del fichero -> Act
+inline void actSetKind(Act& a, const std::string& name)
+{
+    if (name == "Tanh") a.kind = ACT_TANH;
+    else if (name == "LeakyReLU") a.kind = ACT_LEAKY;
+    else if (name == "ReLU") a.kind = ACT_RELU;
+    else if (name == "Sigmoid") a.kind = ACT_SIGMOID;
+    else if (name == "Hardtanh") a.kind = ACT_HARDTANH;
+    else if (name == "ELU") a.kind = ACT_ELU;
+    else if (name == "SiLU" || name == "Swish") a.kind = ACT_SILU;
+    else if (name == "LeakyHardtanh") a.kind = ACT_LEAKYHARDTANH;
+    else if (name == "Softsign") a.kind = ACT_SOFTSIGN;
+    else if (name == "Identity" || name == "Linear") a.kind = ACT_IDENTITY;
+    else a.kind = ACT_UNKNOWN;
+}
+
+// Activacion de UN objeto suelto, {"type":"LeakyReLU","negative_slope":0.01}.
+// Hace falta porque el formato 0.7 trae "activation": [ {...}, {...} ] con una
+// por capa: buscando la clave desde fuera se encontraba un '[' y se caia al Tanh
+// por defecto, o sea TODAS las capas con la activacion equivocada.
+inline Act actFromObject(const std::string& s, size_t p, size_t stop)
+{
+    Act a;
+    a.kind = ACT_UNKNOWN;
+    if (p >= s.size()) return a;
+    if (s[p] != '{') return a;
+    const std::string name = js::str(s, p, stop, "type", "Tanh");
+    a.slope = (float)js::num(s, p, stop, "negative_slope", 0.01);
+    a.minv  = (float)js::num(s, p, stop, "min_val", -1.0);
+    a.maxv  = (float)js::num(s, p, stop, "max_val", 1.0);
+    actSetKind(a, name);
+    return a;
+}
+
 inline Act actFromJson(const std::string& s, size_t b, size_t e, const char* key)
 {
     Act a;
@@ -237,17 +270,7 @@ inline Act actFromJson(const std::string& s, size_t b, size_t e, const char* key
         a.minv  = (float)js::num(s, p, stop, "min_val", -1.0);
         a.maxv  = (float)js::num(s, p, stop, "max_val", 1.0);
     }
-    if (name == "Tanh") a.kind = ACT_TANH;
-    else if (name == "LeakyReLU") a.kind = ACT_LEAKY;
-    else if (name == "ReLU") a.kind = ACT_RELU;
-    else if (name == "Sigmoid") a.kind = ACT_SIGMOID;
-    else if (name == "Hardtanh") a.kind = ACT_HARDTANH;
-    else if (name == "ELU") a.kind = ACT_ELU;
-    else if (name == "SiLU" || name == "Swish") a.kind = ACT_SILU;
-    else if (name == "LeakyHardtanh") a.kind = ACT_LEAKYHARDTANH;
-    else if (name == "Softsign") a.kind = ACT_SOFTSIGN;
-    else if (name == "Identity" || name == "Linear") a.kind = ACT_IDENTITY;
-    else a.kind = ACT_UNKNOWN;
+    actSetKind(a, name);
     return a;
 }
 
@@ -302,6 +325,7 @@ public:
     bool a2 = false;      // tiene clave condition_dsp: la ruta A2 (es la que muestra tone3000)
     std::string err;
     double sampleRate = 48000.0;
+    bool   hasSampleRate = false;   // el fichero traia "sample_rate"
     bool   hasLevels = false;
     float  inDbu = 0.0f, outDbu = 0.0f, loudness = 0.0f, gain = 0.0f;
     int    prewarmSamples = 1;
@@ -309,6 +333,14 @@ public:
     bool   ok = false;
 
     bool load(const std::string& path);
+#if defined(_WIN32)
+    // Ruta en Unicode. La app trabaja en WCHAR y en Windows fopen NO entiende
+    // UTF-8: interpreta los bytes con la pagina de codigos local. Por eso una
+    // captura guardada en "C:\Users\...\Música\..." o en "Escritorio\Ampliación\"
+    // no se abria nunca ("no se puede abrir el fichero") aunque el fichero
+    // estuviera ahi. Este camino va por _wfopen y si la ve.
+    bool loadW(const std::wstring& path);
+#endif
     bool loadText(const std::string& text) { if (!_parse(text)) return false; ok = true; return true; }
     void reset();
     inline float tick(float x);
@@ -421,7 +453,22 @@ private:
     std::vector<float> _gates, _headCur, _headDst, _cvCur, _cvOut;
     std::vector<float> _outBuf { 0.0f };   // salida multicanal (para la condicion A2)
 
+    // ---- Contenedores: SlimmableContainer (A2) y Sequential ---------------
+    //  El .nam de TONE3000 no siempre es un WaveNet suelto: la ruta A2 se
+    //  publica como SlimmableContainer, un contenedor con varios submodelos y
+    //  un "max_value" que dice hasta donde se puede recortar cada uno. Antes se
+    //  rechazaba ("arquitectura no soportada") y esas capturas no cargaban.
+    //  Aqui no se recorta nada: se ejecuta el submodelo COMPLETO (el de
+    //  max_value mas alto, que es el que suena con el control a tope), que es
+    //  exactamente lo que hace el core oficial con el valor por defecto.
+    int  _contKind = 0;                        // 0 no, 1 SlimmableContainer, 2 Sequential
+    std::unique_ptr<Model> _sub;               // SlimmableContainer: el submodelo elegido
+    std::vector<std::unique_ptr<Model>> _seq;  // Sequential: la cadena, en orden
+
     bool _parse(const std::string& s);
+    bool _parseContainer(const std::string& s);
+    bool _readAndParse(FILE* f);
+    void _inheritFrom(const Model& m);
     bool _parseWaveNet(const std::string& s);
     bool _parseLstm(const std::string& s);
     bool _parseConvNet(const std::string& s);
@@ -462,6 +509,22 @@ inline bool Model::load(const std::string& path)
 {
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) { err = "no se puede abrir el fichero"; return false; }
+    return _readAndParse(f);
+}
+
+#if defined(_WIN32)
+inline bool Model::loadW(const std::wstring& path)
+{
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"rb") != 0) f = nullptr;
+    if (!f) { err = "no se puede abrir el fichero"; return false; }
+    return _readAndParse(f);
+}
+#endif
+
+// Cuerpo comun de load()/loadW(): leer el fichero entero y parsearlo.
+inline bool Model::_readAndParse(FILE* f)
+{
     std::fseek(f, 0, SEEK_END);
     const long sz = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
@@ -507,16 +570,40 @@ inline bool Model::_parse(const std::string& s)
         if (idb < 1e8 && odb < 1e8) { hasLevels = true; inDbu = (float)idb; outDbu = (float)odb; }
     }
 
+    // sample_rate: la tasa a la que se entreno la captura. Antes NO se leia y
+    // todo quedaba en el 48000 por defecto, asi que una captura de 44,1 kHz se
+    // ejecutaba a 48 (todos sus filtros y resonancias desplazados un 8,8 %) y la
+    // pantalla del cabezal decia "48 kHz" mintiendo. Se descarta el que venga de
+    // dentro de "config": ahi viven los submodelos anidados (condition_dsp de A2)
+    // y el suyo no es el del fichero.
+    {
+        size_t srPos = 0;
+        if (js::find(s, B, E, "sample_rate", srPos))
+        {
+            size_t cfgB0 = 0, cfgE0 = 0;
+            if (js::find(s, B, E, "config", cfgB0) && cfgB0 < s.size() && s[cfgB0] == '{')
+                cfgE0 = js::valueEnd(s, cfgB0);
+            const bool inCfg = (cfgE0 != 0 && srPos > cfgB0 && srPos < cfgE0);
+            if (!inCfg)
+            {
+                const double sr = js::num(s, B, E, "sample_rate", 48000.0);
+                if (sr >= 8000.0 && sr <= 768000.0) { sampleRate = sr; hasSampleRate = true; }
+            }
+        }
+    }
+
     // La arquitectura se comprueba ANTES de los pesos: un contenedor
-    // (SlimmableContainer, Sequential) no trae pesos arriba (viven en los
-    // submodelos), y decir "weights vacio" hacia pensar en un fichero roto
-    // cuando lo que pasa es que esa arquitectura no esta soportada.
+    // (SlimmableContainer, Sequential) no trae pesos arriba (viven dentro de
+    // cada submodelo), y decir "weights vacio" hacia pensar en un fichero roto
+    // cuando lo que pasaba es que esa arquitectura no estaba soportada.
+    if (arch == "SlimmableContainer" || arch == "Sequential")
+    {
+        _contKind = (arch == "SlimmableContainer") ? 1 : 2;
+        return _parseContainer(s);
+    }
     if (arch != "WaveNet" && arch != "LSTM" && arch != "ConvNet")
     {
-        if (arch == "SlimmableContainer" || arch == "Sequential")
-            err = "arquitectura " + arch + " (contenedor de submodelos) no soportada";
-        else
-            err = "arquitectura no soportada: " + arch;
+        err = "arquitectura no soportada: " + arch;
         return false;
     }
 
@@ -535,6 +622,83 @@ inline bool Model::_parse(const std::string& s)
     else                     { _arch = A_CONVNET; if (!_parseConvNet(s)) return false; }
 
     return true;
+}
+
+// --- Contenedores (SlimmableContainer / Sequential) -------------------------
+//  Los dos son "cajas": no tienen capas propias, solo submodelos completos.
+//  SlimmableContainer trae uno por cada tamano recortable; se ejecuta el mas
+//  grande (max_value mas alto), que es el que suena con el control a tope.
+//  Sequential encadena los suyos en orden (equivale a ponerlos en serie).
+inline bool Model::_parseContainer(const std::string& s)
+{
+    const size_t B = 0, E = s.size();
+    size_t cp;
+    if (!js::find(s, B, E, "config", cp) || cp >= s.size() || s[cp] != '{')
+    { err = arch + " sin config"; return false; }
+    const size_t ce = js::valueEnd(s, cp);
+
+    if (_contKind == 1)
+    {
+        size_t sp;
+        if (!js::find(s, cp, ce, "submodels", sp) || sp >= s.size() || s[sp] != '[')
+        { err = "SlimmableContainer sin submodels"; return false; }
+        const auto subs = js::objects(s, sp);
+        if (subs.empty()) { err = "SlimmableContainer sin submodelos"; return false; }
+        size_t best = 0; double bestMv = -1e30;
+        for (size_t i = 0; i < subs.size(); i++)
+        {
+            const double mv = js::num(s, subs[i].first, subs[i].second, "max_value", 1.0);
+            if (mv > bestMv) { bestMv = mv; best = i; }
+        }
+        size_t mp;
+        if (!js::find(s, subs[best].first, subs[best].second, "model", mp) ||
+            mp >= s.size() || s[mp] != '{')
+        { err = "SlimmableContainer: el submodelo elegido no trae model"; return false; }
+        const size_t me = js::valueEnd(s, mp);
+        auto sub = std::make_unique<Model>();
+        if (!sub->_parse(s.substr(mp, me - mp)))
+        { err = "submodelo " + sub->arch + ": " + sub->err; return false; }
+        _inheritFrom(*sub);
+        _sub = std::move(sub);
+        return true;
+    }
+
+    // Sequential: config.models[] en orden, uno detras de otro.
+    size_t mp;
+    if (!js::find(s, cp, ce, "models", mp) || mp >= s.size() || s[mp] != '[')
+    { err = "Sequential sin models"; return false; }
+    const auto objs = js::objects(s, mp);
+    if (objs.empty()) { err = "Sequential sin modelos"; return false; }
+    for (size_t i = 0; i < objs.size(); i++)
+    {
+        auto m = std::make_unique<Model>();
+        if (!m->_parse(s.substr(objs[i].first, objs[i].second - objs[i].first)))
+        { err = "Sequential, modelo " + std::to_string(i) + ": " + m->err; return false; }
+        if (i == 0) _inheritFrom(*m);
+        _seq.push_back(std::move(m));
+    }
+    return true;
+}
+
+// Metadatos y datos del fichero que aporta el submodelo: el contenedor de arriba
+// solo los lleva (si los lleva) como resumen, y los que mandan son los suyos.
+inline void Model::_inheritFrom(const Model& m)
+{
+    if (name.empty())      name      = m.name;
+    if (author.empty())    author    = m.author;
+    if (gearMake.empty())  gearMake  = m.gearMake;
+    if (gearModel.empty()) gearModel = m.gearModel;
+    if (gearType.empty())  gearType  = m.gearType;
+    if (tone.empty())      tone      = m.tone;
+    if (license.empty())   license   = m.license;
+    if (!hasLevels && m.hasLevels) { hasLevels = true; inDbu = m.inDbu; outDbu = m.outDbu; }
+    if (loudness == 0.0f) loudness = m.loudness;
+    if (gain == 0.0f)     gain     = m.gain;
+    if (m.hasSampleRate) { sampleRate = m.sampleRate; hasSampleRate = true; }
+    if (m.prewarmSamples > prewarmSamples) prewarmSamples = m.prewarmSamples;
+    inChannels  = m.inChannels;
+    outChannels = m.outChannels;
+    a2 = m.a2;
 }
 
 // --- WaveNet ---------------------------------------------------------------
@@ -568,6 +732,7 @@ inline bool Model::_parseWaveNet(const std::string& s)
     if (!findCfg("layers", lp) || lp >= s.size() || s[lp] != '[')
     { err = "WaveNet sin layers"; return false; }
     const auto arrs = js::objects(s, lp);
+    const size_t lpEnd = js::valueEnd(s, lp);
     if (arrs.empty()) { err = "WaveNet sin arrays de capas"; return false; }
 
     size_t consumed = 0;
@@ -609,10 +774,59 @@ inline bool Model::_parseWaveNet(const std::string& s)
         a.condSize = js::integer(s, b, e, "condition_size", 1);
         a.ch       = js::integer(s, b, e, "channels", 1);
         a.bnl      = js::integer(s, b, e, "bottleneck", a.ch);
-        const int k = js::integer(s, b, e, "kernel_size", 3);
+        // La cabeza de ESTE array se aparta antes de leer nada mas: en el formato
+        // 0.7 va la primera del objeto y su "kernel_size" (16) se confundia con el
+        // de las capas (6/15), de modo que el recuento de pesos se iba y el
+        // fichero se rechazaba con "pesos insuficientes en convolucion".
+        size_t hp = 0, he = 0;
+        bool hasHeadObj = false;
+        if (js::find(s, b, e, "head", hp) && hp < s.size() && s[hp] == '{')
+        { he = js::valueEnd(s, hp); hasHeadObj = true; }
+        auto findOutHead = [&](const char* key, size_t& pos) -> bool
+        {
+            size_t p = b;
+            while (js::find(s, p, e, key, pos))
+            {
+                if (!hasHeadObj || pos < hp || pos >= he) return true;
+                p = he;
+            }
+            return false;
+        };
+        int k = 0;
+        {
+            size_t kp;
+            if (findOutHead("kernel_size", kp)) k = std::atoi(s.c_str() + kp);
+        }
+        // Formato 0.7: una lista de kernels paralela a la de dilataciones.
+        const std::vector<int> kss = js::ints(s, b, e, "kernel_sizes");
+        // Una activacion por capa (o una sola para todas, formato 0.5).
+        std::vector<std::pair<size_t, size_t>> actObjs;
+        {
+            size_t ap;
+            if (js::find(s, b, e, "activation", ap) && ap < s.size() && s[ap] == '[')
+                actObjs = js::objects(s, ap);
+        }
         const std::string gm = js::str(s, b, e, "gating_mode", "none");
         if (gm != "none" && !gm.empty()) { err = "WaveNet con gating: no soportado"; return false; }
+        // En 0.7 "gating_mode" es una lista: se exige que TODAS digan "none".
+        {
+            size_t gp0;
+            if (js::find(s, b, e, "gating_mode", gp0) && gp0 < s.size() && s[gp0] == '[')
+            {
+                const size_t gpe = js::valueEnd(s, gp0);
+                for (size_t q = gp0; q < gpe; q++)
+                {
+                    if (s[q] != '"') continue;
+                    const size_t qe = js::valueEnd(s, q);
+                    const std::string g1 = s.substr(q + 1, qe - q - 2);
+                    if (g1 != "none") { err = "WaveNet con gating: no soportado"; return false; }
+                    q = qe - 1;
+                }
+            }
+        }
         if (js::boolean(s, b, e, "gated", false)) { err = "WaveNet con gating: no soportado"; return false; }
+        if (hasHeadObj && js::boolean(s, b, e, "slimmable", false))
+        { err = "WaveNet slimmable: no soportado (falta el bloque de recorte)"; return false; }
 
         // layer1x1 y head1x1
         bool l1active = true, h1active = false;
@@ -638,14 +852,13 @@ inline bool Model::_parseWaveNet(const std::string& s)
         a.headOutSize = h1active ? h1out : a.bnl;
 
         // cabeza del array: objeto nuevo (head) o campos antiguos
-        size_t hp;
-        if (js::find(s, b, e, "head", hp) && hp < s.size() && s[hp] == '{')
+        if (hasHeadObj)
         {
-            const size_t he = js::valueEnd(s, hp);
-            a.headSize = js::integer(s, hp, he, "out_channels", 1);
-            a.headK    = js::integer(s, hp, he, "kernel_size", 1);
-            a.headD    = js::integer(s, hp, he, "head_dilation", 1);
-            a.headBias = js::boolean(s, hp, he, "bias", false);
+            const size_t he2 = he;
+            a.headSize = js::integer(s, hp, he2, "out_channels", 1);
+            a.headK    = js::integer(s, hp, he2, "kernel_size", 1);
+            a.headD    = js::integer(s, hp, he2, "head_dilation", 1);
+            a.headBias = js::boolean(s, hp, he2, "bias", false);
         }
         else
         {
@@ -658,10 +871,9 @@ inline bool Model::_parseWaveNet(const std::string& s)
         // un valor <= 0 --un .nam manipulado, no uno del core-- el motor leeria
         // fuera del heap en el hilo de audio. Se rechaza con mensaje, igual que
         // el gating: lo que no se sabe evaluar, se dice; nunca se recorta callado.
-        if (a.inSize < 1 || a.condSize < 1 || a.ch < 1 || a.bnl < 1 || k < 1)
+        if (a.inSize < 1 || a.condSize < 1 || a.ch < 1 || a.bnl < 1)
         { err = "WaveNet con dimension <= 0"; return false; }
-        if (a.inSize > kDimMax || a.condSize > kDimMax || a.ch > kDimMax ||
-            a.bnl > kDimMax || k > kDimMax)
+        if (a.inSize > kDimMax || a.condSize > kDimMax || a.ch > kDimMax || a.bnl > kDimMax)
         { err = "WaveNet con dimension fuera de rango"; return false; }
         if (a.headSize < 1 || a.headK < 1 || a.headD < 1)
         { err = "WaveNet con cabeza invalida"; return false; }
@@ -689,11 +901,17 @@ inline bool Model::_parseWaveNet(const std::string& s)
         for (size_t li = 0; li < dil.size(); li++)
         {
             WnLayer L;
-            L.d = dil[li]; L.k = k; L.cin = a.ch; L.cout = a.bnl; L.mixIn = a.condSize;
+            // kernel de ESTA capa: la lista "kernel_sizes" manda; si no viene, el
+            // unico "kernel_size" del objeto (formato 0.5).
+            const int kli = (li < kss.size()) ? kss[li] : (k > 0 ? k : 3);
+            if (kli < 1)          { err = "WaveNet con kernel <= 0"; return false; }
+            if (kli > kDimMax)    { err = "WaveNet con kernel fuera de rango"; return false; }
+            L.d = dil[li]; L.k = kli; L.cin = a.ch; L.cout = a.bnl; L.mixIn = a.condSize;
             L.bnl = a.bnl;
             L.groupsIn  = js::integer(s, b, e, "groups_input", 1);
             L.groupsMix = js::integer(s, b, e, "groups_input_mixin", 1);
-            L.act = actFromJson(s, b, e, "activation");
+            L.act = (li < actObjs.size()) ? actFromObject(s, actObjs[li].first, actObjs[li].second)
+                                          : actFromJson(s, b, e, "activation");
             if (L.act.kind == ACT_UNKNOWN) { err = "activacion no soportada en WaveNet"; return false; }
             if (L.groupsIn < 1 || L.cout % L.groupsIn || L.cin % L.groupsIn)
             { err = "grupos de entrada invalidos"; return false; }
@@ -785,9 +1003,25 @@ inline bool Model::_parseWaveNet(const std::string& s)
         _arrays.push_back(std::move(a));
     }
 
-    // cabeza post-stack (opcional)
-    size_t hp2;
-    if (findCfg("head", hp2) && hp2 < s.size() && s[hp2] == '{')
+    // Cabeza post-stack (opcional). Se busca FUERA del array "layers": dentro de
+    // el va la cabeza de CADA array ("head": {...}), que no es esta. En el
+    // formato 0.7 la de arriba es un objeto y la post-stack es null, asi que sin
+    // excluir el array se tomaba la de dentro y se pedia un "kernel_sizes" que
+    // no existe.
+    size_t hp2 = 0;
+    bool hasPostHead = false;
+    {
+        size_t p = cp;
+        while (js::find(s, p, ce, "head", hp2))
+        {
+            bool skip = false;
+            if (lpEnd != 0 && hp2 > lp && hp2 < lpEnd) { p = lpEnd; skip = true; }
+            else if (cdE != 0 && hp2 >= cdB && hp2 < cdE) { p = cdE; skip = true; }
+            if (!skip) break;
+        }
+        hasPostHead = (hp2 != 0 && hp2 < s.size() && s[hp2] == '{');
+    }
+    if (hasPostHead)
     {
         const size_t he = js::valueEnd(s, hp2);
         _hasHead = true;
@@ -1005,6 +1239,9 @@ inline bool Model::_parseConvNet(const std::string& s)
 // ---------------------------------------------------------------------------
 inline void Model::reset()
 {
+    // Contenedores: su estado vive en los submodelos.
+    if (_sub) _sub->reset();
+    for (auto& m : _seq) m->reset();
     for (auto& a : _arrays)
     {
         for (auto& L : a.layers) L.ring.init(L.cin, L.d * (L.k - 1) + 1);
@@ -1323,6 +1560,21 @@ inline float Model::_convNetTick(float x)
 
 inline float Model::tick(float x)
 {
+    // Contenedores: delegan en sus submodelos. La salida multicanal se copia
+    // para que la condicion de un A2 anidado siga llegando entera hacia fuera.
+    if (_contKind == 1 && _sub)
+    {
+        const float y = _sub->tick(x);
+        _outBuf = _sub->_outBuf;
+        return y;
+    }
+    if (_contKind == 2 && !_seq.empty())
+    {
+        float v = x;
+        for (auto& m : _seq) v = m->tick(v);
+        _outBuf = _seq.back()->_outBuf;
+        return v;
+    }
     switch (_arch)
     {
         case A_WAVENET: return _waveNetTick(x);

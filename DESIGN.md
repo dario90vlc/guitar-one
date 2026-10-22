@@ -14,6 +14,7 @@ colors:
   steel: "#393942"
   steel-dark: "#18181c"
   hot: "#ff454f"
+  warn: "#d95c50"
   canvas: "#0a0a0c"
 typography:
   unit: "pt (GDI+ construye las fuentes en puntos; 1pt = 1.333px a 96 dpi)"
@@ -200,11 +201,36 @@ Los controles son circulares (perillas, LEDs) o pastillas (pills, interruptores)
 - **Primary:** cuerpo `#26262c` -> `#16161a` con LED ambar a la izquierda cuando esta activo.
 - **Hover / Focus:** cuerpo `#33333a`, borde de acento, texto a marfil pleno.
 - **Secondary:** boton plano de placa con borde de filete; el texto pasa a marfil al pasar por encima.
+- **Estado de audio (`AUDIO ON` / `AUDIO OFF`):** es el unico boton con dos
+  estados vivos, y se distinguen por **color**, no por el texto:
+  **ambar** `#ffa51f` cuando la app suena y **rojo de aviso** `#d95c50` cuando
+  esta apagada. En los dos casos el cuerpo va tenido al 30% del color (42% al
+  pasar por encima), el borde es de 1px del mismo tono y el piloto esta
+  encendido, asi que el boton nunca parece apagado del todo.
+  El rojo de aviso es un escalon mas apagado que el de clip (`#ff454f`): el
+  ambar no vale para el estado apagado porque significa "esto suena", justo lo
+  contrario. La pastilla de la linea de estado usa el **mismo criterio**
+  (ambar = suena, rojo = no suena), para que la cabecera y el pie no digan cosas
+  distintas del mismo estado.
 
 ### Chips (etapas de la cadena)
 - **Style:** texto medido y ajustado al ancho de su celda, marca vertical de 1px
   (3x14px en la etapa del ampli, 1x8px en el resto).
 - **State:** la etapa del ampli va en ambar; las demas en marfil medio.
+
+### Selectores de valor (‹ valor ›)
+- **Forma:** pastilla del sistema con la etiqueta en versalitas a la izquierda
+  (`CAB`, `MIC`, `DIST`), el valor en marfil a continuacion y una flecha de
+  1,8-2px en cada extremo. Un pill que solo cicla esconde las otras opciones y
+  obliga a probar a ciegas; con dos flechas se ve de que lado queda cada valor y
+  se puede volver.
+- **Zona:** una sola por fila. La mitad izquierda retrocede y la derecha avanza;
+  el clic decide el sentido, y la flecha bajo el raton se enciende en ambar
+  (hoverKey devuelve una clave por mitad para que el repintado no se pierda).
+- **Valor externo:** un IR de usuario muestra el **nombre del fichero** en ambar
+  (recortado con puntos suspensivos), no la etiqueta `USER IR`.
+- **Accion frente a selector:** `CARGAR IR` usa la misma pastilla pero sin flechas
+  y con el texto en marfil medio; nunca se confunde con un selector.
 
 ### Modulos del rack (pedales)
 - **Chapa:** `panelBase` de 112x108 con radio 6px, cinta de tipo de 2px arriba,
@@ -233,12 +259,26 @@ Los controles son circulares (perillas, LEDs) o pastillas (pills, interruptores)
   ambar, barra de seleccion a la izquierda y filo de luz arriba.
 
 ### Cabina (firma)
-- **Mueble:** cara superior con su filete, cuerpo de tolex con canto claro, cuatro
-  esquineras metalicas, baffle enmarcado, tela con tejido y luz, y patas.
-- **Conos:** el radio se DERIVA de la geometria del baffle y del diametro real del
-  altavoz (`2x10` dibuja conos de 10", mas pequenos que los de un `2x12`). Nunca
-  se solapan: con dos conos el radio sale del ancho disponible, no de la altura.
-- **Micro:** capsula de rejilla sobre pie con brazo, colocado segun la distancia elegida.
+- **Mueble:** cara superior con su filete y canto de luz, cuerpo de tolex un
+  escalon por encima del panel (`#26262b`) con filo claro arriba, cuatro
+  esquineras con sombra interior y filo, y baffle hundido (sombra arriba, luz
+  abajo) enmarcado por un filete de 2px.
+- **Tela:** el baffle es un pozo con tejido de 3px (hebras verticales y
+  horizontales al 6-9% de alfa) y una trama de 6px por encima de TODO, incluidos
+  los conos: es lo que hace leer los altavoces **detras** de la rejilla y no
+  pegados sobre ella. Luz de arriba en degradado de dos paradas.
+- **Conos:** se dibujan antes de la tela y el radio se DERIVA de la geometria del
+  baffle y del diametro real del altavoz (`2x10` dibuja conos de 10", mas
+  pequenos que los de un `2x12`). Nunca se solapan: con dos conos el radio sale
+  del ancho disponible, no de la altura. Aro de cesta con filo de luz, garganta
+  oscura, campana y polvo con su arco de brillo.
+- **Micro:** capsula de acero con rejilla oscura, halo que la separa del cono y
+  brazo que entra desde el borde derecho del mueble (el pie no se ve desde una
+  vista frontal: no se inventa una base flotando en la tela). La distancia
+  elegida mueve el micro sobre el baffle.
+- **Sin linea de estado encima:** el previo empieza bajo la pestana CABINA
+  (300x308) y el valor activo vive en el selector `‹ CAB ... ›`. Repetir el
+  nombre del cab dos veces era el unico texto sobrante de la columna.
 
 ### Mapa de senal (banda de la cadena)
 - **Estructura fija:** seis etapas siempre presentes — ENTRADA, PRE, cabezal,
@@ -253,9 +293,11 @@ Los controles son circulares (perillas, LEDs) o pastillas (pills, interruptores)
 ### Medidores y visualizador (firma)
 - **Meter:** pista de 9px (hueco) con relleno continuo en tres tramos: marfil
   hasta el 72%, ambar hasta el 90%, techo rojo; retencion de pico como aguja de 1px.
-- **Scope SALIDA:** visualizador con graticula, trazo ambar con glow, linea plana
-  cuando no hay senal y **pico real en dB** en su cabecera. Un visualizador sin
-  numero es un adorno.
+- **Scope SALIDA:** visualizador con graticula visible (alfa 64) y linea base
+  reforzada (alfa 96), trazo ambar con glow, linea plana cuando no hay senal y
+  **pico real en dB** en su cabecera: `SALIDA` a la izquierda y la cifra
+  tabular a la derecha (`-14.2 dB`, ambar por encima de -6 dBFS, `— dB` en
+  silencio). Un visualizador sin numero es un adorno.
 
 ### Parametros que el frontal no imprime
 - El motor da seis parametros por amplificador; hay chapas que solo serigrafian
@@ -312,6 +354,10 @@ Guitar Rig o Amplitube. No hay gesto inventado:
   del `.ini` o del preset aplicado). El valor de referencia se guarda **por
   parametro**, no por posicion: los mandos del frontal cambian de orden y de
   numero con cada ampli y un vector paralelo restauraria el valor de otro mando.
+- **Selectores de la cabina:** clic en la mitad izquierda de la pastilla para el
+  valor anterior y en la derecha para el siguiente; la flecha bajo el raton se
+  enciende. `CAB` recorre los seis modelos y, si hay un IR cargado, el USER IR;
+  `MIC` recorre DYN / RIBBON / COND y `DIST` NEAR / MID / FAR.
 - **Lectura de valor** (`drawValuePop`): hueco `#070709`, filete de 1,5px del
   acento y cifra ambar en negrita de 11pt, una sola receta para el mando y para
   el slider. La caja **nunca sale de la ventana** (se limita a los 12px de

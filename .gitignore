@@ -11,11 +11,14 @@
 # --- Compilados -------------------------------------------------------------
 *.exe
 *.obj
+*.res
 *.pdb
 *.ilk
 *.lib
 *.exp
 build/
+# El paquete de release se publica como asset de la release, no se versiona.
+/dist/
 cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
@@ -38,6 +41,7 @@ native/amps_frontales/filmstrips/*.png
 # El arte de verdad vive en native/amps_frontales/, no aqui.
 native/*.png
 _ga/
+_oil/
 
 # Todo lo demas que empieza por _ son sondas, backups y capturas de sesion.
 native/_*.png

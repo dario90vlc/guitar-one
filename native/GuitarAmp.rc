@@ -1,0 +1,37 @@
+// Recursos del ejecutable: el icono que Windows muestra en el Explorador y en
+// la barra de tareas ANTES de arrancar (el que pinta la ventana sale de aqui,
+// cargado con LoadImage), y la ficha de version que ve el usuario en
+// Propiedades > Detalles. ASCII a proposito: rc.exe no adivina codificaciones.
+#include <windows.h>
+
+1 ICON "GuitarAmp.ico"
+#define GA_ICON 1
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "GuitarAmp"
+            VALUE "FileDescription",  "GUITAR ONE - simulador de amplificadores de guitarra"
+            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "InternalName",     "GuitarAmp"
+            VALUE "LegalCopyright",   "MIT License"
+            VALUE "OriginalFilename", "GuitarAmp.exe"
+            VALUE "ProductName",      "GUITAR ONE"
+            VALUE "ProductVersion",   "1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

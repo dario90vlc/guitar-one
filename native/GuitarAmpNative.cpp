@@ -182,6 +182,11 @@ static const G::Color kFTxt  (255, 0xf2, 0xf0, 0xea);   // titulo: marfil (no bl
 static const G::Color kFTxt2 (255, 0xa6, 0xa3, 0x9d);   // valor:  14:1 / 6,6:1
 static const G::Color kFTxt3 (255, 0x8b, 0x87, 0x81);   // rotulo: 4,6:1
 static const G::Color kFHot  (255, 0xff, 0x5f, 0x57);
+// Rojo de AVISO, un escalon por debajo del de clip: es para el unico estado en
+// el que la app NO suena (AUDIO OFF). No es un segundo acento decorativo -el
+// ambar sigue siendo el unico "vivo"- sino la marca de "esto esta apagado y por
+// eso no oyes nada", que es justo lo contrario de lo que dice el ambar.
+static const G::Color kFOff  (255, 0xd9, 0x5c, 0x50);
 
 // --- Radios y aire ----------------------------------------------------------
 static const G::REAL kRPanel = 12.0f;   // paneles y unidades
@@ -239,7 +244,6 @@ static inline G::Color accA(int a) {
 // fotogramas (perilla girando -135..+135; fotograma = round(valor)) y JSON con
 // el centro de cada perilla. Si falta el arte, todo vuelve a la cara procedural.
 #include "amp_frontales_data.h"
-#include "_appicon.h"
 #include "t3k.h"
 
 static std::wstring wstr(const std::string& s) { return std::wstring(s.begin(), s.end()); }
@@ -325,6 +329,128 @@ static void namComputeTrims(const nam::Model& m, NamSlot& sl)
     sl.outTrim.store(std::pow(10.0f, outDb/20.0f));
 }
 
+// ---------------------------------------------------------------------------
+//  Conversion de frecuencia para las capturas
+// ---------------------------------------------------------------------------
+//  Un .nam esta entrenado a UNA frecuencia (casi siempre 48 kHz) y el motor puede
+//  correr a otra (44,1 / 88,2 / 96 / 176,4 / 192). Ejecutar el modelo a la tasa
+//  equivocada no es "casi igual": sus filtros, resonancias y el propio caracter
+//  del ampli quedan desplazados en la proporcion entre las dos tasas (un 8,8 %
+//  entre 44,1 y 48). Aqui la senal se lleva a la tasa del modelo y se devuelve
+//  con un interpolador polifasico (sinc con ventana de Hann, 24 coeficientes,
+//  256 fases): 24 multiplicaciones por muestra, nada al lado del modelo.
+//
+//  El modelo se ejecuta a SU tasa en el mismo bucle: por cada muestra del motor
+//  salen 0, 1 o 2 del modelo. La salida se INTERPOLA entre los dos ultimos
+//  valores del modelo (quedarse con el ultimo mete un salto de fase de hasta una
+//  muestra del modelo cada ~11 muestras a 48k->44,1k, que se oye como grano en
+//  las notas agudas). Interpolar un periodo de modelo por detras garantiza que
+//  el instante pedido caiga SIEMPRE entre los dos valores que hay.
+//  Latencia: 12 muestras del motor + 1 del modelo (0,27 ms a 48 kHz).
+struct NamRateConv {
+    static const int TAPS = 24;
+    static const int PH   = 256;
+    static const int RING = 64;      // potencia de 2 y > TAPS + lo que se adelanta
+    static const int LAG  = 12;      // retardo de la ventana = TAPS/2
+
+    float tab[PH][TAPS];             // 24 KB por bloque: se calcula al configurar
+    float hist[RING];
+    int   w = 0;
+    float tCur = 0.0f, tNext = 0.0f; // instantes (en muestras del motor)
+    float tauLast = -1e9f;           // instante del ultimo valor del modelo
+    float outPrev = 0.0f, outLast = 0.0f;
+    double fm = 48000.0, fd = 48000.0;
+    bool  byb  = true;
+    bool  ready = false;
+
+    NamRateConv() { reset(); }
+
+    void reset()
+    {
+        for (int i = 0; i < RING; ++i) hist[i] = 0.0f;
+        w = 0; tCur = 0.0f;
+        tNext = -(float)(LAG - 1);
+        tauLast = -1e9f; outPrev = outLast = 0.0f;
+    }
+
+    void configure(double modelRate, double deviceRate)
+    {
+        if (ready && std::fabs(modelRate - fm) < 0.5 && std::fabs(deviceRate - fd) < 0.5) return;
+        fm = modelRate; fd = deviceRate;
+        byb = (std::fabs(modelRate - deviceRate) < 0.5);
+        ready = true;
+        reset();
+        if (byb) return;
+        // Corte en el menor de los dos Nyquist, con un 8 % de margen para que la
+        // banda de transicion de 24 taps caiga por debajo del audible.
+        const double c = 0.5 * (fm < fd ? fm/fd : 1.0) * 0.92;
+        for (int p = 0; p < PH; ++p)
+        {
+            const double f = (double)p / (double)PH;
+            double sum = 0.0;
+            for (int t = 0; t < TAPS; ++t)
+            {
+                const double d = (double)t - (double)(LAG - 1) - f;
+                const double s = (std::fabs(d) < 1e-9) ? 1.0
+                               : std::sin(2.0*M_PI*c*d)/(M_PI*d);
+                const double win = 0.5*(1.0 + std::cos(M_PI*d/(double)LAG));   // Hann
+                tab[p][t] = (float)(s*win);
+                sum += s*win;
+            }
+            // Ganancia unidad en continua por fase: sin esto cada fase pesa
+            // distinto y el nivel baila con la posicion.
+            if (std::fabs(sum) > 1e-9)
+                for (int t = 0; t < TAPS; ++t) tab[p][t] = (float)((double)tab[p][t]/sum);
+        }
+    }
+
+    // Valor interpolado a `d` muestras por detras de la ultima metida.
+    inline float at(float d) const
+    {
+        int di = (int)d;
+        float f = d - (float)di;
+        if (f < 0.0f) { f += 1.0f; --di; }
+        int ph = (int)(f*(float)PH);
+        if (ph < 0) ph = 0;
+        if (ph >= PH) ph = PH - 1;
+        const float* h = tab[ph];
+        float acc = 0.0f;
+        for (int t = 0; t < TAPS; ++t)
+        {
+            const int k = di - (LAG - 1) + t;          // retraso absoluto
+            acc += hist[(w - 1 - k) & (RING - 1)] * h[t];
+        }
+        return acc;
+    }
+
+    // Mete una muestra del motor y devuelve la salida del modelo a su tasa.
+    template <class F>
+    inline float tick(F&& modelTick, float x)
+    {
+        if (byb) return modelTick(x);
+        hist[w] = x;
+        w = (w + 1) & (RING - 1);
+        tCur += 1.0f;
+        const float step = (float)(fd/fm);        // muestras del motor por muestra del modelo
+        const float lim  = tCur - (float)LAG;     // no se lee mas cerca que la ventana
+        while (tNext <= lim)
+        {
+            outPrev = outLast;
+            outLast = modelTick(at(tCur - tNext));
+            tauLast = tNext;
+            tNext += step;
+        }
+        // Salida interpolada un periodo de modelo por detras: asi el instante
+        // pedido cae siempre entre outPrev y outLast (ver la cabecera).
+        const float tOut = tCur - (float)LAG - step;
+        if (tauLast < -1e8f) return outLast;              // aun no hay dos valores
+        const float span = step;
+        float a = (tOut - (tauLast - span)) / span;
+        if (a < 0.0f) a = 0.0f; else if (a > 1.0f) a = 1.0f;
+        return outPrev + (outLast - outPrev)*a;
+    }
+};
+
 // Carga un .nam y lo ANADE como bloque (devuelve el indice, -1 si falla)
 static int namChainAdd(const WCHAR* path, std::wstring& msg) { return namChainAddAt(path, -1, msg); }
 // Igual, pero colocando el bloque en una CELDA concreta: es el "poner el elemento
@@ -342,11 +468,12 @@ static int namChainAddAt(const WCHAR* path, int pos, std::wstring& msg)
             return -1;
         }
     }
-    char utf8[MAX_PATH*4];
-    if (WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, sizeof utf8, nullptr, nullptr) <= 0)
-    { msg = L"ruta no valida"; return -1; }
+    // La ruta va en WCHAR de punta a punta: convertirla a UTF-8 y pasarla a
+    // fopen NO funcionaba en Windows (fopen la lee con la pagina de codigos
+    // local). Una captura en "C:\...\MÃºsica\..." o "Escritorio\AmpliaciÃ³n\"
+    // decia "no se puede abrir el fichero" con el fichero ahi al lado.
     auto m = std::make_shared<nam::Model>();
-    if (!m->load(utf8)) {
+    if (!m->loadW(path)) {
         msg = L"no se pudo cargar: " + wstr(m->err);
         return -1;
     }
@@ -819,7 +946,41 @@ static void t3kBlockFromTree(const t3k::PresetTree& blk, long long activeId, t3k
     const std::string t = blk.prop("type");
     out.nam = (t.find("ir") == std::string::npos);
 }
-static void t3kLoadLocalPresets() {
+// La biblioteca se parsea UNA vez y se cachea: una cuenta normal tiene cientos
+// de .t3kpreset (290 ficheros / 7 MB en la de referencia) y leerlos enteros en
+// cada apertura del navegador congelaba la interfaz. Se vuelve a leer solo si la
+// carpeta cambio de verdad -un fichero mas o menos, o una fecha distinta-, que es
+// justo lo que pasa al guardar o borrar un preset en TONE3000.
+struct T3kLibStamp {
+    unsigned long long n = (unsigned long long)-1, sz = 0, t = 0;
+    bool operator==(const T3kLibStamp& o) const { return n == o.n && sz == o.sz && t == o.t; }
+};
+static T3kLibStamp g_t3kLibStamp;      // la que se parseo la ultima vez
+static bool         g_t3kLibLoaded = false;
+static T3kLibStamp t3kLocalStampOf() {
+    T3kLibStamp s;
+    const std::wstring dir = t3kLocalPresetsDir();
+    if (dir.empty()) return s;
+    WIN32_FIND_DATAW fd{};
+    HANDLE hf = FindFirstFileW((dir + L"\\*.t3kpreset").c_str(), &fd);
+    if (hf == INVALID_HANDLE_VALUE) return s;
+    s.n = 0;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        ++s.n;
+        s.sz += ((unsigned long long)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+        const unsigned long long ft = ((unsigned long long)fd.ftLastWriteTime.dwHighDateTime << 32)
+                                    | fd.ftLastWriteTime.dwLowDateTime;
+        if (ft > s.t) s.t = ft;
+    } while (FindNextFileW(hf, &fd));
+    FindClose(hf);
+    return s;
+}
+static void t3kLoadLocalPresets(bool force = false) {
+    const T3kLibStamp st = t3kLocalStampOf();
+    if (!force && g_t3kLibLoaded && st == g_t3kLibStamp) return;   // la carpeta no cambio
+    g_t3kLibStamp = st;
+    g_t3kLibLoaded = true;
     g_t3kLocal.clear();
     const std::wstring dir = t3kLocalPresetsDir();
     const std::wstring pat = dir + L"\\*.t3kpreset";
@@ -860,7 +1021,6 @@ static void t3kLoadLocalPresets() {
     } while (FindNextFileW(hf, &fd));
     FindClose(hf);
 }
-static void t3kLoadLocalPresets();
 // Lleva la biblioteca LOCAL a la rejilla: una tarjeta por preset con su nombre,
 // sus bloques y si es estereo. Sin sesion y sin red (solo disco). El pie de la
 // tarjeta no aplica aqui (no hay descargas), asi que el dato util son los bloques.
@@ -1179,19 +1339,23 @@ static void t3kWorkLoadPreset(int li, std::string token) {
             }
         }
         const std::string u = blocks[i].url;
-        t3k::Resp d; std::string err;
-        bool sent = t3k::httpRequest(L"GET", u, "", token, d, &err);
-        if (sent && d.status == 401 && t3kRenewSession(token))
-            sent = t3k::httpRequest(L"GET", u, "", token, d, &err);
-        if (!sent || !d.ok()) { ++fallos; continue; }
         std::wstring base = u8w(t3kUrlTail(u));
         if (base.empty()) base = t3kSafeName(u8w(blocks[i].name));
         const std::wstring path = std::wstring(g_t3kProfilesDir) + L"\\" + base;
-        FILE* f = nullptr;
-        if (_wfopen_s(&f, path.c_str(), L"wb") != 0 || !f) { ++fallos; continue; }
-        const size_t wr = fwrite(d.body.data(), 1, d.body.size(), f);
-        fclose(f);
-        if (wr != d.body.size()) { ++fallos; continue; }
+        // Si la captura YA esta en perfiles/ no se vuelve a bajar: recargar un
+        // preset que ya cargaste no gasta red ni pide token.
+        if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            t3k::Resp d; std::string err;
+            bool sent = t3k::httpRequest(L"GET", u, "", token, d, &err);
+            if (sent && d.status == 401 && t3kRenewSession(token))
+                sent = t3k::httpRequest(L"GET", u, "", token, d, &err);
+            if (!sent || !d.ok()) { ++fallos; continue; }
+            FILE* f = nullptr;
+            if (_wfopen_s(&f, path.c_str(), L"wb") != 0 || !f) { ++fallos; continue; }
+            const size_t wr = fwrite(d.body.data(), 1, d.body.size(), f);
+            fclose(f);
+            if (wr != d.body.size()) { ++fallos; continue; }
+        }
         std::wstring msg;
         if (namChainAdd(path.c_str(), msg) >= 0) ++hechos; else ++fallos;
     }
@@ -1392,7 +1556,10 @@ static std::wstring GetDeviceFriendlyName(IMMDevice* dev) {
     return name;
 }
 
-static void EnumerateDevices() {
+// syncCurrent = false al recargar la lista desde el panel: solo se reconstruye
+// la lista, sin tocar los IDs con los que esta corriendo el motor (si no, la
+// interfaz diria que suena un dispositivo que el hilo de audio no ha abierto).
+static void EnumerateDevices(bool syncCurrent = true) {
     IMMDeviceEnumerator* enumerator = nullptr;
     if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
               CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&enumerator)) || !enumerator)
@@ -1444,6 +1611,7 @@ static void EnumerateDevices() {
     if (g_selectedInputIdx >= (int)g_inputDevices.size()) g_selectedInputIdx = 0;
     if (g_selectedOutputIdx >= (int)g_outputDevices.size()) g_selectedOutputIdx = 0;
 
+    if (!syncCurrent) return;
     std::lock_guard<std::mutex> lock(g_deviceMutex);
     if (!g_inputDevices.empty())
         g_currentInputId = g_inputDevices[g_selectedInputIdx].id;
@@ -1510,8 +1678,13 @@ static int  g_setOutIdx = 0;
 static bool g_settingsOpen = false;
 
 // Rects del panel para hit-testing (se actualizan al pintar)
-static RECT g_panelRows[5] = {};
+static const int kSetPanelW = 940, kSetPanelH = 424;   // alto: 5 filas + RECARGAR + estado
+static RECT g_panelRows[6] = {};
 static RECT g_panelApply = {}, g_panelCancel = {};
+
+// Estado del boton RECARGAR DISPOSITIVOS: lo que se encontro y cuando.
+static std::wstring g_devMsg;
+static DWORD        g_devMsgAt = 0;
 
 static int cycleIdx(int idx, int delta, int count) {
     if (count <= 0) return 0;
@@ -1519,6 +1692,56 @@ static int cycleIdx(int idx, int delta, int count) {
     if (idx < 0) idx = count - 1;
     if (idx >= count) idx = 0;
     return idx;
+}
+
+// Recoloca un indice despues de recargar una lista: se busca el dispositivo por
+// ID, no por posicion (los indices bailan en cuanto entra o sale uno).
+static int remapDeviceIdx(const std::vector<AudioDeviceInfo>& list, const std::wstring& keepId)
+{
+    if (list.empty()) return 0;
+    for (int i = 0; i < (int)list.size(); ++i)
+        if (!keepId.empty() && list[(size_t)i].id == keepId) return i;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+//  RECARGAR DISPOSITIVOS (boton del panel de ajustes)
+// ---------------------------------------------------------------------------
+//  Windows solo devuelve los endpoints ACTIVOS en el momento de enumerar, asi
+//  que una interfaz enchufada despues de arrancar la app no aparece en la lista
+//  hasta volver a enumerar. Esto reconstruye las dos listas y conserva la
+//  seleccion POR ID. NO cambia lo que esta sonando: eso lo hace APLICAR, igual
+//  que el resto de ajustes del panel (y asi RECARGAR + CANCELAR no toca nada).
+static void RefreshDeviceLists(bool quiet = false)
+{
+    std::wstring inId, outId;
+    if (g_selectedInputIdx  >= 0 && g_selectedInputIdx  < (int)g_inputDevices.size())
+        inId  = g_inputDevices[(size_t)g_selectedInputIdx].id;
+    if (g_selectedOutputIdx >= 0 && g_selectedOutputIdx < (int)g_outputDevices.size())
+        outId = g_outputDevices[(size_t)g_selectedOutputIdx].id;
+    const int nin  = (int)g_inputDevices.size();
+    const int nout = (int)g_outputDevices.size();
+
+    EnumerateDevices(false);            // false: NO tocar lo que esta en el aire
+
+    g_selectedInputIdx  = remapDeviceIdx(g_inputDevices,  inId);
+    g_selectedOutputIdx = remapDeviceIdx(g_outputDevices, outId);
+    // El panel trabaja sobre su propia copia de indices: se sincroniza para que
+    // APLICAR caiga en el dispositivo que se esta viendo.
+    g_setInIdx  = g_selectedInputIdx;
+    g_setOutIdx = g_selectedOutputIdx;
+
+    if (quiet) return;
+    const int din  = (int)g_inputDevices.size()  - nin;
+    const int dout = (int)g_outputDevices.size() - nout;
+    std::wstring m;
+    if (din == 0 && dout == 0) m = L"SIN CAMBIOS";
+    else if (din > 0 || dout > 0) m = L"DETECTADO";
+    else m = L"SE HA DESCONECTADO ALGO";
+    m += L" \xB7 " + std::to_wstring(g_inputDevices.size()) + L" ENTRADA(S), " +
+         std::to_wstring(g_outputDevices.size()) + L" SALIDA(S)";
+    g_devMsg = m;
+    g_devMsgAt = GetTickCount();
 }
 
 // ============================================================================
@@ -1576,7 +1799,7 @@ static std::vector<int> g_chainPost;    // tipos en orden DESPUES del amp
 // reservar memoria: si la interfaz lo tiene cogido y el sistema la desaloja, el
 // hilo de audio espera y pierde el buffer; y copiar a vectores locales dentro
 // del candado son DOS malloc por bloque en tiempo real. Aqui la interfaz escribe
-// una instantanea de tamaño fijo con un contador de secuencia (impar mientras
+// una instantanea de tamaÃ±o fijo con un contador de secuencia (impar mientras
 // escribe) y el hilo de audio la copia a buffers con la capacidad ya reservada:
 // ni espera ni reserva.
 static const int kChainMax = 20;    // 18 tipos de pedal posibles, con margen
@@ -1736,6 +1959,24 @@ static std::vector<UserPreset> g_userPresets;
 
 static int presetTotal() { return kNumPresets + (int)g_userPresets.size(); }
 static bool isUserPreset(int idx) { return idx >= kNumPresets && idx < presetTotal(); }
+// --- Presets de TONE3000 dentro de la MISMA lista ---------------------------
+//  La biblioteca LOCAL (.t3kpreset: los presets que el usuario ya tiene en su
+//  TONE3000) ocupa el tramo de indices que empieza en presetTotal(). Asi el
+//  navegador los trata como una entrada mas -filtros, orden, buscador e Info-
+//  sin mantener dos listas en paralelo.
+//  Dos reglas que no se pueden saltar:
+//   - NO se guardan en el .ini: la biblioteca en disco es la que manda (si
+//     borras el preset en TONE3000, desaparece de aqui al reabrir).
+//   - NO pasan a ser g_presetIdx: al cargar uno, lo que suena deja de ser un
+//     preset del banco, y eso es justo lo que marca el punto de MODIFICADO.
+static const int kMaxT3kPresets = 1024;                      // tope de la lista
+static const int kMaxListAll    = kMaxListEntries + kMaxT3kPresets;
+static int  t3kPresetCount()     { return (int)g_t3kLocal.size(); }
+static int  presetTotalAll()     { return presetTotal() + t3kPresetCount(); }
+static bool isT3kPreset(int idx) { return idx >= presetTotal() && idx < presetTotalAll(); }
+static const t3k::LocalPreset* t3kPresetAt(int idx) {
+    return isT3kPreset(idx) ? &g_t3kLocal[(size_t)(idx - presetTotal())] : nullptr;
+}
 // --- Favoritos de PRESET -----------------------------------------------------
 // La estrella de la fila marca EL PRESET que hay en esa fila, no el ampli (esa es
 // la de la lista de amplificadores del sidebar). Los 78 de fabrica van en un
@@ -1749,12 +1990,14 @@ static const int kFavColors = 5;
 static unsigned char g_favPreset[kNumPresets] = {};
 static bool g_favOnly = false;         // el filtro "solo mis amplis favoritos" del sidebar
 static int presetFavColor(int idx) {
+    if (isT3kPreset(idx)) return 0;               // los de TONE3000 no llevan color
     if (idx < 0 || idx >= presetTotal()) return 0;
     return (idx < kNumPresets) ? (int)g_favPreset[idx]
                                : g_userPresets[idx - kNumPresets].favColor;
 }
 static bool presetFav(int idx) { return presetFavColor(idx) != 0; }
 static void presetFavSet(int idx, int color) {
+    if (isT3kPreset(idx)) return;                 // no se guardan: no hay donde
     if (idx < 0 || idx >= presetTotal()) return;
     if (color < 0) color = 0;
     if (color > kFavColors - 1) color = kFavColors - 1;
@@ -1763,6 +2006,7 @@ static void presetFavSet(int idx, int color) {
 }
 // Amp (0..11) bajo el que se agrupa el preset; -1 = sin amp (grupo MIS PRESETS)
 static int presetGroup(int idx) {
+    if (isT3kPreset(idx)) return 12;              // un preset de TONE3000 es del PERFIL
     if (idx < 0 || idx >= presetTotal()) return -1;
     if (idx < kNumPresets) return g_presets[idx].model;
     const int m = g_userPresets[idx - kNumPresets].model;
@@ -1781,7 +2025,7 @@ static int presetSlot(int idx) {
 // Los seis de fabrica de un ampli son contiguos y en orden (lo fija el
 // generador del banco y lo vigila la prueba Q0), de ahi el (idx % 6) + 1.
 static int presetInGroup(int idx) {
-    if (idx < 0 || idx >= presetTotal()) return 0;
+    if (idx < 0 || idx >= presetTotalAll()) return 0;
     if (idx < kNumPresets) return (idx % kPresetsPerAmp) + 1;
     const int g = presetGroup(idx);
     int n = kPresetsPerAmp;                       // detras de los seis lotes
@@ -1816,6 +2060,7 @@ static unsigned char presetChar(int idx) {
 // La mascara de caracter de un preset: un bit por caracter. De fabrica sale de
 // su lote; el del usuario la lleva en su ficha (0 = sin etiqueta).
 static unsigned int presetTags(int idx) {
+    if (isT3kPreset(idx)) return 0;               // sin etiqueta de caracter
     if (idx < 0 || idx >= presetTotal()) return 0;
     if (idx < kNumPresets) return 1u << presetChar(idx);
     return g_userPresets[idx - kNumPresets].tags;
@@ -1897,10 +2142,23 @@ static long long presetCreated(int idx) {
     return g_userPresets[idx - kNumPresets].created;
 }
 static const WCHAR* presetAuthor(int idx) {
+    if (isT3kPreset(idx)) return L"TONE3000";
     if (idx < 0 || idx >= presetTotal() || idx < kNumPresets) return L"";
     return g_userPresets[idx - kNumPresets].author;
 }
 static const WCHAR* presetComment(int idx) {
+    if (isT3kPreset(idx)) {
+        // Lo util de un preset de TONE3000 es lo que trae: cuantas capturas y de
+        // que tipo. Se compone aqui para que el Info pane lo ensene sin tocar
+        // nada mas (el buffer es estatico: hay un solo panel).
+        static WCHAR buf[160];
+        const t3k::LocalPreset* p = t3kPresetAt(idx);
+        const int nb = p ? (int)(p->left.size() + p->right.size()) : 0;
+        swprintf_s(buf, L"%d captura%s \xB7 preset de TONE3000%s",
+                   nb, nb == 1 ? L"" : L"s",
+                   (p && p->stereo) ? L" \xB7 estereo" : L"");
+        return buf;
+    }
     if (idx < 0 || idx >= presetTotal() || idx < kNumPresets) return L"";
     return g_userPresets[idx - kNumPresets].comment;
 }
@@ -1964,9 +2222,67 @@ static void applyPreset(int idx) {
     rigMark();                  // este es el rig del preset: no hay nada modificado
 }
 
+// --- Cargar en el PERFIL un preset de TONE3000 ------------------------------
+//  Baja (o REUTILIZA, ver t3kWorkLoadPreset) las capturas del preset y las monta
+//  en la cadena del cabezal PERFIL, en orden. No toca g_presetIdx a proposito:
+//  lo que suena ya no es un preset del banco, y el punto de MODIFICADO lo dice.
+static void applyT3kPreset(int idx)
+{
+    const int li = idx - presetTotal();
+    if (li < 0 || li >= (int)g_t3kLocal.size()) return;
+    const t3k::LocalPreset& lp = g_t3kLocal[(size_t)li];
+    // OJO con el orden: primero se comprueba TODO y solo despues se toca el
+    // cabezal. Cambiarlo a PERFIL sin capturas dejaba la app en silencio, que es
+    // el "no me suena" de siempre.
+    int libres = 0;
+    { std::lock_guard<std::mutex> lk(g_namMutex); libres = namBlkVis() - (int)g_namUi.size(); }
+    if (libres <= 0) {
+        toast(L"LAS CELDAS ESTAN LLENAS: QUITA UNA CAPTURA ANTES");
+        return;
+    }
+    // Si las capturas ya estan en perfiles/, no hace falta ni red ni sesion.
+    int faltan = 0;
+    {
+        t3kProfilesDirInit();
+        for (const t3k::PresetBlock& b : lp.left) {
+            std::wstring base = u8w(t3kUrlTail(b.url));
+            if (base.empty()) base = t3kSafeName(u8w(b.name));
+            if (GetFileAttributesW((std::wstring(g_t3kProfilesDir) + L"\\" + base).c_str()) == INVALID_FILE_ATTRIBUTES)
+                ++faltan;
+        }
+    }
+    if (faltan > 0 && !g_t3kConnected) {
+        g_t3kConnOpen = true;
+        t3kStatusW(L"PARA CARGAR UN PRESET HAY QUE CONECTAR: SUS CAPTURAS SE DESCARGAN");
+        return;
+    }
+    // Ya esta todo comprobado: ahora si, el cabezal pasa al PERFIL. Si no, las
+    // capturas entrarian en la cadena y no sonarian.
+    if (g_params.model.load() != 12) {
+        g_params.model.store(12);
+        rebuildKnobs();
+    }
+    toast(faltan == 0 ? L"CARGANDO EL PRESET DESDE TU LIBRERIA"
+                      : L"BAJANDO LAS CAPTURAS DEL PRESET...");
+    std::thread(t3kWorkLoadPreset, li, faltan == 0 ? std::string() : t3kTokenSnap()).detach();
+    g_sceneDirty.store(true);
+}
+
+// "Aplicar lo que hay en esta fila del navegador": un preset del banco (fabrica o
+// mio) o uno de TONE3000, que monta sus capturas en el PERFIL.
+static void presetApplyFromBrowser(int idx) {
+    if (isT3kPreset(idx)) { applyT3kPreset(idx); return; }
+    applyPreset(idx);
+}
+
 static void presetNameW(int idx, WCHAR* out, int n) {
     if (!out || n <= 0) return;
-    if (idx >= 0 && idx < kNumPresets) {
+    if (isT3kPreset(idx)) {
+        const t3k::LocalPreset* p = t3kPresetAt(idx);
+        const std::wstring wn = p ? u8w(p->name) : std::wstring();
+        if (!wn.empty()) wcsncpy_s(out, (size_t)n, wn.c_str(), _TRUNCATE);
+        else             swprintf_s(out, (size_t)n, L"PRESET TONE3000 %d", idx - presetTotal() + 1);
+    } else if (idx >= 0 && idx < kNumPresets) {
         wcsncpy_s(out, (size_t)n, g_presets[idx].name, _TRUNCATE);
     } else if (idx >= 0 && idx < presetTotal()) {
         wcsncpy_s(out, (size_t)n, g_userPresets[idx - kNumPresets].name, _TRUNCATE);
@@ -2050,6 +2366,7 @@ static void bandpass(Biquad& f, float fs, float fc, float Q) {
 struct DcBlock {
     float x1 = 0.0f, y1 = 0.0f, R = 0.998f;
     void prepare(float fs) { R = 1.0f - 2.0f*3.14159265358979f*8.0f/fs; x1 = y1 = 0.0f; }
+    void reset() { x1 = y1 = 0.0f; }
     inline float process(float x) { const float y = x - x1 + R*y1; x1 = x; y1 = y; return y; }
 };
 
@@ -2107,10 +2424,10 @@ struct TubeStage {
     Biquad couplerHP;
     DcBlock dc1, dc2;
 
-    void configure(float d, float b, float h, float fs, int model) {
-        // Escalado por voz IDENTICO al diseño anterior (d = drive de la voz),
-        // corregido por h/tanh(h): la pendiente a señal pequeña de la etapa
-        // nueva es 1, la del tanh(x*h)/n antiguo era h/tanh(h). Así el gain
+    void configure(float d, float b, float h, float fs, int model, float coupF) {
+        // Escalado por voz IDENTICO al diseÃ±o anterior (d = drive de la voz),
+        // corregido por h/tanh(h): la pendiente a seÃ±al pequeÃ±a de la etapa
+        // nueva es 1, la del tanh(x*h)/n antiguo era h/tanh(h). AsÃ­ el gain
         // staging de cada voz se conserva exactamente.
         const float gs = h/(std::tanh(h) + 1.0e-9f);
         g1 = (1.0f + d*d*6.0f)*gs;
@@ -2120,7 +2437,7 @@ struct TubeStage {
         // normalizacion: pendiente 1 en el punto de reposo (x=0)
         k1 = 1.0f/(h1*(1.0f - std::tanh(b1*h1)*std::tanh(b1*h1)));
         k2 = 1.0f/(h2*(1.0f - std::tanh(b2*h2)*std::tanh(b2*h2)));
-        highpass(couplerHP, fs, 130.0f, 0.707f);   // acoplamiento entre etapas
+        highpass(couplerHP, fs, coupF, 0.707f);   // acoplamiento entre etapas (por voz)
         dc1.prepare(fs); dc2.prepare(fs);
         if (model == 0)      trim = 1.00f;   // clean
         else if (model == 1) trim = 0.80f;   // crunch
@@ -2380,7 +2697,7 @@ struct CabConv {
         inF.assign(NB, 0.0f); outF.assign(NB*2, 0.0f);
         inN = 0; outIdx = 0; blk = 0;
     }
-    // Reserva los buffers UNA vez (los tamaños son fijos: N y BLOCK). A partir de
+    // Reserva los buffers UNA vez (los tamaÃ±os son fijos: N y BLOCK). A partir de
     // aqui ensureFor() solo copia y limpia: cambiar de cabina o cargar otro IR no
     // reserva memoria en el hilo de audio (T16), que es cuando mas duele, porque
     // el cambio lo pide la interfaz mientras se esta tocando.
@@ -2603,11 +2920,30 @@ struct AmpVoice {
 // (_dsp_test.exe wav) sobre un DI sintetico: sin esto, cambiar de amplificador
 // saltaba hasta 22 dB de volumen (CHORUS 120 vs LEAD 1959). Los competidores
 // nivelan sus modelos; aqui igual se mantiene A/B honesto.
+// RE-MEDIDO: con la tabla anterior DUO RECTO y KRAFT V4 quedaban 10,5 dB por
+// debajo del resto (rms 0,071 y 0,069 contra 0,19-0,26 de los demas: cambiar de
+// HAVOC 100 a KRAFT V4 era un bache de nivel). Estos valores dejan los doce
+// dentro de +-0,3 dB y los picos por debajo del limitador de master.
 static const float kVoicesTrimDb[13] = {
-     7.4f, -0.1f, -2.9f, 14.4f, -5.3f, -5.3f, -5.1f, -2.5f, -3.8f, -3.3f, -4.2f, -3.9f,
+     6.8f, -0.1f, -3.4f, 12.4f, -6.7f, -7.7f, -6.1f, -3.4f, -5.3f, 5.5f, 4.8f, -5.1f,
      0.0f
-};   // calibrados con el harness: RMS dentro de ±1,5 dB y picos < 0,85 (el
-     // limitador de master queda como red de seguridad, no como compresor)
+};   // (medido con _dsp_test.exe wav: los doce quedan en rms 0,194-0,200, o sea
+     // dentro de +-0,15 dB; el ultimo, PERFIL, no se toca: su nivel sale de los
+     // metadatos del .nam)
+// Acoplamiento entre etapas (Hz). Es el paso alto que en un ampli de verdad
+// pone el condensador de acoplamiento, y su valor NO es el mismo en todos:
+//   - en los limpios/bajos de ganancia va bajo (20-25 Hz): ahi el condensador
+//     solo tiene que quitar la continua, y con 130 Hz -lo que habia- el ampli
+//     se quedaba sin graves (medido en SPARKLE TWIN: -42 dB a 40 Hz respecto a
+//     1 kHz, cuando un Twin real esta casi plano a partir de 80 Hz);
+//   - en los de alta ganancia va alto (100-130 Hz) A PROPOSITO: es el truco de
+//     siempre para que el pastoso no se coma el headroom del recorte. Ahi se
+//     queda como estaba.
+static const float kVoicesCoupling[13] = {
+     20.0f, 22.0f, 24.0f, 20.0f, 70.0f, 95.0f, 55.0f, 24.0f, 40.0f, 120.0f, 110.0f, 130.0f,
+     20.0f
+};
+
 static const AmpVoice kVoices[13] = {
     { "SPARKLE TWIN",    0.15f,0.012f,0.62f,0, 80.0f,7000.0f,0.00f,
       120.0f,0.24f, 800.0f,0.9f,0.16f, 0.0f, 3200.0f,0.24f, 0.70f,0.10f,1.6f,
@@ -2698,11 +3034,11 @@ static void genProcCabs(float fs) {
         uint32_t rs = 0x9E3779B9u ^ (uint32_t)(c*2654435761u + 1013904223u);
         auto rnd = [&rs]() { rs = rs*1664525u + 1013904223u;
                              return (float)((rs >> 8) & 0xFFFFFF) / 16777216.0f; };
-        // Ataque menos "tick": realce directo con dispersión de 2 taps
+        // Ataque menos "tick": realce directo con dispersiÃ³n de 2 taps
         tt[1] += D.thru*0.35f*rnd();
         tt[2] += D.thru*0.18f*rnd();
         // Banco modal DENSO: 8 parciales incoherentes por ancla (40 por cab).
-        // Un IR de 5 sinusoides puras tenía espectro de peine: resonaba en 5
+        // Un IR de 5 sinusoides puras tenÃ­a espectro de peine: resonaba en 5
         // frecuencias exactas y sonaba a "zumbido"/robotico al convolucionar.
         // Jitter de frecuencia, amplitud, decaimiento y fase => densidad
         // modal realista (textura de gabinete, sin tonos puros).
@@ -2784,7 +3120,7 @@ static const CabV2Def kCabV2[6] = {
     { "BOUTIQUE 2x10",100.0f,1.10f,4.0f,  205.0f,1.4f,2.4f,  700.0f,1.3f,3.0f,  2600.0f,2.4f,3.4f, 4200.0f,3.0f,2.8f, 5000.0f,6200.0f,-3.2f },
 };
 static const double kCabIrRef = 1.28;      // magnitud objetivo a 1 kHz (calibrada
-                                           // contra el camino de biquads: ±0.2 dB)
+                                           // contra el camino de biquads: Â±0.2 dB)
 static CabIR g_procIR2[54];                // 6 modelos x 3 mics x 3 distancias
 static bool  g_procIR2Built = false;
 static float g_procIR2Fs = 0.0f;
@@ -2932,6 +3268,9 @@ struct AmpChain {
     // Instantanea del perfil NAM del BLOQUE en curso. La deja audioBlockBegin()
     // (una carga atomica por bloque, no por muestra) y NO la toca nadie mas.
     const NamChain* namBlk = nullptr;
+    // Conversion de frecuencia por bloque de la cadena (ver NamRateConv). El
+    // modelo corre a SU tasa; esto lleva la senal y la devuelve.
+    NamRateConv namConv[4];
     TubeStage  tube;
     NoiseGate  gate;
     Compressor comp;
@@ -2940,6 +3279,7 @@ struct AmpChain {
     DelayFX    delay;
     Reverb     reverb;
     Biquad     fBass, fMid, fTreble;
+    DcBlock    ampDc;                                // continua a la salida del cabezal
     Biquad     inHp, cabHp, cabLp, cabPk1, cabPk2;   // entrada + gabinete
     // --- Nuevos pedales (6..9) + cab con IR: estado por tipo ---
     float tremPhase = 0.0f;                            // 6 TREMOLO
@@ -3002,10 +3342,11 @@ struct AmpChain {
         // (el hilo de audio copia aqui en cada bloque y no puede reservar: T13).
         if (g_preSnap.capacity()  < (size_t)kChainMax) g_preSnap.reserve((size_t)kChainMax);
         if (g_postSnap.capacity() < (size_t)kChainMax) g_postSnap.reserve((size_t)kChainMax);
-        // Cabina con IR: sus buffers son de tamaño fijo, se reservan aqui y
+        // Cabina con IR: sus buffers son de tamaÃ±o fijo, se reservan aqui y
         // cambiar de cabina o de IR ya no reserva en el hilo de audio (T16).
         g_cabConv.prepare();
         os.prepare(fs); os.reset();
+        ampDc.prepare(fs);
         for (int i = 0; i < 4; ++i) u4[i] = 0.0f;
         // El sag ahora se evalua a 4x: las constantes van a esa tasa
         {
@@ -3021,6 +3362,9 @@ struct AmpChain {
         ampChorusB.prepare(fs); ampChorusC.prepare(fs); ampComp.prepare(fs);
         ampTremPhase = 0.0f;
         curModel = -1;
+        // La conversion de frecuencia de las capturas depende de fs: se invalida
+        // para que el primer bloque la reconfigure (namConfigure).
+        for (int i = 0; i < 4; ++i) { namConv[i].ready = false; namConv[i].reset(); }
         // La tabla de IR procedurales se regenera EN LA MISMA DIRECCION al cambiar
         // de frecuencia de muestreo (genProcCabsV2) y ensureFor solo compara
         // punteros: sin invalidar aqui, la convolucion seguia usando el espectro
@@ -3067,7 +3411,7 @@ struct AmpChain {
             curModel = m;
             const AmpVoice& V = kVoices[m];
             const float fso = fs*4.0f;                        // tramo no lineal a 4x
-            tube.configure(V.tD, V.tB, V.tH, fso, V.tTrim);
+            tube.configure(V.tD, V.tB, V.tH, fso, V.tTrim, kVoicesCoupling[m]);
             highpass(inHp, fs, V.inCut, 0.707f);              // HP de entrada: tasa base
             lowpass(preLp, fso, V.lp2, 0.80f);
             peak(powPk, fso, V.resoF, V.resoQ, V.resoDb);     // resonancia de la carga
@@ -3088,6 +3432,7 @@ struct AmpChain {
             lastBass = lastMid = lastTreble = lastPres = -1;
             lastBright = -1e9f;
             sagEnv = 0.0f;
+            ampDc.reset();
         }
         // Cab por biquad (camino por defecto aprobado): filtrado por MODELO de cabina
         {
@@ -3211,14 +3556,14 @@ struct AmpChain {
             if (hi != eqLastHi) { eqLastHi = hi; highShelf(eqHi, fs, 3200.0f, (hi - 50.0f)*0.24f); }
             return eqHi.process(eqLo.process(x));
         }
-        case 10: {  // OVERDRIVE estilo TS: pre-énfasis de medios + recorte asimétrico
+        case 10: {  // OVERDRIVE estilo TS: pre-Ã©nfasis de medios + recorte asimÃ©trico
             if (!g_params.fxOn[10].load()) return x;
             const float dr = g_params.fx[10][0].load(), tn = g_params.fx[10][1].load();
             if (dr != odLastDr) { odLastDr = dr; peak(odMid, fs, 720.0f, 2.0f + dr*0.07f, 1.0f); }
             if (tn != odLastTn) { odLastTn = tn; highShelf(odTone, fs, 3000.0f, (tn - 50.0f)*0.20f); }
             float y = odMid.process(x);
             y = odHp.process(y);
-            // Ganancia unitaria a señal pequeña + bias real + DC fuera: el pedal
+            // Ganancia unitaria a seÃ±al pequeÃ±a + bias real + DC fuera: el pedal
             // limpia al bajar el pote de la guitarra y rompe al subirlo.
             const float g = 1.0f + dr*0.05f;
             const float b = 0.09f;
@@ -3327,6 +3672,20 @@ struct AmpChain {
         return x;
     }
 
+    // Ajusta la conversion de frecuencia de cada bloque a la tasa de SU modelo.
+    // Se llama una vez por bloque (audioBlockBegin); configure() no hace nada si
+    // las tasas no han cambiado, asi que el coste es comparar cuatro dobles.
+    void namConfigure() {
+        if (!namBlk) return;
+        int i = 0;
+        for (const auto& sl : *namBlk) {
+            if (i >= 4) break;
+            const double mr = (sl && sl->model) ? sl->model->sampleRate : (double)fs;
+            namConv[i].configure(mr, (double)fs);
+            ++i;
+        }
+    }
+
     inline float process(float x, const std::vector<int>& pre, const std::vector<int>& post) {
         update();
 
@@ -3357,12 +3716,19 @@ struct AmpChain {
             // GAIN del cabezal = trim de entrada a la cadena (+-12 dB)
             const float trimDb = (g_params.amp[12][0].load() - 50.0f)*0.24f;
             float v = x*std::pow(10.0f, trimDb/20.0f);
-            // Bloques EN SERIE, en el orden que marque la cadena
+            // Bloques EN SERIE, en el orden que marque la cadena. Cada bloque pasa
+            // por su conversion de frecuencia (el modelo corre a la SUYA).
+            int ci = 0;
             for (const auto& sl : *namCh) {
+                NamRateConv& rc = namConv[ci < 4 ? ci : 3];
+                ++ci;
                 if (!sl || !sl->on.load(std::memory_order_relaxed)) continue;
-                v = sl->model->tick(v*sl->inTrim.load(std::memory_order_relaxed))
-                    *sl->outTrim.load(std::memory_order_relaxed)
-                    *sl->level.load(std::memory_order_relaxed);
+                nam::Model* mm = sl->model.get();
+                if (!mm) continue;
+                const float inT = sl->inTrim.load(std::memory_order_relaxed);
+                v = rc.tick([mm](float s) { return mm->tick(s); }, v*inT)
+                    * sl->outTrim.load(std::memory_order_relaxed)
+                    * sl->level.load(std::memory_order_relaxed);
             }
             v = fBass.process(v);
             v = fMid.process(v);
@@ -3408,6 +3774,13 @@ struct AmpChain {
                 u4[k] = v;
             }
             x = os.down(u4)*outTrim;
+            // Sin continua a la salida del cabezal: la 2a etapa asimetrica y el
+            // recorte del tanh de potencia dejan un desvio que, con la MEZCLA por
+            // debajo del 100 %, llega tal cual al conector (medido: 2,9 % del rms
+            // en TANGERINE 120) y que ademas hace "clac" al cambiar de ampli o al
+            // soltar una nota, porque es un escalon. Aqui se quita una sola vez,
+            // a la tasa base y a 8 Hz: por encima de eso es transparente.
+            x = ampDc.process(x);
         }
         // Control extra tipo NIVEL (OUTPUT/VOLUME/MASTER): recorte de +/-10 dB
         // sobre la salida del ampli, neutro en 50.
@@ -3529,7 +3902,7 @@ struct AmpChain {
         for (size_t i = 0; i < post.size(); ++i) x = applyFx(post[i], x);
 
         // --- Master: tanh solo como limitador de seguridad ---
-        //  El codo se desplaza al techo (0.6x + compensacion): la señal normal
+        //  El codo se desplaza al techo (0.6x + compensacion): la seÃ±al normal
         //  pasa LINEAL y solo se limita el pico. Antes comprimia siempre y eso
         //  generaba armonicos por encima de Nyquist que aliasaban (se media como
         //  "energia no armonica" en las voces limpias, que son las mas picosas).
@@ -3537,7 +3910,7 @@ struct AmpChain {
         const float xr = x;
         {
             // Transparente hasta 0.8 y techo duro en 1.0: protege la salida y el
-            // WAV sin meter armonicos en la señal normal (el tanh anterior entraba
+            // WAV sin meter armonicos en la seÃ±al normal (el tanh anterior entraba
             // siempre y su codo generaba aliasing medible en las voces limpias).
             const float a = (xr < 0.0f) ? -xr : xr;
             if (a > 0.80f) {
@@ -3548,7 +3921,7 @@ struct AmpChain {
             }
         }
         // LED de clip: se enciende cuando el limitador esta recortando de verdad
-        // (con el codo suave, 1.0 de señal cruda = salida practicamente en el techo)
+        // (con el codo suave, 1.0 de seÃ±al cruda = salida practicamente en el techo)
         if (xr > 1.0f || xr < -1.0f) g_clipFlag.store(1.0f);
         return x;
     }
@@ -4254,7 +4627,7 @@ static bool writeUserPreset(int slot, const WCHAR* name) {
     return true;
 }
 // GUARDAR sobre un preset del usuario: lo pisa y CONSERVA su nombre. Nunca
-// sobrescribe otro preset en silencio ni rota por detrás.
+// sobrescribe otro preset en silencio ni rota por detrÃ¡s.
 static void saveUserPreset() {
     if (!isUserPreset(g_presetIdx)) return;
     const int slot = g_presetIdx - kNumPresets;
@@ -4520,6 +4893,7 @@ static void audioBlockBegin() {
     g_audioBlocks.fetch_add(1, std::memory_order_release);
     // Instantanea del perfil del bloque: una sola carga atomica, sin cerrojo.
     g_amp.namBlk = g_namAudio.load(std::memory_order_acquire);
+    g_amp.namConfigure();          // tasa de cada captura (no hace nada si no cambia)
     g_namSnapGets.fetch_add(1, std::memory_order_relaxed);
     // Cadena de pedales del bloque: copia sin cerrojo y sin reservar memoria.
     chainSnapRead();
@@ -4559,6 +4933,32 @@ static void updateMeter(std::atomic<float>& m, float pk) {
 static std::atomic<long long> g_xrunUnderrun{0};  // eventos con el ring corto
 static std::atomic<long long> g_xrunLate{0};      // huecos > 2,5 periodos de buffer
 static std::atomic<long long> g_xrunMaxGap{0};    // mayor hueco observado (ms)
+static std::atomic<long long> g_xrunShortMax{0};  // peor hueco del anillo (muestras)
+
+// --- Puente captura -> reproduccion (solo el hilo de audio) -----------------
+//  El render pide un periodo por evento y del anillo no siempre hay un periodo
+//  entero: los dos flujos de WASAPI no entregan en el mismo instante y, en modo
+//  compartido con AUTOCONVERTPCM, la conversion de frecuencia hace que el numero
+//  de muestras por paquete no cuadre exacto (pedir 44100 sobre una interfaz de
+//  48000 es el caso normal). Antes esos huecos se rellenaban con CEROS: un
+//  escalon de senal a cero y de vuelta, o sea el "crack" que se oye de vez en
+//  cuando al tocar. Ahora se mantiene la ultima muestra y se desvanece en unos
+//  milisegundos, que solo se nota si el hueco es largo de verdad (un corte).
+// Siguiente muestra del relleno de un hueco: se mantiene la ultima y se
+// desvanece poco a poco (ver g_bridgeLast). Aislado para poder probarlo: lo que
+// NO puede pasar es que el hueco meta un escalon a cero, que es el chasquido.
+static inline float bridgeNextGapSample(float& last, float& fade, float fadeK)
+{
+    const float s = last*fade;
+    fade *= fadeK;
+    return s;
+}
+static float g_bridgeLast = 0.0f;
+static float g_bridgeFade = 1.0f;
+static int   g_bridgeCushion = 0;   // muestras de colchon metidas al arrancar
+// Rampa del interruptor AUDIO: cortar la senal en una muestra es un escalon
+// (chasquido al encender y al apagar la app). 10 ms bastan para que no se oiga.
+static float g_enGain = 0.0f;
 static ULONGLONG              g_paLastEv = 0;     // instante del ultimo evento WASAPI
 
 // --- VIGILANCIA DE VOLUMEN (SOLO LECTURA) -----------------------------------
@@ -4864,6 +5264,24 @@ static DWORD WINAPI AudioThread(LPVOID) {
     std::vector<float> procBuf(maxFrames);
     std::vector<float> outBuf(maxFrames * 8);
     g_ring.resize((size_t)(fs * 0.25f));
+    // Colchon UNA vez al arrancar: unas muestras de silencio ya dentro del
+    // anillo. Sin el, el anillo vive entre 0 y un periodo y cualquier desfase de
+    // una o dos muestras entre captura y reproduccion deja el render sin datos.
+    // El desfase tipico es pequeÃ±o (los dos flujos son del mismo motor, pero con
+    // AUTOCONVERTPCM el paquete de captura no trae un numero entero de muestras
+    // respecto al de salida), asi que 1/8 de periodo basta y cuesta ~3 ms con
+    // buffer de 1024 y ~0,7 ms con 128.
+    {
+        static float zeros[2048] = { 0.0f };
+        int cush = bsize/8;
+        if (cush < 32) cush = 32;
+        if (cush > 256) cush = 256;
+        g_ring.push(zeros, (size_t)cush);
+        g_bridgeCushion = cush;
+    }
+    g_bridgeLast = 0.0f;
+    g_bridgeFade = 1.0f;
+    g_xrunShortMax.store(0, std::memory_order_relaxed);
     // El anillo de grabacion reserva aqui su capacidad y NO vuelve a crecer.
     // recStart() corre en el hilo de UI y el de audio puede estar empujando en
     // este mismo instante: un resize() ahi reasignaria el vector mientras se
@@ -4912,6 +5330,7 @@ static DWORD WINAPI AudioThread(LPVOID) {
         // Trim de entrada (una vez por bloque): el medidor INPUT y el DSP ven
         // la senal ya recortada, como el gain de una preamp real.
         const float trimMul = std::pow(10.0f, g_params.inTrim.load() / 20.0f);
+        const float enStep = 1.0f/(0.010f*fs);   // rampa del interruptor AUDIO
 
         // --- Captura ---
         if (capCap && (w == WAIT_OBJECT_0 + 1 || !useBoth || w == WAIT_TIMEOUT)) {
@@ -4923,32 +5342,41 @@ static DWORD WINAPI AudioThread(LPVOID) {
             while (packet > 0) {
                 BYTE* capData = nullptr;  UINT32 frames = 0;  DWORD flags = 0;
                 if (SUCCEEDED(capCap->GetBuffer(&capData, &frames, &flags, nullptr, nullptr))) {
-                    if (!(flags & AUDCLNT_BUFFERFLAGS_SILENT) && frames > 0) {
+                    // SILENT = "el buffer no trae datos, tratalo como silencio".
+                    // Antes se SALTABA el bloque entero: no se alimentaba el anillo
+                    // (el render se quedaba sin datos) y no corria el DSP, asi que
+                    // la cola del reverb/delay se cortaba en seco al dejar de
+                    // sonar la entrada -- otro chasquido. Ahora se procesa con
+                    // ceros: el motor sigue y el anillo cuadra.
+                    const bool silentPkt = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+                    if (frames > 0) {
                         size_t outCount = 0;
                         bool huboNaN = false;
                         for (UINT32 i = 0; i < frames && outCount < maxFrames; ++i) {
                             float s = 0.0f;
-                            if (capFloat) {
-                                const float* in = (const float*)capData;
-                                for (int c = 0; c < capCh; ++c) s += in[i*capCh + c];
-                            } else {
-                                const BYTE* in = capData + (size_t)i*capAlign;
-                                for (int c = 0; c < capCh; ++c) {
-                                    const BYTE* p = in + (size_t)c*capBytes;
-                                    if (capBps == 32) {
-                                        int v; memcpy(&v, p, 4);
-                                        s += v / 2147483648.0f;
-                                    } else if (capBps == 24) {
-                                        int v = p[0] | (p[1] << 8) | (p[2] << 16);
-                                        if (v & 0x800000) v |= ~0xFFFFFF;
-                                        s += v / 8388608.0f;
-                                    } else {
-                                        short v; memcpy(&v, p, 2);
-                                        s += v / 32768.0f;
+                            if (!silentPkt) {
+                                if (capFloat) {
+                                    const float* in = (const float*)capData;
+                                    for (int c = 0; c < capCh; ++c) s += in[i*capCh + c];
+                                } else {
+                                    const BYTE* in = capData + (size_t)i*capAlign;
+                                    for (int c = 0; c < capCh; ++c) {
+                                        const BYTE* p = in + (size_t)c*capBytes;
+                                        if (capBps == 32) {
+                                            int v; memcpy(&v, p, 4);
+                                            s += v / 2147483648.0f;
+                                        } else if (capBps == 24) {
+                                            int v = p[0] | (p[1] << 8) | (p[2] << 16);
+                                            if (v & 0x800000) v |= ~0xFFFFFF;
+                                            s += v / 8388608.0f;
+                                        } else {
+                                            short v; memcpy(&v, p, 2);
+                                            s += v / 32768.0f;
+                                        }
                                     }
                                 }
-                            }
-                            s /= (float)capCh;
+                                s /= (float)capCh;
+                            }   // !silentPkt
                             // --- Afinador: decimacion de la entrada (solo con el modal abierto) ---
                             if (g_tunerOpen.load(std::memory_order_relaxed)) {
                                 if (++tunDecCnt >= tunDec) {
@@ -4971,7 +5399,16 @@ static DWORD WINAPI AudioThread(LPVOID) {
                             // Apagado: entrada sigue medida (para verificar el dispositivo)
                             // y se empuja silencio para que el ring y la sesion no se rompan
                             if (!std::isfinite(s)) s = 0.0f;    // una muestra basura del dispositivo
-                            float y = en ? g_amp.process(s, g_preSnap, g_postSnap) : 0.0f;
+                            // Interruptor AUDIO con rampa (10 ms). Con el corte a
+                            // hueso, encender o apagar la app metia un escalon.
+                            // El DSP sigue corriendo mientras la rampa baja, para
+                            // que la cola del reverb se apague en vez de cortarse.
+                            float y = (en || g_enGain > 1e-4f)
+                                    ? g_amp.process(s, g_preSnap, g_postSnap) : 0.0f;
+                            g_enGain += en ? enStep : -enStep;
+                            if (g_enGain < 0.0f) g_enGain = 0.0f;
+                            else if (g_enGain > 1.0f) g_enGain = 1.0f;
+                            y *= g_enGain;
                             if (!std::isfinite(y)) {
                                 // Tapar la salida no basta: un NaN que entre en el estado de un
                                 // biquad o de un buffer realimentado (delay, reverb, tanque) se
@@ -5034,10 +5471,31 @@ static DWORD WINAPI AudioThread(LPVOID) {
                 BYTE* renData = nullptr;
                 if (renFrames > 0 && SUCCEEDED(renCap->GetBuffer(renFrames, &renData))) {
                     size_t got = g_ring.pop(outBuf.data(), (size_t)renFrames);
-                    if (wantInput && got < (size_t)renFrames)
-                        g_xrunUnderrun.fetch_add(1, std::memory_order_relaxed);
+                    int falta = 0;
+                    if (got < (size_t)renFrames) {
+                        falta = (int)((size_t)renFrames - got);
+                        // Sin entrada configurada el anillo esta vacio a proposito
+                        // (solo salida): eso no es un corte y no se cuenta.
+                        if (wantInput) {
+                            g_xrunUnderrun.fetch_add(1, std::memory_order_relaxed);
+                            long long prev = g_xrunShortMax.load(std::memory_order_relaxed);
+                            while ((long long)falta > prev && !g_xrunShortMax.compare_exchange_weak(
+                                       prev, (long long)falta, std::memory_order_relaxed)) { }
+                        }
+                    }
+                    // Relleno del hueco: se MANTIENE la ultima muestra y se
+                    // desvanece en ~5 ms. Antes se ponia 0, y ese escalon es un
+                    // chasquido (era una muestra de silencio en medio de la onda).
+                    const float fadeK = std::exp(-1.0f/(0.005f*fs));
                     for (UINT32 i = 0; i < renFrames; ++i) {
-                        float s = (i < got) ? outBuf[i] : 0.0f;
+                        float s;
+                        if (i < got) {
+                            s = outBuf[i];
+                            g_bridgeLast = s;
+                            g_bridgeFade = 1.0f;
+                        } else {
+                            s = bridgeNextGapSample(g_bridgeLast, g_bridgeFade, fadeK);
+                        }
                         if (!std::isfinite(s)) s = 0.0f;
                         s = (s > 1.0f) ? 1.0f : ((s < -1.0f) ? -1.0f : s);
                         BYTE* ob = renData + (size_t)i*renAlign;
@@ -5253,7 +5711,7 @@ static int t3kCardCount() { const int n = (int)g_t3kItems.size(), m = t3kCardMax
 static int t3kPageSize()  { return t3kCardMax(); }   // se pinta lo mismo que se pide
 // Caja del boton "solo verificados" (fila de paginacion, tras las flechas)
 static int t3kVerifX() { return (int)T3K_X + T3K_PAD + 250; }
-// ¿El flujo de dispositivo ya tiene codigo para confirmar?
+// Â¿El flujo de dispositivo ya tiene codigo para confirmar?
 static bool t3kDevWaiting() {
     std::lock_guard<std::mutex> lk(g_t3kMutex);
     return !g_t3kUserCode.empty();
@@ -5383,7 +5841,7 @@ static const int NAM_T3K_X = NAM_ADD_X + NAM_ADD_W + 10;
 // Boton impreso CARGAR PERFIL de la pantalla del cabezal PERFIL: su caja vive en
 // coordenadas de ARTE (1200x540) y la comparten pintura, hover y clic. Antes el
 // hover leia g_lastPt (que nadie escribe, siempre -1,-1: nunca encendia) y el
-// clic no lo miraba en absoluto: un rótulo que prometia y no hacia nada.
+// clic no lo miraba en absoluto: un rÃ³tulo que prometia y no hacia nada.
 static const int NAM_BTN_AX = 170, NAM_BTN_AY = 212, NAM_BTN_AW = 240, NAM_BTN_AH = 32;
 static void namBtnBox(G::REAL& x, G::REAL& y, G::REAL& w, G::REAL& h) {
     x = (G::REAL)ART_X + NAM_BTN_AX*ART_W/1200.0f;
@@ -5405,7 +5863,16 @@ static void namPickAndAdd(HWND hwnd) {
     ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (GetOpenFileNameW(&ofn)) {
         std::wstring msg;
-        if (namChainAdd(file, msg) >= 0) toast(L"CAPTURA A\x00D1ADIDA A LA CADENA");
+        if (namChainAdd(file, msg) >= 0) {
+            // El bloque entra en la cadena del cabezal PERFIL, pero si el que
+            // suena es otro ampli, esa captura NO se oye: se anadia y "no
+            // cargaba". El camino de TONE3000 ya cambiaba de cabezal; este no.
+            if (g_params.model.load() != 12) {
+                g_params.model.store(12);
+                rebuildKnobs();
+            }
+            toast(L"CAPTURA A\u00D1ADIDA A LA CADENA");
+        }
         else                             toast(msg.c_str());
         g_sceneDirty.store(true);
     }
@@ -5445,10 +5912,12 @@ static G::REAL artKnobR() { return 35.0f*(G::REAL)ART_W/744.0f; }
 // pista de la mezcla vivia en su propio margen (18) y el visualizador en otro
 // (40): la mitad de abajo del panel leia como tres piezas sueltas.
 static const int CAB_TAB_Y = 86;
-static const int CAB_LBL_X = COL_R_X + 8, CAB_LBL_Y = 130;
-// El previo baja de 312 a 292: los 20px que suelta son para el bloque de
-// MEZCLA, que caia pegado a su rotulo y al de SALIDA (dos rotulos a 6px).
-static const int CAB_PV_X = COL_R_X + 8, CAB_PV_Y = 154, CAB_PV_W = COL_R_W - 16, CAB_PV_H = 292;
+// Sin linea de estado encima del previo: el estado vive en el selector CAB de
+// abajo ("â€¹ CAB 2x12 OPEN â€º"), y repetir el mismo valor 24px mas arriba era el
+// unico texto sobrante de la columna. El mueble empieza bajo la pestana.
+// El previo crece con los 22px que suelta esa linea (292 -> 308) y el objeto
+// gana el aire que la columna le estaba negando.
+static const int CAB_PV_X = COL_R_X + 8, CAB_PV_Y = 132, CAB_PV_W = COL_R_W - 16, CAB_PV_H = 308;
 static const int CAB_BTN_X = COL_R_X + 8,   CAB_BTN_Y = 470, CAB_BTN_W = 150, CAB_BTN_H = 30;
 static const int CAB_SEL_X = COL_R_X + 166, CAB_SEL_Y = 470, CAB_SEL_W = 166, CAB_SEL_H = 30;
 static const int CAB_MIC_X = COL_R_X + 8,   CAB_MIC_Y = 512, CAB_MIC_W = 150, CAB_MIC_H = 30;
@@ -5711,7 +6180,7 @@ static int ampExtraKindAt(int m, int idx) {
 static int ampExtraKind(int m) { return ampExtraKindAt(m, 0); }
 
 // Neutro de cada funcion: el valor con el que el control NO hace nada. Los de
-// profundidad (tremolo, chorus) son 0 —el efecto esta apagado— y el resto 50.
+// profundidad (tremolo, chorus) son 0 â€”el efecto esta apagadoâ€” y el resto 50.
 static float ampExtraNeutral(int kind) {
     switch (kind) {
     case 3: case 6: return 0.0f;      // profundidad: apagado
@@ -5846,7 +6315,7 @@ static RECT zoneRect(int id) {
 static void buildZones();
 
 // --- Cache de render: escena estatica + buffer trasero reutilizados ---
-// La escena estatica (toxel, paños, caras, chasis) se renderiza UNA vez por
+// La escena estatica (toxel, paÃ±os, caras, chasis) se renderiza UNA vez por
 // tamano; cada frame solo se dibuja la capa dinamica. Sin esto, GDI+ tarda
 // decenas de ms por frame y la interfaz se ve a trompicones.
 struct StaticScene {
@@ -6639,6 +7108,26 @@ static void icChev(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL w, G::Color c
     g.DrawLine(&p, m.X, m.Y, b.X, b.Y);
 }
 
+// Flecha circular (RECARGAR): ~300 grados de circulo con el hueco arriba y una
+// punta en el extremo, apuntando en el sentido de giro.
+static void icRefresh(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color c) {
+    G::Pen p(c, 1.5f);
+    p.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
+    g.DrawArc(&p, cx - r, cy - r, r*2.0f, r*2.0f, 300.0f, 300.0f);
+    const G::REAL a  = 240.0f*(G::REAL)M_PI/180.0f;      // extremo del arco
+    const G::REAL ex = cx + r*std::cos(a), ey = cy + r*std::sin(a);
+    const G::REAL tx = -std::sin(a), ty = std::cos(a);    // tangente (sentido de giro)
+    const G::REAL nx = std::cos(a),  ny = std::sin(a);    // radio
+    const G::REAL k = r*0.62f;
+    G::PointF tri[3] = {
+        { ex + tx*k,            ey + ty*k },
+        { ex + nx*k*0.85f,      ey + ny*k*0.85f },
+        { ex - nx*k*0.85f,      ey - ny*k*0.85f }
+    };
+    G::SolidBrush b(c);
+    g.FillPolygon(&b, tri, 3);
+}
+
 static void icStar(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, G::Color c, bool filled) {
     // Cinco puntas con tabla fija (sin trigonometria): 10 vertices alternando
     // radio r y r*0,42, empezando arriba.
@@ -6773,7 +7262,7 @@ static void drawKnobDetail(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, fl
     // 2.8px: a radios pequenos se leia como una estrella de picos y ensuciaba
     // la perilla. Ahora la referencia es sutil y el valor manda.
     // En las perillas mini de los pedales (r=13) el aro y las marcas a
-    // distancia fija quedaban desproporcionados: el grupo medía 41px dentro de
+    // distancia fija quedaban desproporcionados: el grupo medÃ­a 41px dentro de
     // una tarjeta de 90 y chocaba con la caja del icono y con las etiquetas.
     // A radios pequenos se recorta el aro, se quitan las marcas y se afinan
     // los trazos, asi que la perilla se lee compacta y no invade nada.
@@ -6822,7 +7311,7 @@ static void drawKnobDetail(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, fl
 }
 
 // Glifo vectorial de un efecto, por familia. Los simbolos Unicode abstractos
-// que habia antes (◌ ╱ ≀ ✱ ...) no describian nada: se veian como un caracter
+// que habia antes (â—Œ â•± â‰€ âœ± ...) no describian nada: se veian como un caracter
 // suelto y daban aspecto de maqueta. Ahora cada familia tiene su dibujo:
 // dinamica = nivel, saturacion = onda recortada, modulacion = onda, tiempo =
 // ecos que decaen, EQ = tres bandas.
@@ -6917,13 +7406,14 @@ static void drawValuePop(G::Graphics& g, G::REAL bx, G::REAL by, G::REAL bw,
     g.DrawString(txt, -1, &fVal, G::RectF(bx, by, bw, bh), &sfC, &vt);
 }
 
-// Vista frontal de la cabina, en plano: mueble, baffle hundido, conos y micro.
-// Se QUEDA toda la geometria (el radio de los conos derivado de la caja, el
+// Vista frontal de la cabina: mueble, baffle hundido, tela, conos y micro.
+// Se conserva toda la geometria (el radio de los conos derivado de la caja, el
 // diametro en pulgadas y la posicion del micro), que es lo que hace que una
-// 1x12, una 2x12 y una 4x12 se lean distintas; se va el material: tolex,
-// esquineras cromadas, tejido de la rejilla y degradados.
+// 1x12, una 2x12 y una 4x12 se lean distintas. El material vuelve en la MEDIDA
+// justa: tejido de la tela, luz de arriba y conos leidos a traves del tejido,
+// porque la cabina es la firma del producto y como caja plana se leia vacia.
 static void drawCabPreview(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
-                           int spk, int inches, int mic, int dist, bool userIR, G::Color ac) {
+                           int spk, int inches, int mic, int dist) {
     // Vista frontal del mueble, legible como objeto: cara superior con su
     // filete, cuerpo de tolex con canto claro, cuatro esquineras, baffle
     // enmarcado, conos DETRAS de la tela (no fantasmas) y micro sobre pie.
@@ -6943,31 +7433,48 @@ static void drawCabPreview(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::R
         g.FillPolygon(&tg, tp, 4);
         G::Pen thk(kFLine, 1.0f);
         g.DrawLine(&thk, tp[3].X + 5.0f, y + 0.5f, tp[2].X - 5.0f, y + 0.5f);
+        // canto de luz de la tapa: la unica luz de la escena viene de arriba
+        G::Pen thl(G::Color(70, 0xff, 0xff, 0xff), 1.0f);
+        g.DrawLine(&thl, tp[3].X + 8.0f, y + 1.0f, tp[2].X - 8.0f, y + 1.0f);
+        G::Pen tfr(G::Color(255, 0x14, 0x14, 0x17), 1.2f);
+        g.DrawLine(&tfr, bx, by - 0.5f, bx + bw, by - 0.5f);
     }
-    // --- cuerpo de tolex ---
+    // --- cuerpo de tolex: un escalon por encima del panel, canto claro arriba ---
     {
         G::SolidBrush body(kFSurf2);
         G::Pen ed(kFLine, 1.0f);
         roundRect(g, bx, by, bw, bh, 7.0f, &ed, &body);
+        G::Pen hl(G::Color(56, 0x3a, 0x3a, 0x42), 1.0f);
+        g.DrawLine(&hl, bx + 9.0f, by + 1.2f, bx + bw - 9.0f, by + 1.2f);
     }
     // --- esquineras metalicas ---
     {
-        G::SolidBrush mcb(kFSurf3);
-        G::Pen mcp(kFLine, 1.0f);
+        G::SolidBrush mcb(G::Color(255, 0x3a, 0x3a, 0x42));
+        G::Pen mcp(G::Color(255, 0x4a, 0x4a, 0x54), 1.0f);
         const G::REAL kc[4][2] = { { bx + 2.0f, by + 2.0f }, { bx + bw - 15.0f, by + 2.0f },
                                    { bx + 2.0f, by + bh - 15.0f }, { bx + bw - 15.0f, by + bh - 15.0f } };
         for (int i = 0; i < 4; ++i) {
             roundRect(g, kc[i][0], kc[i][1], 13.0f, 13.0f, 3.0f, &mcp, &mcb);
+            // el canto de la esquina: sombra por dentro y filo de luz arriba
+            G::Pen mci(G::Color(96, 0x0b, 0x0b, 0x0e), 1.0f);
+            roundRect(g, kc[i][0] + 2.5f, kc[i][1] + 2.5f, 8.0f, 8.0f, 2.0f, &mci, nullptr);
+            G::Pen mcl(G::Color(64, 0xff, 0xff, 0xff), 1.0f);
+            g.DrawLine(&mcl, kc[i][0] + 3.0f, kc[i][1] + 1.4f, kc[i][0] + 10.0f, kc[i][1] + 1.4f);
         }
     }
     // --- baffle enmarcado ---
     const G::REAL fx = bx + 13.0f, fy = by + 13.0f, fw = bw - 26.0f, fh = bh - 26.0f;
     {
-        G::SolidBrush fb(G::Color(255, 0x0c, 0x0c, 0x0d));
-        G::Pen fp(G::Color(0xff, 0x27, 0x25, 0x27), 1.6f);
+        G::SolidBrush fb(G::Color(255, 0x0c, 0x0c, 0x0f));
+        G::Pen fp(G::Color(0xff, 0x38, 0x38, 0x40), 1.6f);
         roundRect(g, fx, fy, fw, fh, 5.0f, &fp, &fb);
         G::Pen fin(G::Color(120, 0, 0, 0), 1.0f);
         roundRect(g, fx + 1.5f, fy + 1.5f, fw - 3.0f, fh - 3.0f, 4.0f, &fin, nullptr);
+        // hundido: sombra en el canto de arriba, filo de luz en el de abajo
+        G::Pen bsh(G::Color(150, 0, 0, 0), 2.0f);
+        g.DrawLine(&bsh, fx + 4.0f, fy + 2.0f, fx + fw - 4.0f, fy + 2.0f);
+        G::Pen bli(G::Color(60, 0x3c, 0x3c, 0x44), 1.0f);
+        g.DrawLine(&bli, fx + 4.0f, fy + fh - 1.5f, fx + fw - 4.0f, fy + fh - 1.5f);
     }
     // --- conos: se dibujan ANTES de la tela, con contraste suficiente para
     //     leerse a traves de ella (antes quedaban como manchas) ---
@@ -7002,18 +7509,27 @@ static void drawCabPreview(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::R
         // sigue tocandose en vertical igual que antes (inchF=1).
         spr *= inchF;
         for (int i = 0; i < n; ++i) {
-            // Cono plano: anillo, campana y polvo, cada uno de un tono con su
-            // filete. Se va el degradado radial: el cono se lee por el dibujo.
-            G::SolidBrush ring(kFSurf3);
+            // Cono: aro, garganta, campana y polvo. La tela de encima lo vela,
+            // asi que el dibujo tiene que dar el contraste que el velo quita.
+            G::SolidBrush ring(G::Color(255, 0x3c, 0x3c, 0x44));
             g.FillEllipse(&ring, spx[i] - spr, spy[i] - spr, spr*2.0f, spr*2.0f);
-            G::Pen rp(kFLine, 1.0f);
+            G::Pen rp(G::Color(255, 0x6a, 0x6a, 0x76), 1.2f);
             g.DrawEllipse(&rp, spx[i] - spr, spy[i] - spr, spr*2.0f, spr*2.0f);
-            G::Pen rp2(kFSurf, 1.0f);
-            g.DrawEllipse(&rp2, spx[i] - spr*0.86f, spy[i] - spr*0.86f, spr*1.72f, spr*1.72f);
-            G::SolidBrush cap(kFSurf2);
-            g.FillEllipse(&cap, spx[i] - spr*0.32f, spy[i] - spr*0.32f, spr*0.64f, spr*0.64f);
-            G::Pen cpn(kFLine, 1.0f);
-            g.DrawEllipse(&cpn, spx[i] - spr*0.32f, spy[i] - spr*0.32f, spr*0.64f, spr*0.64f);
+            // garganta: el surco entre el aro y la campana
+            G::Pen gap(G::Color(230, 0x07, 0x07, 0x09), 3.2f);
+            g.DrawEllipse(&gap, spx[i] - spr*0.82f, spy[i] - spr*0.82f, spr*1.64f, spr*1.64f);
+            G::SolidBrush cone(G::Color(255, 0x2a, 0x2a, 0x31));
+            g.FillEllipse(&cone, spx[i] - spr*0.80f, spy[i] - spr*0.80f, spr*1.60f, spr*1.60f);
+            G::Pen cg(G::Color(255, 0x1d, 0x1d, 0x22), 1.0f);
+            g.DrawEllipse(&cg, spx[i] - spr*0.80f, spy[i] - spr*0.80f, spr*1.60f, spr*1.60f);
+            // polvo: el centro, un escalon mas claro y con su filo de luz
+            G::SolidBrush cap(G::Color(255, 0x4a, 0x4a, 0x54));
+            g.FillEllipse(&cap, spx[i] - spr*0.30f, spy[i] - spr*0.30f, spr*0.60f, spr*0.60f);
+            G::Pen cpn(G::Color(255, 0x14, 0x14, 0x18), 1.0f);
+            g.DrawEllipse(&cpn, spx[i] - spr*0.30f, spy[i] - spr*0.30f, spr*0.60f, spr*0.60f);
+            G::Pen cpl(G::Color(90, 0xff, 0xff, 0xff), 1.0f);
+            g.DrawArc(&cpl, spx[i] - spr*0.30f, spy[i] - spr*0.30f, spr*0.60f, spr*0.60f,
+                      190.0f, 90.0f);
         }
     }
     // --- tela: base + tejido tenue + luz de arriba (sin velo pesado) ---
@@ -7026,37 +7542,103 @@ static void drawCabPreview(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::R
         cp.AddArc(fx, fy + fh - d, d, d, 90, 90);
         cp.CloseFigure();
         g.SetClip(&cp, G::CombineModeReplace);
-        // Tela plana: un tono translucido sobre los conos. Se van el tejido
-        // (dos trazos por paso, ~60 en total) y la luz de arriba.
-        G::SolidBrush cloth(G::Color(120, kFBg.GetR(), kFBg.GetG(), kFBg.GetB()));
+        // Tela: vela los conos sin borrarlos, y lleva su propio tejido. Un tono
+        // plano dejaba la cabina como una caja negra; el tejido de 3px es lo que
+        // la hace leer como rejilla a tamaÃ±o real.
+        G::SolidBrush cloth(G::Color(160, kFBg.GetR(), kFBg.GetG(), kFBg.GetB()));
         g.FillRectangle(&cloth, fx, fy, fw, fh);
+        G::Pen wv(G::Color(9, 0x7a, 0x74, 0x68), 1.0f);
+        for (G::REAL gx = fx + 2.0f; gx < fx + fw - 2.0f; gx += 3.0f)
+            g.DrawLine(&wv, gx, fy + 2.0f, gx, fy + fh - 2.0f);
+        G::Pen wh(G::Color(6, 0x7a, 0x74, 0x68), 1.0f);
+        for (G::REAL gy = fy + 2.0f; gy < fy + fh - 2.0f; gy += 3.0f)
+            g.DrawLine(&wh, fx + 2.0f, gy, fx + fw - 2.0f, gy);
+        // Luz de arriba: la tela coge la misma luz que la tapa.
+        G::LinearGradientBrush lg(G::RectF(fx, fy, fw, fh*0.55f),
+                                  G::Color(10, 0xff, 0xee, 0xd0), G::Color(0, 0xff, 0xee, 0xd0),
+                                  G::LinearGradientModeVertical);
+        g.FillRectangle(&lg, fx, fy, fw, fh*0.55f);
+        // Trama por encima de TODO: las mismas hebras cruzan los conos. Sin
+        // esto los altavoces leian como discos PEGADOS sobre la tela en vez de
+        // detras de ella, que es lo que son.
+        G::Pen tv2(G::Color(15, 0x9a, 0x93, 0x84), 1.0f);
+        for (G::REAL gx = fx + 2.0f; gx < fx + fw - 2.0f; gx += 6.0f)
+            g.DrawLine(&tv2, gx, fy + 2.0f, gx, fy + fh - 2.0f);
+        G::Pen th2(G::Color(10, 0x9a, 0x93, 0x84), 1.0f);
+        for (G::REAL gy = fy + 2.0f; gy < fy + fh - 2.0f; gy += 6.0f)
+            g.DrawLine(&th2, fx + 2.0f, gy, fx + fw - 2.0f, gy);
         g.ResetClip();
     }
     // --- micro sobre pie con brazo ---
     {
         const G::REAL mx = fx + fw*(0.50f + (G::REAL)dist*0.15f);
-        const G::REAL my = fy + fh*0.52f;
-        {   // cabezal: capsula plana con su filete
-            G::SolidBrush hcap(kFSurf3);
-            roundRect(g, mx - 6.5f, my - 23.0f, 13.0f, 18.0f, 6.0f, nullptr, &hcap);
-            G::Pen hp2(kFLine, 1.0f);
-            roundRect(g, mx - 6.5f, my - 23.0f, 13.0f, 18.0f, 6.0f, &hp2, nullptr);
+        const G::REAL my = fy + fh*0.56f;
+        // Un micro delante de un cono se pierde en el cono: halo oscuro primero,
+        // que le da contorno, y despues el cuerpo de acero.
+        {
+            G::SolidBrush halo(G::Color(210, 0x05, 0x05, 0x07));
+            roundRect(g, mx - 9.5f, my - 29.5f, 19.0f, 33.0f, 8.0f, nullptr, &halo);
         }
-        G::SolidBrush mbg(kFSurf2);
-        roundRect(g, mx - 3.5f, my - 6.0f, 7.0f, 22.0f, 3.0f, nullptr, &mbg);
-        G::SolidBrush cl(kFSurf2);
-        roundRect(g, mx - 6.0f, my + 5.0f, 12.0f, 6.0f, 2.0f, nullptr, &cl);
-        G::Pen boom(kFSurf3, 2.6f);
-        g.DrawLine(&boom, mx + 6.0f, my + 8.0f, mx + 26.0f, my + 28.0f);
-        g.DrawLine(&boom, mx + 26.0f, my + 28.0f, mx + 26.0f, fy + fh + 8.0f);
-        G::Pen bolt(G::Color(255, 0x55, 0x52, 0x4a), 1.0f);
-        g.DrawEllipse(&bolt, mx + 22.5f, my + 24.5f, 7.0f, 7.0f);
-        // IR de usuario: marca discreta junto al baffle, no un punto suelto
-        if (userIR) {
-            G::SolidBrush dot(G::Color(0xff, 0x82, 0x7d, 0x76));
-            g.FillEllipse(&dot, fx + 5.0f, fy + 5.0f, 5.0f, 5.0f);
-        }
+        // brazo: entra desde el borde derecho del mueble. El pie de un micro
+        // delante de la caja no se ve desde esta vista, asi que no se inventa
+        // una base flotando en la tela.
+        const G::REAL ax = bx + bw - 6.0f, ay = my + 26.0f;
+        G::Pen pipe(G::Color(255, 0x4a, 0x4a, 0x55), 2.4f);
+        g.DrawLine(&pipe, mx + 7.0f, my + 8.0f, ax, ay);
+        G::SolidBrush knob(G::Color(255, 0x5a, 0x5a, 0x66));
+        g.FillEllipse(&knob, ax - 3.0f, ay - 3.0f, 6.0f, 6.0f);
+        // pinza
+        G::SolidBrush clip(G::Color(255, 0x3a, 0x3a, 0x43));
+        roundRect(g, mx - 5.0f, my, 14.0f, 6.0f, 2.0f, nullptr, &clip);
+        // capsula: cuerpo de acero con rejilla oscura
+        G::SolidBrush mbody(G::Color(255, 0x62, 0x62, 0x6e));
+        roundRect(g, mx - 7.0f, my - 27.0f, 14.0f, 28.0f, 6.0f, nullptr, &mbody);
+        G::Pen mpen(G::Color(255, 0x8e, 0x8e, 0x9a), 1.2f);
+        roundRect(g, mx - 7.0f, my - 27.0f, 14.0f, 28.0f, 6.0f, &mpen, nullptr);
+        G::Pen gril(G::Color(255, 0x12, 0x12, 0x16), 1.0f);
+        for (int i = 0; i < 5; ++i)
+            g.DrawLine(&gril, mx - 4.5f, my - 23.0f + i*3.4f, mx + 4.5f, my - 23.0f + i*3.4f);
+        // canto de luz: el micro se separa de la tela
+        G::Pen mhl(G::Color(120, 0xff, 0xff, 0xff), 1.0f);
+        g.DrawLine(&mhl, mx - 5.4f, my - 24.0f, mx - 5.4f, my - 4.0f);
     }
+}
+
+// Fila de valor con FLECHAS: el control dice en que direccion cambia. Un pill
+// que solo cicla esconde las otras opciones y obliga a probar a ciegas; con â€¹ â€º
+// se ve de que lado queda cada valor y se puede volver. Las dos mitades son la
+// misma zona (el clic decide el sentido) y la flecha bajo el raton se enciende
+// en ambar: es lo unico vivo de la fila.
+static void drawStepPill(G::Graphics& g, int id,
+                         G::REAL x, G::REAL y, G::REAL w, G::REAL h,
+                         const WCHAR* label, const WCHAR* value, bool live) {
+    const bool hov = zoneHit(id);
+    const bool rightSide = hov && g_mouseX >= (int)(x + w*0.5f);
+    const bool leftSide  = hov && !rightSide;
+    flatPillBody(g, x, y, w, h, hov, false, kAcc);
+    const G::REAL cy = y + h*0.5f;
+    {
+        G::Pen al(leftSide ? kAcc : kFTxt2, 2.0f);
+        al.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
+        g.DrawLine(&al, x + 14.0f, cy - 4.2f, x + 10.0f, cy);
+        g.DrawLine(&al, x + 10.0f, cy, x + 14.0f, cy + 4.2f);
+    }
+    {
+        G::Pen ar(rightSide ? kAcc : kFTxt2, 2.0f);
+        ar.SetLineCap(G::LineCapRound, G::LineCapRound, G::DashCapRound);
+        g.DrawLine(&ar, x + w - 14.0f, cy - 4.2f, x + w - 10.0f, cy);
+        g.DrawLine(&ar, x + w - 10.0f, cy, x + w - 14.0f, cy + 4.2f);
+    }
+    G::Font fLbl(kFontTec, kTPico, G::FontStyleBold);
+    G::Font fVal(kFontTec, kTRotulo, G::FontStyleBold);
+    G::StringFormat sf;
+    sf.SetLineAlignment(G::StringAlignmentCenter);
+    sf.SetFormatFlags(G::StringFormatFlagsNoWrap);
+    sf.SetTrimming(G::StringTrimmingEllipsisCharacter);
+    G::SolidBrush bl(kFTxt3);
+    G::SolidBrush bv(live ? kAcc : kFTxt);
+    g.DrawString(label, -1, &fLbl, G::RectF(x + 20.0f, y, 36.0f, h), &sf, &bl);
+    g.DrawString(value, -1, &fVal, G::RectF(x + 50.0f, y, w - 70.0f, h), &sf, &bv);
 }
 
 // --- Piezas dinamicas de una tarjeta de pedal -------------------------------
@@ -7413,7 +7995,7 @@ static void buildStaticScene(int W, int H) {
             // 7,5 pt en una columna de 320 que se leia "ESPACIO audio <-/->
             // preset ..." sin saber que significaba cada flecha ni en que
             // orden mirarlos. Ahora cada uno nombra lo que hace.
-            drawTxFitC(g, L"\x2190\x2192 presets · \x2191\x2193 lista · ESPACIO audio · ESC salir",
+            drawTxFitC(g, L"\x2190\x2192 presets Â· \x2191\x2193 lista Â· ESPACIO audio Â· ESC salir",
                            G::FontStyleRegular, kFTxt3,
                            (G::REAL)(COL_L_X + COL_L_W/2), (G::REAL)HINT_Y, 0.3f,
                            (G::REAL)(COL_L_W - 24), TxCuerpo);
@@ -7448,8 +8030,8 @@ static void buildStaticScene(int W, int H) {
         // --- Serigrafia de cada unidad: piloto + nombre ---
         {
             const int bandY[3] = { PRE_SHELF_Y, AMP_UNIT_Y, POST_SHELF_Y };
-            const WCHAR* bandT[3] = { L"ANTES DEL AMPLICADOR", L"CABEZAL",
-                                      L"DESPU\xC9S DEL AMPLICADOR" };
+            const WCHAR* bandT[3] = { L"ANTES DEL AMPLIFICADOR", L"CABEZAL",
+                                      L"DESPU\xC9S DEL AMPLIFICADOR" };
             for (int i = 0; i < 3; ++i) {
                 const G::REAL by2 = (G::REAL)bandY[i] + 6.0f;
                 // piloto de la etapa: solo lleva color de ampli el cabezal, que
@@ -7535,7 +8117,7 @@ static void buildStaticScene(int W, int H) {
                 // boton ANADIR: rotulo y leyenda, cada uno en su banda (antes se
                 // tocaban: 15pt acababa en la misma fila que el pie de 11pt)
                 // Los dos botones son la MISMA pieza (placa con filete, texto marfil
-                // al pasar por encima): antes AÑADIR llevaba marco ambar permanente
+                // al pasar por encima): antes AÃ‘ADIR llevaba marco ambar permanente
                 // y T3K un marco marfil, dos tratos distintos pegados uno al otro.
                 // El ambar queda para el hover, como en el resto del sistema.
                 {
@@ -7553,7 +8135,7 @@ static void buildStaticScene(int W, int H) {
                                    ax + aw*0.5f, ry + (G::REAL)NAMROW_H*0.56f, 0.6f, aw - 16.0f, TxPico);
                 }
                 // boton TONE3000: explorar la biblioteca (marca corta T3K). Misma
-                // ALTURA que el boton de al lado y que los zocalos: medía 26px en
+                // ALTURA que el boton de al lado y que los zocalos: medÃ­a 26px en
                 // una fila de 56 y desequilibraba toda la banda.
                 {
                     const G::REAL tx = (G::REAL)NAM_T3K_X;
@@ -7706,9 +8288,9 @@ static void buildStaticScene(int W, int H) {
                     G::Pen pc(kWellLn, 1.0f);
                     const G::REAL chipY = sy + 3.0f, chipH = 12.0f;
                     G::REAL chipX = sx + 8.0f;
-                    int srNow = 48000;
-                    { std::lock_guard<std::mutex> lk(g_settingsMutex); srNow = kRates[g_appliedSet.rateIdx]; }
-                    const bool srBad = std::fabs(nm->sampleRate - (double)srNow) > 1.0;
+                    // La frecuencia que se muestra es la DEL MODELO. Puede no ser
+                    // la del motor, y ya no es un aviso rojo: el motor la convierte
+                    // (NamRateConv) antes de entrar en la captura.
                     {
                         std::wstring chips;
                         if (!nm->gearType.empty()) chips += std::wstring(nm->gearType.begin(), nm->gearType.end());
@@ -7724,7 +8306,7 @@ static void buildStaticScene(int W, int H) {
                             G::SolidBrush cb2(G::Color(255, 0x10, 0x10, 0x12));
                             roundRect(g, chipX, chipY, tw, chipH, 6.0f, &pc, &cb2);
                             drawSpaced(g, tok.c_str(), fChip,
-                                       srBad && p0 == 0 ? kHot : kFTxt2,
+                                       kFTxt2,
                                        chipX + 6.0f, chipY + 1.0f, 0.4f);
                             chipX += tw + 5.0f;
                             if (pf == std::wstring::npos) break;
@@ -7738,7 +8320,7 @@ static void buildStaticScene(int W, int H) {
                         // hay que pasarle el centro de su caja (0.87), no el borde
                         // derecho: con el borde como centro, la mitad del "48 kHz"
                         // se salia del vidrio. maxW 0.24 <= ancho de esa caja.
-                        drawTxFitC(g, wb, G::FontStyleRegular, srBad ? kHot : kFTxt3,
+                        drawTxFitC(g, wb, G::FontStyleRegular, kFTxt3,
                                        sx + suW*0.87f, sy + sh*0.66f, 0.4f, suW*0.24f,
                                        TxPico);
                     }
@@ -7746,7 +8328,7 @@ static void buildStaticScene(int W, int H) {
                     // El titulo y la linea de datos comparten fondo con el "48 kHz",
                     // que va pegado al borde derecho. Antes cada uno se encajaba a un
                     // % del ancho COMPLETO del vidrio (0.86 y 0.74): la linea de datos
-                    // se montaba sobre la frecuencia ("desmondstu… 48 kHz"). Con un %
+                    // se montaba sobre la frecuencia ("desmondstuâ€¦ 48 kHz"). Con un %
                     // no hay forma de cuadrar, porque el texto y la frecuencia no
                     // crecen igual al cambiar de perfil.
                     //
@@ -7759,7 +8341,7 @@ static void buildStaticScene(int W, int H) {
                     const G::REAL txtCx = sx + txtW*0.5f;
                     // El ptMin escala con la ventana: a resoluciones pequenas el
                     // vidrio entero se encoge, y un suelo fijo de 9 pt hacia que
-                    // los nombres largos se cortasen con "…" antes de poderse
+                    // los nombres largos se cortasen con "â€¦" antes de poderse
                     // reducir. Con el suelo escalado cabe el nombre en el minimo.
                     //
                     // El espaciado del nombre tambien baja: con tracking 2, un
@@ -7825,7 +8407,7 @@ static void buildStaticScene(int W, int H) {
         glassPanel(g, (G::REAL)COL_R_X, (G::REAL)PANEL_Y, (G::REAL)COL_R_W,
                    (G::REAL)PANEL_H, kRPanel, true);
         // tab CABINA (activo): EXACTAMENTE el mismo trato que las pestanas del
-        //  navegador — texto + filete ambar de 64x2 centrado. Llevaba una caja de
+        //  navegador â€” texto + filete ambar de 64x2 centrado. Llevaba una caja de
         //  324x30 con borde ambar y un subrayado VERDE-AMARILLO (#c8f02a) de
         //  296px: dos piezas que no son del sistema, y entre las dos se comian
         //  mas presupuesto de acento que todo el resto de la pantalla junto.
@@ -7837,17 +8419,9 @@ static void buildStaticScene(int W, int H) {
                            (G::REAL)(COL_R_X + COL_R_W/2), (G::REAL)(CAB_TAB_Y + 3), 1.1f,
                            (G::REAL)(COL_R_W - 24), TxRotulo);
         }
-        // etiqueta de seccion
-        {
-            G::Font fTagR(kFontTec, kTRotulo, G::FontStyleBold);
-            G::SolidBrush tag(kFTxt3);
-            g.DrawString(L"CABINA ACTIVA", -1, &fTagR, G::RectF((G::REAL)CAB_LBL_X, (G::REAL)CAB_LBL_Y,
-                                                                200.0f, 16.0f), nullptr, &tag);
-        }
         // preview de cabina: caja + conos + micro colocado
         {
             const int cmv = g_params.cabModel.load();
-            const bool userIR = (cmv == 6);
             int spk = 2;
             if (cmv >= 0 && cmv < 6) {
                 const char c0 = kCabNames[cmv][0];
@@ -7858,8 +8432,7 @@ static void buildStaticScene(int W, int H) {
             const int inch = (cmv == 4) ? 15 : (cmv == 5) ? 10 : 12;   // 1x15 / 2x10 / 12"
             drawCabPreview(g, (G::REAL)CAB_PV_X, (G::REAL)CAB_PV_Y,
                            (G::REAL)CAB_PV_W, (G::REAL)CAB_PV_H,
-                           spk, inch, g_params.cabMic.load(), g_params.cabDist.load(), userIR,
-                           colAmp(g_params.model.load()));
+                           spk, inch, g_params.cabMic.load(), g_params.cabDist.load());
         }
         hairSep(g, (G::REAL)(COL_R_X + 12), (G::REAL)CAB_SEP_Y,
                 (G::REAL)(COL_R_W - 24), 22);
@@ -7907,7 +8480,7 @@ static void buildStaticScene(int W, int H) {
             glassWell(g, (G::REAL)SCOPE_X, (G::REAL)SCOPE_Y,
                       (G::REAL)SCOPE_W, (G::REAL)SCOPE_H, kRWell);
             g.SetClip(sr, G::CombineModeReplace);
-            G::Pen gl(G::Color(30, kWellLn.GetR(), kWellLn.GetG(), kWellLn.GetB()), 1.0f);
+            G::Pen gl(G::Color(64, kWellLn.GetR(), kWellLn.GetG(), kWellLn.GetB()), 1.0f);
             for (int i = 1; i < 4; ++i) {
                 if (i == 2) continue;                       // el centro lo marca la base
                 const G::REAL gx = sr.X + sr.Width*i/4.0f;
@@ -7915,7 +8488,7 @@ static void buildStaticScene(int W, int H) {
                 const G::REAL gy = sr.Y + sr.Height*i/4.0f;
                 g.DrawLine(&gl, sr.X + 7.0f, gy, sr.GetRight() - 7.0f, gy);
             }
-            G::Pen bl(G::Color(58, kWellLn.GetR(), kWellLn.GetG(), kWellLn.GetB()), 1.0f);
+            G::Pen bl(G::Color(96, kWellLn.GetR(), kWellLn.GetG(), kWellLn.GetB()), 1.0f);
             g.DrawLine(&bl, sr.X + 7.0f, sr.Y + sr.Height*0.5f,
                              sr.GetRight() - 7.0f, sr.Y + sr.Height*0.5f);
             g.ResetClip();
@@ -7983,6 +8556,11 @@ static int presetOrder(int* out) {
         for (int s = 0; s < kPresetsPerAmp; ++s) out[n++] = g*kPresetsPerAmp + s;
         for (int i = 0; i < (int)g_userPresets.size(); ++i)
             if (g_userPresets[i].model == g) out[n++] = kNumPresets + i;
+        // Los presets de TONE3000 van PEGADOS a su cabezal (el PERFIL), que es
+        // donde suenan: en el orden curado se leen como "los del neural".
+        if (g == 12)
+            for (int i = 0; i < t3kPresetCount() && i < kMaxT3kPresets; ++i)
+                out[n++] = presetTotal() + i;
     }
     for (int i = 0; i < (int)g_userPresets.size(); ++i)
         if (g_userPresets[i].model < 0 || g_userPresets[i].model >= kAmpCount)
@@ -8019,8 +8597,10 @@ static void catLow(WCHAR* dst, const WCHAR* src, size_t cap) {
 // Pasa el preset por todos los filtros del navegador.
 static bool presetMatches(int idx) {
     if (g_brwColor >= 0 && presetFavColor(idx) != g_brwColor) return false;
-    if (g_brwOrigin == 0 && isUserPreset(idx)) return false;
+    // Origen: -1 cualquiera, 0 fabrica, 1 mio, 2 TONE3000
+    if (g_brwOrigin == 0 && (isUserPreset(idx) || isT3kPreset(idx))) return false;
     if (g_brwOrigin == 1 && !isUserPreset(idx)) return false;
+    if (g_brwOrigin == 2 && !isT3kPreset(idx)) return false;
     if (g_brwChar && !(presetTags(idx) & g_brwChar)) return false;
     if (g_brwAmp) {
         const int g = presetGroup(idx);
@@ -8073,7 +8653,7 @@ static bool browseLess(int a, int b) {
 // Los indices que el navegador ensena: filtrados y ordenados. Es el unico
 // sitio que decide que sale y en que orden (pintado, clic y teclado leen esto).
 static int browseOrder(int* out) {
-    int ord[kMaxListEntries];
+    int ord[kMaxListAll];
     const int tot = presetOrder(ord);
     int n = 0;
     for (int k = 0; k < tot; ++k) if (presetMatches(ord[k])) out[n++] = ord[k];
@@ -8825,7 +9405,7 @@ static void t3kDraw(G::Graphics& g)
             std::wstring who = it.user.empty() ? std::wstring(L"-") : it.user;
             if (it.verified) who = L"\x2713 " + who;
             const std::wstring age = t3kAge(it.ageDays);
-            if (!age.empty()) who += L" \x00B7 " + age;      // como la web: "· 1 sem"
+            if (!age.empty()) who += L" \x00B7 " + age;      // como la web: "Â· 1 sem"
             drawTxFit(g, who.c_str(), G::FontStyleBold, G::Color(0xd2, 0x9c, 0x98, 0x90),
                           tx, cy + 66.0f, 0.2f, 148.0f, TxPico);
             G::Font fd(kFontUI, kTCuerpo, G::FontStyleRegular);
@@ -8892,7 +9472,7 @@ static void t3kDraw(G::Graphics& g)
                            vx + 84.0f, pgY + 7.0f, 0.4f, 156.0f, TxRotulo);
             pressVeil(g, vx, pgY, 168.0f, 28.0f, 6.0f);
         }
-        // Aqui estaba el recuento ("tendencias · sin clave", "N tonos"). Entre el
+        // Aqui estaba el recuento ("tendencias Â· sin clave", "N tonos"). Entre el
         // boton de autores verificados (acaba en +442) y las pestanyas (empiezan en
         // +474) solo hay 32px: el rotulo se dibujaba ENCIMA del boton. Se ha movido a
         // la linea de estado, que tiene ancho de sobra.
@@ -8967,10 +9547,13 @@ static const int BRW_INFO_W = BRW_W - 24 - (BRW_INFO_X - BRW_X);
 
 static const WCHAR* kBrwSortNames[5] = { L"CURADO", L"A-Z", L"Z-A", L"AMPLI", L"RECIENTES" };
 static const WCHAR* kBrwFavNames[kFavColors] = { L"SIN COLOR", L"AMBAR", L"ROJO", L"AZUL", L"VERDE" };
-static const WCHAR* kBrwOrgNames[3] = { L"TODOS", L"FABRICA", L"MIOS" };
+// Los cuatro origenes del catalogo. TONE3000 son los .t3kpreset que el usuario
+// ya tiene en su cuenta (se leen del disco al abrir el navegador).
+static const int    kBrwOrgCount = 4;
+static const WCHAR* kBrwOrgNames[kBrwOrgCount] = { L"TODOS", L"FABRICA", L"MIOS", L"TONE3000" };
 
 struct BrwBox {
-    RECT fav[kFavColors], org[3], chr[kCharCount], amp[kAmpCount], ord[5];
+    RECT fav[kFavColors], org[kBrwOrgCount], chr[kCharCount], amp[kAmpCount], ord[5];
     RECT search, hdr, list, close, info;
     // El Info pane (paso 18.7): las cajas que se PULSAN. Se calculan aqui, con
     // el resto de la geometria, y las leen el pintado y el clic.
@@ -8985,6 +9568,14 @@ static BrwBox g_brw;
 // El nombre del caracter que el navegador ENSENA para un preset: el suyo, y si
 // no tiene etiqueta (un preset del usuario recien guardado) lo dice asi.
 static const WCHAR* presetCharLabel(int idx) {
+    if (isT3kPreset(idx)) {
+        // En la fila, el segundo dato de un preset de TONE3000 es lo que trae.
+        static WCHAR buf[48];
+        const t3k::LocalPreset* p = t3kPresetAt(idx);
+        const int nb = p ? (int)(p->left.size() + p->right.size()) : 0;
+        swprintf_s(buf, L"%d CAPTURA%s", nb, nb == 1 ? L"" : L"S");
+        return buf;
+    }
     const unsigned int t = presetTags(idx);
     for (int c = 0; c < kCharCount; ++c) if (t & (1u << c)) return kCharNames[c];
     return L"SIN ETIQUETA";
@@ -9004,13 +9595,19 @@ static void brwDateW(long long t, WCHAR* out, int n) {
 static void brwLayout() {
     const int x0 = BRW_X + 24;
     int y = BRW_Y + 76;
+    const int cwid = (BRW_FILT_W - 8) / 2;
     g_brw.lblFav = y; y += 20;
     for (int i = 0; i < kFavColors; ++i) { g_brw.fav[i] = RECT{ x0, y, x0 + BRW_FILT_W, y + 26 }; y += 26; }
     y += 6;
+    // ORIGEN en DOS columnas: con cuatro orígenes (TODOS/FABRICA/MIOS/TONE3000) en
+    // una sola columna la lista se salia del panel por abajo (lo caza la prueba T6).
     g_brw.lblOrg = y; y += 20;
-    for (int i = 0; i < 3; ++i) { g_brw.org[i] = RECT{ x0, y, x0 + BRW_FILT_W, y + 26 }; y += 26; }
-    y += 6;
-    const int cwid = (BRW_FILT_W - 8) / 2;
+    for (int i = 0; i < kBrwOrgCount; ++i) {
+        const int col = i % 2, row = i / 2;
+        const int bx = x0 + col*(cwid + 8), by = y + row*28;
+        g_brw.org[i] = RECT{ bx, by, bx + cwid, by + 26 };
+    }
+    y += ((kBrwOrgCount + 1)/2)*28 + 6;
     g_brw.lblChr = y; y += 20;
     for (int i = 0; i < kCharCount; ++i) {
         const int col = i % 2, row = i / 2;
@@ -9154,7 +9751,7 @@ static void brwField(G::Graphics& g, const RECT& r, const WCHAR* val, int que, b
 
 static void brwPaint(G::Graphics& g) {
     brwLayout();
-    int ord[kMaxListEntries];
+    int ord[kMaxListAll];
     const int n = browseOrder(ord);
     const int vis = brwVisRows();
     if (g_brwScroll > n - vis) g_brwScroll = (n > vis) ? n - vis : 0;
@@ -9168,7 +9765,7 @@ static void brwPaint(G::Graphics& g) {
     drawTxFit(g, L"PRESETS", G::FontStyleBold, kFTxt, (G::REAL)(BRW_X + 30), (G::REAL)(BRW_Y + 16), 1.4f, 220.0f, TxMarca);
     {
         WCHAR sub[80];
-        swprintf_s(sub, L"NAVEGADOR  \x00b7  %d DE %d", n, presetTotal());
+        swprintf_s(sub, L"NAVEGADOR  \x00b7  %d DE %d", n, presetTotalAll());
         drawTxFit(g, sub, G::FontStyleRegular, kFTxt3, (G::REAL)(BRW_X + 30 + 148), (G::REAL)(BRW_Y + 23), 0.8f, 420.0f, TxRotulo);
     }
     { G::Pen ul(kFLine, 1.0f); g.DrawLine(&ul, (G::REAL)(BRW_X + 30), (G::REAL)(BRW_Y + 56), (G::REAL)(BRW_X + BRW_W - 30), (G::REAL)(BRW_Y + 56)); }
@@ -9182,7 +9779,7 @@ static void brwPaint(G::Graphics& g) {
     for (int i = 0; i < kFavColors; ++i)
         brwFilterRow(g, g_brw.fav[i], kBrwFavNames[i], g_brwColor == (i == 0 ? -1 : i), i);
     drawTxFit(g, L"ORIGEN", G::FontStyleBold, kFTxt3, (G::REAL)(BRW_X + 24), (G::REAL)g_brw.lblOrg, 1.0f, 200.0f, TxRotulo);
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < kBrwOrgCount; ++i)
         brwFilterRow(g, g_brw.org[i], kBrwOrgNames[i], g_brwOrigin == i - 1, -1);
     drawTxFit(g, L"CARACTER", G::FontStyleBold, kFTxt3, (G::REAL)(BRW_X + 24), (G::REAL)g_brw.lblChr, 1.0f, 200.0f, TxRotulo);
     for (int i = 0; i < kCharCount; ++i)
@@ -9231,6 +9828,7 @@ static void brwPaint(G::Graphics& g) {
         const bool sel = (idx == g_brwSel);
         const bool hov = rectHas(r, g_mouseX, g_mouseY);
         const bool user = isUserPreset(idx);
+        const bool t3kRow = isT3kPreset(idx);
         if (sel || hov) {
             G::SolidBrush bg(kFSurf2);
             g.FillRectangle(&bg, (G::REAL)r.left, (G::REAL)r.top, (G::REAL)(r.right - r.left), (G::REAL)BRW_ROW_H);
@@ -9260,7 +9858,7 @@ static void brwPaint(G::Graphics& g) {
         // pastilla de origen
         {
             RECT br = { r.right - 74, r.top + 12, r.right - 12, r.top + 32 };
-            const WCHAR* lbl = user ? L"MIO" : L"FABRICA";
+            const WCHAR* lbl = t3kRow ? L"T3K" : (user ? L"MIO" : L"FABRICA");
             G::SolidBrush bg(kFSurf3); G::Pen bp(kFLine, 1.0f);
             roundRect(g, (G::REAL)br.left, (G::REAL)br.top, (G::REAL)(br.right - br.left), (G::REAL)(br.bottom - br.top), 5.0f, &bp, &bg);
             brwTextIn(g, br, lbl, G::FontStyleBold, kFTxt2, TxRotulo, 0.6f, 0.0f);
@@ -9298,7 +9896,7 @@ static void brwPaint(G::Graphics& g) {
             const int gp = presetGroup(idx);
             swprintf_s(sub, L"%s  \x00b7  %s  \x00b7  %s",
                        (gp >= 0) ? kAmpNames[gp] : L"SIN AMPLI", presetCharLabel(idx),
-                       user ? L"PRESET MIO" : L"DE FABRICA");
+                       isT3kPreset(idx) ? L"TONE3000" : (user ? L"PRESET MIO" : L"DE FABRICA"));
             drawTxFit(g, sub, G::FontStyleRegular, kFTxt3, (G::REAL)ir.left, (G::REAL)g_brw.iName.bottom + 4.0f, 0.4f,
                       (G::REAL)(ir.right - ir.left), TxRotulo);
         }
@@ -9306,14 +9904,16 @@ static void brwPaint(G::Graphics& g) {
             G::REAL sy = (G::REAL)g_brw.iAuthor.top - 8.0f;
             G::Pen sp(kFLine, 1.0f); g.DrawLine(&sp, (G::REAL)ir.left, sy, (G::REAL)ir.right, sy);
         }
-        // autor (editable)
+        // autor (editable). Un preset de TONE3000 ENSENA su autor y su ficha, pero
+        // no se edita: la ficha es del fichero, no del .ini.
+        const bool meta = user || isT3kPreset(idx);
         drawTxFit(g, L"AUTOR", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, (G::REAL)g_brw.iAuthor.top - 19.0f, 1.0f, 120.0f, TxRotulo);
-        brwField(g, g_brw.iAuthor, user ? presetAuthor(idx) : L"", 2, user);
+        brwField(g, g_brw.iAuthor, meta ? presetAuthor(idx) : L"", 2, user);
         // comentario (editable)
         drawTxFit(g, L"COMENTARIO", G::FontStyleBold, kFTxt3, (G::REAL)ir.left, (G::REAL)g_brw.iComment.top - 19.0f, 1.0f, 160.0f, TxRotulo);
         {
             const RECT& cr = g_brw.iComment;
-            const WCHAR* cm = user ? presetComment(idx) : L"";
+            const WCHAR* cm = meta ? presetComment(idx) : L"";
             if (g_brwEdit == 3) {
                 brwField(g, cr, cm, 3, user);
             } else {
@@ -9446,13 +10046,16 @@ static void brwCycleFav(int idx) {
 static void brwOpen() {
     modalCloseAll();
     g_brwOpen = true;
+    // La biblioteca de TONE3000 se relee del disco al abrir: si acabas de bajar o
+    // de crear un preset en su web, aparece sin reiniciar la app.
+    t3kLoadLocalPresets();
     g_brwSel  = (g_presetIdx >= 0 && g_presetIdx < presetTotal()) ? g_presetIdx : -1;
     g_brwScroll = 0;
     g_brwFocus = false;
     g_searchFocus = false;
     // Deja a la vista el preset que suena (si cabe en la lista, claro).
     brwLayout();
-    int ord[kMaxListEntries];
+    int ord[kMaxListAll];
     const int n = browseOrder(ord);
     const int vis = brwVisRows();
     for (int i = 0; i < n; ++i) if (ord[i] == g_brwSel) {
@@ -9479,7 +10082,7 @@ static void brwClick(int x, int y) {
     for (int i = 0; i < 5; ++i) if (PtInRect(&g_brw.ord[i], pt)) { g_brwSort = i; g_brwScroll = 0; return; }
     for (int i = 0; i < kFavColors; ++i)
         if (PtInRect(&g_brw.fav[i], pt)) { g_brwColor = (i == 0) ? -1 : i; g_brwScroll = 0; return; }
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < kBrwOrgCount; ++i)
         if (PtInRect(&g_brw.org[i], pt)) { g_brwOrigin = i - 1; g_brwScroll = 0; return; }
     for (int i = 0; i < kCharCount; ++i)
         if (PtInRect(&g_brw.chr[i], pt)) { g_brwChar ^= (1u << i); g_brwScroll = 0; return; }
@@ -9488,7 +10091,7 @@ static void brwClick(int x, int y) {
     if (PtInRect(&g_brw.search, pt)) { g_brwFocus = true; g_searchFocus = false; return; }
     g_brwFocus = false;
     if (PtInRect(&g_brw.list, pt)) {
-        int ord[kMaxListEntries];
+        int ord[kMaxListAll];
         const int n = browseOrder(ord);
         const int vi = (y - g_brw.list.top) / BRW_ROW_H;
         const int k = g_brwScroll + vi;
@@ -9503,8 +10106,11 @@ static void brwClick(int x, int y) {
                 g_sceneDirty.store(true);
             } else {                             // el resto de la fila: carga el preset
                 g_brwSel = idx;
-                g_presetIdx = idx;
-                applyPreset(idx);
+                // Un preset de TONE3000 NO pasa a g_presetIdx: al cargarlo, el
+                // rig deja de ser un preset del banco (ese indice no vive ahi) y
+                // el punto de MODIFICADO lo dira.
+                if (!isT3kPreset(idx)) g_presetIdx = idx;
+                presetApplyFromBrowser(idx);
                 g_sceneDirty.store(true);
             }
         }
@@ -9544,7 +10150,7 @@ static bool brwWheel(int delta) {
     brwLayout();
     POINT mp = { g_mouseX, g_mouseY };
     if (!PtInRect(&g_brw.list, mp)) return true;   // modal: se traga la rueda
-    int ord[kMaxListEntries];
+    int ord[kMaxListAll];
     const int n = browseOrder(ord);
     const int vis = brwVisRows();
     g_brwScroll += (delta > 0) ? -3 : 3;
@@ -9735,12 +10341,36 @@ static void paintWindow(HWND hwnd) {
 
     profMark("Boton global AUDIO ON/OFF (arranca apa");   //PFMARK
     // --- Boton global AUDIO ON/OFF (arranca apagado) ---
+    //  Tres estados, y cada uno se ve de un vistazo porque el boton es lo primero
+    //  que se pulsa: ON en ambar (lo que suena), OFF en ROJO DE AVISO. Con el
+    //  cuerpo neutro de los otros botones de cabecera, "AUDIO OFF" se leia como
+    //  un boton mas y no como el estado de la app: de ahi venia la mitad de los
+    //  "no me suena". El piloto esta en los dos estados (ambar / rojo), asi que
+    //  el boton nunca parece apagado del todo.
     {
-        bool en = g_audioEnabled.load();
-        bool hov = zoneHit(4);                     // AUDIO ON/OFF
+        const bool en  = g_audioEnabled.load();
+        const bool hov = zoneHit(4);                     // AUDIO ON/OFF
         G::Font fBtn(kFontTec, kTRotulo, G::FontStyleBold);
-        topBtn(g, (G::REAL)TOP_AUDIO_X, 14.0f, 100.0f, 40.0f,
-               en ? L"AUDIO ON" : L"AUDIO OFF", fBtn, hov, en, kAcc);
+        const G::Color ac = en ? kAcc : kFOff;
+        {
+            G::SolidBrush bg(flatTint(kFSurf3, ac, hov ? 0.42f : 0.30f));
+            G::Pen bp(ac, 1.0f);
+            roundRect(g, (G::REAL)TOP_AUDIO_X, 14.0f, 100.0f, 40.0f, kRPill, &bp, &bg);
+        }
+        {   // piloto: marfil-ambar cuando suena, rojo de aviso cuando no
+            G::SolidBrush led(en ? G::Color(255, 0xff, 0xdd, 0x9a) : kFOff);
+            g.FillEllipse(&led, (G::REAL)TOP_AUDIO_X + 9.0f, 14.0f + 20.0f - 2.0f, 4.0f, 4.0f);
+        }
+        {
+            G::StringFormat sfB;
+            sfB.SetAlignment(G::StringAlignmentCenter);
+            sfB.SetLineAlignment(G::StringAlignmentCenter);
+            sfB.SetFormatFlags(G::StringFormatFlagsNoWrap | G::StringFormatFlagsNoClip);
+            G::SolidBrush tb(en ? kFTxt : ac);
+            g.DrawString(en ? L"AUDIO ON" : L"AUDIO OFF", -1, &fBtn,
+                         G::RectF((G::REAL)TOP_AUDIO_X, 14.0f, 100.0f, 40.0f), &sfB, &tb);
+        }
+        pressVeil(g, (G::REAL)TOP_AUDIO_X, 14.0f, 100.0f, 40.0f, kRPill);
     }
 
     profMark("GUARDAR preset de usuario + GRABAR / P");   //PFMARK
@@ -9896,7 +10526,7 @@ static void paintWindow(HWND hwnd) {
         // --- Mapa de senal: rail + rotulo + marca vertical ------------------
         //  El diseno NO pinta la cadena con pastillas (competian con los botones
         //  y el ultimo chip acababa debajo del AFINADOR): pinta el recorrido como
-        //  el mapa de un rack — una linea con un anillo en cada extremo y, bajo
+        //  el mapa de un rack â€” una linea con un anillo en cada extremo y, bajo
         //  cada etapa, su marca: 3x14 en ambar para el cabezal (el unico nodo
         //  vivo) y 1x8 en marfil bajo para el resto. El rotulo va encima.
         {
@@ -9945,96 +10575,51 @@ static void paintWindow(HWND hwnd) {
         g_cabRetirados.clear();
         // Cadenas del perfil retiradas: las que el hilo de audio ya dejo atras.
         namRetiroFlush();
-        // estado del IR (a continuacion de "CABINA ACTIVA", sin solaparla)
-        {
-            WCHAR wir[140];
-            const int cmv = g_params.cabModel.load();
-            if (cmv == 6 && !g_cabIRPath.empty()) {
-                const size_t bs = g_cabIRPath.find_last_of(L"\\/");
-                wcsncpy_s(wir, (bs == std::wstring::npos) ? g_cabIRPath.c_str()
-                                                          : g_cabIRPath.c_str() + bs + 1, _TRUNCATE);
-            } else if (cmv >= 0 && cmv < 6) {
-                WCHAR wcn[80];
-                MultiByteToWideChar(CP_ACP, 0, kCabNames[cmv], -1, wcn, 80);
-                swprintf_s(wir, L"%s", wcn);
-            } else {
-                wcscpy_s(wir, L"CAB INTEGRADO");
-            }
-            drawTxFit(g, wir, G::FontStyleRegular,
-                          (cmv == 6) ? kAcc
-                                     : kFTxt,
-                          (G::REAL)(CAB_LBL_X + 118), (G::REAL)CAB_LBL_Y + 1.0f, 0.15f, 182.0f, TxRotulo);
-        }
-        // boton CARGAR IR (abre dialogo WAV)
+        // boton CARGAR IR (abre dialogo WAV): es una ACCION, no un selector; va
+        // con la pastilla del sistema, sin flechas y sin borde de color propio.
         {
             const bool hov = zoneHit(76);          // CARGAR IR
-            G::SolidBrush bb(hov ? G::Color(0xff, 0x21, 0x1f, 0x21) : G::Color(255, 0x10, 0x10, 0x12));
-            G::Pen bp(G::Color(255, hov ? 0x4c : 0x30, hov ? 0x5a : 0x3b, hov ? 0x66 : 0x44), 1.5f);
-            roundRect(g, (G::REAL)CAB_BTN_X, (G::REAL)CAB_BTN_Y, (G::REAL)CAB_BTN_W, (G::REAL)CAB_BTN_H,
-                      8, &bp, &bb);
-            G::SolidBrush bt(G::Color(0xff, 0xb7, 0xb1, 0xa7));
+            flatPillBody(g, (G::REAL)CAB_BTN_X, (G::REAL)CAB_BTN_Y,
+                         (G::REAL)CAB_BTN_W, (G::REAL)CAB_BTN_H, hov, false, kAcc);
+            G::SolidBrush bt(hov ? kFTxt : kFTxt2);
             G::Font fB(kFontTec, kTRotulo, G::FontStyleBold);
             g.DrawString(L"CARGAR IR", -1, &fB,
                          G::RectF((G::REAL)CAB_BTN_X, (G::REAL)CAB_BTN_Y,
                                   (G::REAL)CAB_BTN_W, (G::REAL)CAB_BTN_H), &sfC, &bt);
         }
         pressVeil(g, (G::REAL)CAB_BTN_X, (G::REAL)CAB_BTN_Y, (G::REAL)CAB_BTN_W, (G::REAL)CAB_BTN_H, 8.0f);
-        // pill CAB: cicla los 6 cabes procedurales (o USER IR si hay cargado)
+        // selector CAB: valor + flechas en la misma pastilla. Izquierda = modelo
+        // anterior, derecha = siguiente; el ciclo incluye USER IR si hay IR.
+        // Con un IR cargado el valor es el NOMBRE DEL FICHERO (en ambar): el
+        // estado util no es "USER IR", es que WAV suena.
         {
             const int cmv = g_params.cabModel.load();
-            WCHAR wcb[80];
-            if (cmv == 6) wcscpy_s(wcb, L"CAB: USER IR");
-            else if (cmv >= 0 && cmv < 6) {
-                WCHAR wcn[80];
-                MultiByteToWideChar(CP_ACP, 0, kCabNames[cmv], -1, wcn, 80);
-                swprintf_s(wcb, L"CAB: %s", wcn);
-            } else wcscpy_s(wcb, L"CAB: ---");
-            const bool hov = zoneHit(92);          // pill CAB
-            G::SolidBrush bb(hov ? G::Color(0xff, 0x1c, 0x1b, 0x1d) : G::Color(0xff, 0x17, 0x16, 0x18));
-            G::Pen bp(G::Color(255, hov ? 0x72 : 0x38, hov ? 0xa7 : 0x45, hov ? 0xd5 : 0x51), 1.5f);
-            roundRect(g, (G::REAL)CAB_SEL_X, (G::REAL)CAB_SEL_Y, (G::REAL)CAB_SEL_W, (G::REAL)CAB_SEL_H,
-                      8, &bp, &bb);
-            G::SolidBrush bt(G::Color(255, hov ? 0xd8 : 180, hov ? 0xe8 : 192, hov ? 0xf4 : 204));
-            G::Font fB(kFontTec, kTRotulo, G::FontStyleBold);
-            g.DrawString(wcb, -1, &fB,
-                         G::RectF((G::REAL)CAB_SEL_X, (G::REAL)CAB_SEL_Y,
-                                  (G::REAL)CAB_SEL_W, (G::REAL)CAB_SEL_H), &sfC, &bt);
+            WCHAR wcb[140];
+            if (cmv == 6) {
+                const size_t bs = g_cabIRPath.find_last_of(L"\\/");
+                wcsncpy_s(wcb, (bs == std::wstring::npos) ? g_cabIRPath.c_str()
+                                                          : g_cabIRPath.c_str() + bs + 1, _TRUNCATE);
+                if (!wcb[0]) wcscpy_s(wcb, L"USER IR");
+            } else if (cmv >= 0 && cmv < 6) MultiByteToWideChar(CP_ACP, 0, kCabNames[cmv], -1, wcb, 80);
+            else wcscpy_s(wcb, L"---");
+            drawStepPill(g, 92, (G::REAL)CAB_SEL_X, (G::REAL)CAB_SEL_Y,
+                         (G::REAL)CAB_SEL_W, (G::REAL)CAB_SEL_H, L"CAB", wcb, cmv == 6);
         }
         pressVeil(g, (G::REAL)CAB_SEL_X, (G::REAL)CAB_SEL_Y, (G::REAL)CAB_SEL_W, (G::REAL)CAB_SEL_H, 8.0f);
-        // pill MIC: cicla DYN -> RIBBON -> COND
+        // selector MIC: DYN -> RIBBON -> COND, con las dos direcciones
         {
             const int micv = g_params.cabMic.load();
-            const WCHAR* micName = (micv == 1) ? L"MIC: RIBBON"
-                                 : (micv == 2) ? L"MIC: COND"
-                                               : L"MIC: DYN";
-            const bool hov = zoneHit(77);          // pill MIC
-            G::SolidBrush bb(hov ? G::Color(0xff, 0x1c, 0x1b, 0x1d) : G::Color(0xff, 0x17, 0x16, 0x18));
-            G::Pen bp(G::Color(255, hov ? 0x72 : 0x38, hov ? 0xa7 : 0x45, hov ? 0xd5 : 0x51), 1.5f);
-            roundRect(g, (G::REAL)CAB_MIC_X, (G::REAL)CAB_MIC_Y, (G::REAL)CAB_MIC_W, (G::REAL)CAB_MIC_H,
-                      8, &bp, &bb);
-            G::SolidBrush bt(G::Color(255, hov ? 0xd8 : 180, hov ? 0xe8 : 192, hov ? 0xf4 : 204));
-            G::Font fB(kFontTec, kTRotulo, G::FontStyleBold);
-            g.DrawString(micName, -1, &fB,
-                         G::RectF((G::REAL)CAB_MIC_X, (G::REAL)CAB_MIC_Y,
-                                  (G::REAL)CAB_MIC_W, (G::REAL)CAB_MIC_H), &sfC, &bt);
+            const WCHAR* micName = (micv == 1) ? L"RIBBON" : (micv == 2) ? L"COND" : L"DYN";
+            drawStepPill(g, 77, (G::REAL)CAB_MIC_X, (G::REAL)CAB_MIC_Y,
+                         (G::REAL)CAB_MIC_W, (G::REAL)CAB_MIC_H, L"MIC", micName, false);
         }
         pressVeil(g, (G::REAL)CAB_MIC_X, (G::REAL)CAB_MIC_Y, (G::REAL)CAB_MIC_W, (G::REAL)CAB_MIC_H, 8.0f);
-        // pill DIST: cicla NEAR -> MID -> FAR
+        // selector DIST: NEAR -> MID -> FAR
         {
             const int dsv = g_params.cabDist.load();
-            const WCHAR* dName = (dsv == 0) ? L"DIST: NEAR"
-                                : (dsv == 2) ? L"DIST: FAR"
-                                             : L"DIST: MID";
-            const bool hov = zoneHit(93);          // pill DIST
-            G::SolidBrush bb(hov ? G::Color(0xff, 0x1c, 0x1b, 0x1d) : G::Color(0xff, 0x17, 0x16, 0x18));
-            G::Pen bp(G::Color(255, hov ? 0x72 : 0x38, hov ? 0xa7 : 0x45, hov ? 0xd5 : 0x51), 1.5f);
-            roundRect(g, (G::REAL)CAB_DST_X, (G::REAL)CAB_DST_Y, (G::REAL)CAB_DST_W, (G::REAL)CAB_DST_H,
-                      8, &bp, &bb);
-            G::SolidBrush bt(G::Color(255, hov ? 0xd8 : 180, hov ? 0xe8 : 192, hov ? 0xf4 : 204));
-            G::Font fB(kFontTec, kTRotulo, G::FontStyleBold);
-            g.DrawString(dName, -1, &fB,
-                         G::RectF((G::REAL)CAB_DST_X, (G::REAL)CAB_DST_Y,
-                                  (G::REAL)CAB_DST_W, (G::REAL)CAB_DST_H), &sfC, &bt);
+            const WCHAR* dName = (dsv == 0) ? L"NEAR" : (dsv == 2) ? L"FAR" : L"MID";
+            drawStepPill(g, 93, (G::REAL)CAB_DST_X, (G::REAL)CAB_DST_Y,
+                         (G::REAL)CAB_DST_W, (G::REAL)CAB_DST_H, L"DIST", dName, false);
         }
         pressVeil(g, (G::REAL)CAB_DST_X, (G::REAL)CAB_DST_Y, (G::REAL)CAB_DST_W, (G::REAL)CAB_DST_H, 8.0f);
         // boton AFINADOR (abre el modal): diapason + texto + estado. El icono
@@ -10045,9 +10630,8 @@ static void paintWindow(HWND hwnd) {
             const bool on = g_tunerOpen.load();
             const G::REAL bx = (G::REAL)TUNER_BTN_X, by = (G::REAL)TUNER_BTN_Y;
             if (hov || on) {
-                G::SolidBrush hb(on ? G::Color(0xff, 0x21, 0x1f, 0x21) : kBtnBgH);
-                G::Pen hp(on ? kAcc
-                             : G::Color(255, hov ? 0x4a : 0x33, hov ? 0x7d : 0x4a, hov ? 0x66 : 0x71), 1.2f);
+                G::SolidBrush hb(on ? kFSurf3 : kBtnBgH);
+                G::Pen hp(on ? kAcc : kBtnLn, 1.2f);
                 roundRect(g, bx, by, (G::REAL)TUNER_BTN_W, (G::REAL)TUNER_BTN_H, 8, &hp, &hb);
                 G::SolidBrush nb(on ? kAcc : kFTxt);
                 roundRect(g, bx + 6.0f, by + 4.0f, 3.0f, (G::REAL)TUNER_BTN_H - 8.0f, 1.5f, nullptr, &nb);
@@ -10092,6 +10676,23 @@ static void paintWindow(HWND hwnd) {
             G::SolidBrush sb(G::Color(255, 0x78, 0x78, 0x7e));
             g.DrawString(L"SALIDA", -1, &fSc, G::RectF((G::REAL)SCOPE_X, (G::REAL)(SCOPE_Y - 16),
                                                        (G::REAL)SCOPE_W, 16.0f), &sfC, &sb);
+            // Pico real en dB a la derecha de la cabecera: un visualizador sin
+            // numero es un adorno, y el pico es lo que dice si hay headroom.
+            {
+                float pk = 0.0f;
+                for (float sv : g_scopeHist) {
+                    const float a = (sv < 0.0f) ? -sv : sv;
+                    if (a > pk) pk = a;
+                }
+                WCHAR wdb[24];
+                if (pk > 1.0e-4f) swprintf_s(wdb, L"%.1f dB", 20.0f*log10f(pk));
+                else              wcscpy_s(wdb, L"\x2014 dB");
+                G::Font fDb(kFontMono, kTPico, G::FontStyleBold);
+                G::StringFormat sfR; sfR.SetAlignment(G::StringAlignmentFar);
+                G::SolidBrush dbc(pk > 0.5f ? kAcc : kFTxt3);
+                g.DrawString(wdb, -1, &fDb, G::RectF((G::REAL)SCOPE_X, (G::REAL)(SCOPE_Y - 16),
+                                                     (G::REAL)SCOPE_W, 16.0f), &sfR, &dbc);
+            }
             // highlight interior de 1px: da canto biselado al marco
             G::Pen fp(G::Color(34, kWellLn.GetR(), kWellLn.GetG(), kWellLn.GetB()), 1.0f);
             roundRect(g, (G::REAL)SCOPE_X + 1.5f, (G::REAL)SCOPE_Y + 1.5f,
@@ -10202,7 +10803,7 @@ static void paintWindow(HWND hwnd) {
                 // SELECCIONADA: la fila SUBE un tono (kFSurf2) y lleva su barra ambar en el
                 // canto. El ambar significa "esto suena" y con la barra basta:
                 // antes la fila llevaba tambien contorno ambar entero y tinte de
-                // cristal (cuatro señales para un solo estado) y la lista leia
+                // cristal (cuatro seÃ±ales para un solo estado) y la lista leia
                 // como un panel de alarmas.
                 G::SolidBrush sb2(kFSurf2);
                 roundRect(g, (G::REAL)rx, (G::REAL)ry, (G::REAL)rw, (G::REAL)rh, 6.0f, nullptr, &sb2);
@@ -10423,7 +11024,7 @@ static void paintWindow(HWND hwnd) {
                           inCh ? G::Color(0xff, 0x6e, 0x69, 0x63) : G::Color(255, 238, 244, 247),
                           tx + 58, ty + 14, 0.4f, PAL_TILE_W - 70.0f, TxNombre);
             G::SolidBrush sb(inCh ? G::Color(0xff, 0x5a, 0x56, 0x51) : kAcc);
-            g.DrawString(inCh ? L"YA EST\xC1 EN LA CADENA" : L"CLIC PARA A\xD1ADIR", -1, &fSmall,
+            g.DrawString(inCh ? L"YA EST\xC1 EN LA CADENA" : L"CLIC PARA A\u00D1ADIR", -1, &fSmall,
                          G::RectF(tx + 58, ty + 44, PAL_TILE_W - 70.0f, 18), nullptr, &sb);
             if (!inCh) pressVeil(g, tx, ty, (G::REAL)PAL_TILE_W, (G::REAL)PAL_TILE_H, 9.0f);
         }
@@ -10610,7 +11211,7 @@ static void paintWindow(HWND hwnd) {
             drawMeterFill(g, (G::REAL)MTR_GT_X, (G::REAL)BOT_MTR_Y, (G::REAL)MTR_GT_W, gr / 40.0f, g_pkHoldGr);
         }
         // LED de clip + etiqueta: bajo el medidor OUTPUT, centrado con su
-        // canal — lejos de los ticks del MASTER y de la etiqueta GATE
+        // canal â€” lejos de los ticks del MASTER y de la etiqueta GATE
         {
             static float hold = 0.0f;
             const float fl = g_clipFlag.exchange(0.0f);
@@ -10687,7 +11288,11 @@ static void paintWindow(HWND hwnd) {
             G::Pen fsep(kFLine, 1.0f);
             // --- campo 0: AUDIO, en pastilla (ver statPill) ---
             {
-                const G::Color stCol = !en   ? G::Color(0x96, 0xff, 0xa5, 0x1f)
+                // Un solo criterio de color para el estado de audio, el mismo que
+                // el boton de la cabecera: AMBAR = suena, ROJO = no suena. Antes
+                // apagado iba en ambar translucido y "encendido sin sesion" en
+                // rojo, asi que el ambar decia dos cosas contrarias a la vez.
+                const G::Color stCol = !en   ? kFOff
                                      : sessOn ? kAcc
                                               : kHot;
                 px += statPill(g, px, py, wstate, stCol, sessOn, fSmall) + 2.0f;
@@ -10720,8 +11325,8 @@ static void paintWindow(HWND hwnd) {
         G::SolidBrush dim(G::Color((BYTE)(kVeil.GetA()*g_anim.modal), 0, 0, 0));
         g.FillRectangle(&dim, 0.0f, 0.0f, (G::REAL)WIN_W, (G::REAL)WIN_H);
         // Dialogo centrado y compacto: antes era un panel casi a pantalla completa con mucho vacio
-        const G::REAL px = (WIN_W - 940) / 2, py = (WIN_H - 390) / 2 - 10;
-        const G::REAL pw = 940, ph = 390;
+        const G::REAL px = (WIN_W - kSetPanelW) / 2, py = (WIN_H - kSetPanelH) / 2 - 10;
+        const G::REAL pw = kSetPanelW, ph = kSetPanelH;
         const G::REAL valL = px + 230, valR = px + pw - 140;
         glassPanel(g, px, py, pw, ph, kRModal, true);
         // El titulo va en marfil, no en ambar: el ambar marca lo que suena o
@@ -10809,6 +11414,57 @@ static void paintWindow(HWND hwnd) {
             pressVeil(g, (G::REAL)(valL - 42), (G::REAL)ry, 36, 30, 6.0f);
             pressVeil(g, (G::REAL)(valR + 6), (G::REAL)ry, 36, 30, 6.0f);
         }
+        // Fila 6: RECARGAR DISPOSITIVOS. Una sola accion, asi que la fila entera
+        // es el boton (sin flechas) y lleva la cuenta de lo que hay ahora mismo.
+        {
+            const G::REAL ry = py + 58 + 5*34;
+            g_panelRows[5] = { (int)(px + 30), (int)ry, (int)(px + pw - 30), (int)(ry + 30) };
+            const bool hovR = mouseIn(g_panelRows[5].left, g_panelRows[5].top,
+                                      g_panelRows[5].right, g_panelRows[5].bottom);
+            if (5 & 1) {
+                G::SolidBrush band(G::Color(9, 255, 255, 255));
+                roundRect(g, px + 32, ry - 1, pw - 64, 32, 6, nullptr, &band);
+            }
+            if (hovR) {          // mismo realce de fila que las otras cinco
+                G::SolidBrush rh(kBtnBgH);
+                roundRect(g, px + 32, ry + 1, pw - 64, 28, 6, nullptr, &rh);
+                pressVeil(g, (G::REAL)g_panelRows[5].left, (G::REAL)g_panelRows[5].top,
+                          (G::REAL)(g_panelRows[5].right - g_panelRows[5].left),
+                          (G::REAL)(g_panelRows[5].bottom - g_panelRows[5].top), 6.0f);
+            }
+            {
+                // La pastilla entera del valor, con el mismo lenguaje que las otras
+                G::SolidBrush vb(hovR ? kFSurf3 : kFSurf2);
+                G::Pen vp(hovR ? kAcc : kFLine, 1.0f);
+                roundRect(g, valL - 6, ry + 3, (valR + 6) - (valL - 6), 24, 6, &vp, &vb);
+            }
+            {
+                G::SolidBrush tb(hovR ? kFTxt : kFTxt3);
+                g.DrawString(L"DISPOSITIVOS", -1, &fLbl, G::RectF(px + 44, ry, 180, 30), nullptr, &tb);
+            }
+            // Icono + rotulo de la accion
+            icRefresh(g, valL + 10.0f, ry + 15.0f, 6.5f, hovR ? kAcc : kFTxt2);
+            {
+                G::SolidBrush ab(hovR ? kFTxt : kFTxt2);
+                g.DrawString(L"RECARGAR", -1, &fVal, G::RectF(valL + 24, ry, 200, 30), nullptr, &ab);
+            }
+            // A la derecha, lo que ha encontrado (y si acaba de recargar, el aviso)
+            {
+                std::wstring sub;
+                if (!g_devMsg.empty() && (GetTickCount() - g_devMsgAt) < 6000) {
+                    sub = g_devMsg;
+                } else {
+                    sub = std::to_wstring(g_inputDevices.size()) + L" IN \xB7 " +
+                          std::to_wstring(g_outputDevices.size()) + L" OUT";
+                }
+                G::SolidBrush sb((GetTickCount() - g_devMsgAt) < 6000 ? kAcc : kFTxt2);
+                G::StringFormat sfr;
+                sfr.SetAlignment(G::StringAlignmentFar);
+                sfr.SetLineAlignment(G::StringAlignmentCenter);
+                G::RectF rf(valL + 150, ry, (valR + 4) - (valL + 150), 30);
+                g.DrawString(sub.c_str(), -1, &fSmall, rf, &sfr, &sb);
+            }
+        }
         {
             char clat[140];
             sprintf_s(clat, "Latencia estimada (captura + salida): ~%.1f ms",
@@ -10816,7 +11472,22 @@ static void paintWindow(HWND hwnd) {
             WCHAR wlat[160];
             MultiByteToWideChar(CP_ACP, 0, clat, -1, wlat, 160);
             G::SolidBrush lb(kFTxt2);
-            g.DrawString(wlat, -1, &fSmall, G::RectF(px + 44, py + 58 + 5*34 + 8, pw - 88, 24), nullptr, &lb);
+            g.DrawString(wlat, -1, &fSmall, G::RectF(px + 44, py + 58 + 6*34 + 8, pw - 88, 24), nullptr, &lb);
+        }
+        // Salud del motor: si el anillo captura->reproduccion se queda corto se
+        // ve aqui. Es el dato que separa "crujido del motor" de "crujido del
+        // dispositivo": con 0 bloques cortos, lo que suena no viene de aqui.
+        {
+            const long long xrS = g_xrunUnderrun.load(std::memory_order_relaxed);
+            const long long xrM = g_xrunShortMax.load(std::memory_order_relaxed);
+            const long long xrL = g_xrunLate.load(std::memory_order_relaxed);
+            char ch[200];
+            sprintf_s(ch, "Anillo corto: %lld bloque(s), peor hueco %lld muestras | tardios: %lld | colchon: %d",
+                      xrS, xrM, xrL, g_bridgeCushion);
+            WCHAR wh[240];
+            MultiByteToWideChar(CP_ACP, 0, ch, -1, wh, 240);
+            G::SolidBrush hb(xrS > 0 ? kFTxt2 : kFTxt3);
+            g.DrawString(wh, -1, &fSmall, G::RectF(px + 44, py + 58 + 6*34 + 32, pw - 88, 24), nullptr, &hb);
         }
         // separador tenue sobre los botones
         {
@@ -11074,7 +11745,7 @@ static int hoverKey() {
         // raton, para que el hover se repinte al cambiar de fila o de filtro.
         brwLayout();
         for (int i = 0; i < kFavColors; ++i) if (PtInRect(&g_brw.fav[i], pt)) return 400 + i;
-        for (int i = 0; i < 3; ++i) if (PtInRect(&g_brw.org[i], pt)) return 410 + i;
+        for (int i = 0; i < kBrwOrgCount; ++i) if (PtInRect(&g_brw.org[i], pt)) return 410 + i;
         for (int i = 0; i < kCharCount; ++i) if (PtInRect(&g_brw.chr[i], pt)) return 420 + i;
         for (int i = 0; i < kAmpCount; ++i) if (PtInRect(&g_brw.amp[i], pt)) return 440 + i;
         for (int i = 0; i < 5; ++i) if (PtInRect(&g_brw.ord[i], pt)) return 460 + i;
@@ -11097,6 +11768,7 @@ static int hoverKey() {
         if (PtInRect(&g_panelCancel, pt)) return 2;
         for (int i = 0; i < 5; ++i)
             if (PtInRect(&g_panelRows[i], pt)) return 10 + i;
+        if (PtInRect(&g_panelRows[5], pt)) return 15;   // RECARGAR DISPOSITIVOS
         return 3;   // dentro del panel modal
     }
     if (g_addOpen) {
@@ -11119,9 +11791,12 @@ static int hoverKey() {
     if (zoneHit(75)) return 75;   // GRABAR WAV
     if (zoneHit(91)) return 91;   // AFINADOR
     if (zoneHit(76)) return 76;   // CARGAR IR
-    if (zoneHit(92)) return 92;   // pill CAB
-    if (zoneHit(77)) return 77;   // pill MIC
-    if (zoneHit(93)) return 93;   // pill DIST
+    // Los selectores de la cabina repintan al cruzar la MITAD: la flecha viva es
+    // la que esta bajo el raton y el hoverKey tiene que distinguir las dos aunque
+    // la zona sea una sola.
+    if (zoneHit(92)) { const RECT r = zoneRect(92); return 92 + (g_mouseX >= (r.left + r.right)/2 ? 500 : 0); }
+    if (zoneHit(77)) { const RECT r = zoneRect(77); return 77 + (g_mouseX >= (r.left + r.right)/2 ? 500 : 0); }
+    if (zoneHit(93)) { const RECT r = zoneRect(93); return 93 + (g_mouseX >= (r.left + r.right)/2 ? 500 : 0); }
     if (zoneHit(101)) return 101; // slider MEZCLA
     for (int row = 0; row < 2; ++row) {
         const std::vector<int>& ch = (row == 0) ? g_chainPre : g_chainPost;
@@ -11569,6 +12244,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!g_settingsOpen) modalCloseAll();   // un modal a la vez
             g_settingsOpen = !g_settingsOpen;
             if (g_settingsOpen) {
+                // Al abrir se reenumera en silencio: si acabas de enchufar la
+                // interfaz aparece ya en la lista, sin tener que pulsar RECARGAR
+                // (el boton sigue estando para cuando el panel ya esta abierto).
+                RefreshDeviceLists(true);
                 std::lock_guard<std::mutex> lock(g_settingsMutex);
                 g_setInIdx = g_selectedInputIdx;
                 g_setOutIdx = g_selectedOutputIdx;
@@ -11579,7 +12258,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // Panel de ajustes modal
         if (g_settingsOpen) {
-            const G::REAL px = (WIN_W - 940) / 2, py = (WIN_H - 390) / 2 - 10, pw = 940;
+            const G::REAL px = (WIN_W - kSetPanelW) / 2, py = (WIN_H - kSetPanelH) / 2 - 10, pw = kSetPanelW;
             const G::REAL valL = px + 230, valR = px + pw - 140;
             if (PtInRect(&g_panelApply, pt)) {
                 {
@@ -11639,6 +12318,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 return 0;   // modal: ignora todo lo demas dentro del panel
             }
+            // RECARGAR DISPOSITIVOS: fila entera = boton. Reenumera y conserva la
+            // seleccion por ID; no cambia lo que suena hasta APLICAR.
+            if (PtInRect(&g_panelRows[5], pt)) {
+                RefreshDeviceLists();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             return 0;       // modal: clics fuera del panel se ignoran
         }
 
@@ -11672,29 +12358,36 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-        RECT selBtn = zoneRect(92);   // pill CAB
+        RECT selBtn = zoneRect(92);   // selector CAB: izquierda = anterior, derecha = siguiente
         if (PtInRect(&selBtn, pt)) {
-            int cmv = g_params.cabModel.load() + 1;         // cicla 0..5 (6 = USER IR si hay)
-            if (cmv > (g_userIRPtr ? 6 : 5)) cmv = 0;
+            const int nmax = g_userIRPtr ? 6 : 5;
+            int cmv = g_params.cabModel.load();
+            const bool back = pt.x < (selBtn.left + selBtn.right)/2;
+            cmv = back ? (cmv <= 0 ? nmax : cmv - 1)
+                       : (cmv >= nmax ? 0 : cmv + 1);
             g_params.cabModel.store(cmv);
             selectCab(cmv);
             g_sceneDirty.store(true);   // el nombre del cab cambia en la escena estatica
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-        RECT micBtn = zoneRect(77);   // pill MIC
+        RECT micBtn = zoneRect(77);   // selector MIC: izquierda = anterior, derecha = siguiente
         if (PtInRect(&micBtn, pt)) {
             const int micv = g_params.cabMic.load();
-            g_params.cabMic.store(micv >= 2 ? 0 : micv + 1);   // DYN -> RIBBON -> COND
+            const bool back = pt.x < (micBtn.left + micBtn.right)/2;
+            g_params.cabMic.store(back ? (micv <= 0 ? 2 : micv - 1)
+                                       : (micv >= 2 ? 0 : micv + 1));
             selectCabEx(g_params.cabModel.load(), g_params.cabMic.load(), g_params.cabDist.load());
             g_sceneDirty.store(true);   // el tipo de micro se lee en el preview
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-        RECT dstBtn = zoneRect(93);   // pill DIST
+        RECT dstBtn = zoneRect(93);   // selector DIST: izquierda = anterior, derecha = siguiente
         if (PtInRect(&dstBtn, pt)) {
             const int dsv = g_params.cabDist.load();
-            g_params.cabDist.store(dsv >= 2 ? 0 : dsv + 1);    // NEAR -> MID -> FAR
+            const bool back = pt.x < (dstBtn.left + dstBtn.right)/2;
+            g_params.cabDist.store(back ? (dsv <= 0 ? 2 : dsv - 1)
+                                        : (dsv >= 2 ? 0 : dsv + 1));
             selectCabEx(g_params.cabModel.load(), g_params.cabMic.load(), g_params.cabDist.load());
             g_sceneDirty.store(true);   // la distancia mueve el micro del preview
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -12316,7 +13009,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (wp == VK_DOWN || wp == VK_UP) {
-                int ord[kMaxListEntries];
+                int ord[kMaxListAll];
                 const int n = browseOrder(ord);
                 if (n > 0) {
                     int cur = 0;
@@ -12331,8 +13024,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
             } else if (wp == VK_RETURN) {
                 if (g_brwSel >= 0) {
-                    g_presetIdx = g_brwSel;
-                    applyPreset(g_brwSel);
+                    if (!isT3kPreset(g_brwSel)) g_presetIdx = g_brwSel;
+                    presetApplyFromBrowser(g_brwSel);
                     g_sceneDirty.store(true);
                 }
             }
@@ -12525,11 +13218,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     WNDCLASSEXA wc = { sizeof(wc) };
-    // Icono de la casa (incrustado), no el generico de Windows: es lo unico de
-    // la ventana que no se maqueta y lo primero que se ve en la barra de tareas
-    // y en Alt+Tab.
-    HICON hAppIcon = CreateIconFromResourceEx((PBYTE)kAppIcon, kAppIconLen, TRUE,
-                                              0x00030000, 48, 48, LR_DEFAULTCOLOR);
+    // Icono de la casa (GuitarAmp.rc, id 1), no el generico de Windows: es lo
+    // unico de la ventana que no se maqueta y lo primero que se ve en la barra
+    // de tareas y en Alt+Tab. El mismo recurso pinta el .exe en el Explorador.
+    HICON hAppIcon = (HICON)LoadImageA(hInst, MAKEINTRESOURCEA(1), IMAGE_ICON, 0, 0,
+                                       LR_DEFAULTSIZE | LR_SHARED);
     if (!hAppIcon) hAppIcon = LoadIcon(nullptr, IDI_APPLICATION);
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
@@ -12595,6 +13288,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     g_audioEnabled.store(false);   // arranca apagado: el usuario debe encenderlo
     applyPreset(0);       // publica su cadena y reconstruye los knobs
     loadIni();            // restaura audio, DSP, cadena y presets de usuario
+    // Los presets de TONE3000 se leen AQUI, una vez (140 ms con 290 ficheros), y
+    // luego quedan en cache: si se leyeran al abrir el navegador, el primer clic
+    // en PRESETS se comeria ese medio segundo con la ventana ya pintada.
+    t3kLoadLocalPresets();
     loadAmpArt();         // frontales del zip (si faltan: cara procedural)
     rebuildKnobs();       // la cadena cargada puede diferir de la del preset 0
 
@@ -13098,7 +13795,7 @@ static void hNamRejects() {
 // comportarse como prepare(true), dentro del ruido de prepare().
 //
 // Dato de paso: prepare() NO es idempotente (dos llamadas completas dan
-// señales distintas, dab de arriba). Viene de antes de este cambio y es la
+// seÃ±ales distintas, dab de arriba). Viene de antes de este cambio y es la
 // razon por la que dab no puede usarse como referencia. Lo que prepare() hace
 // al RESETEAR g_cabConv.irCur es forzar ensureFor() a tirar el historial de la
 // overlap-save y reasignar seis vectores: por eso llamarlo por muestra era lo
@@ -13411,7 +14108,7 @@ static void hTestFlat() {
         hCheck(pPozo, "J2 flatWell pinta el tono del lienzo",
                pPozo ? "centro = kFBg" : "el centro no es kFBg");
 
-        // J3: la pastilla activa tiñe su borde del color del piloto y enciende un LED
+        // J3: la pastilla activa tiÃ±e su borde del color del piloto y enciende un LED
         flatPillBody(g, 150, 12, 60, 40, false, true, kAcc);
         const int led = countAcc(150, 12, 210, 52);
         hCheck(led > 0, "J3 la pastilla activa lleva piloto ambar", led ? "LED presente" : "sin LED");
@@ -13471,19 +14168,18 @@ static void hTestFlat() {
             return n;
         };
 
-        // J8: la pastilla del estado de audio. Apagada (SILENCIO) el cuerpo sigue
-        // siendo ambar pero el PILOTO no se enciende: el punto solo dice que hay
-        // sesion. Es la unica pastilla de la app que representa un estado que no
-        // se pulsa, asi que su ambar es tenue.
+        // J8: la pastilla del estado de audio sin sesion. El color lo pone quien
+        // la llama (ambar = suena, rojo de aviso = apagado); lo que se comprueba
+        // aqui es que el PILOTO no se encienda: el punto solo dice "hay sesion".
         {
             G::Font fp(kFontUI, kTCuerpo);
             const int wA = (int)statPill(g, 10.0f, 106.0f, L"SILENCIO",
                                          G::Color(0x96, 0xff, 0xa5, 0x1f), false, fp);
             const int amb = warm(10, 103, 10 + wA, 125);
             const int led = isLit(18, 112, 26, 120);
-            sprintf_s(d, "ancho=%d, px ambar en el cuerpo=%d, px de piloto=%d", wA, amb, led);
+            sprintf_s(d, "ancho=%d, px calidos en el cuerpo=%d, px de piloto=%d", wA, amb, led);
             hCheck(amb > 0 && led == 0,
-                   "J8 la pastilla del estado es ambar en reposo y no enciende el piloto", d);
+                   "J8 la pastilla del estado no enciende el piloto si no hay sesion", d);
         }
         // J9: con la sesion en linea el piloto se enciende. Es lo unico que
         // distingue ONLINE de SILENCIO a un metro de la pantalla.
@@ -13683,9 +14379,9 @@ static void hTestPresets() {
     hCheck(q1 && q1b && q1c && q1d && q1e, "Q1 la variante cuenta dentro del ampli (1..6, el del usuario sigue)", d);
 
     // Q2: el ORDEN: por ampli, con los del usuario pegados a los suyos.
-    int ord[kMaxListEntries];
+    int ord[kMaxListAll];
     const int nord = presetOrder(ord);
-    int dup = 0, seen[kMaxListEntries] = {};
+    int dup = 0, seen[kMaxListAll] = {};
     int posU5 = -1, posU5b = -1, posU12 = -1;
     for (int i = 0; i < nord; ++i) {
         if (ord[i] >= 0 && ord[i] < kMaxListEntries) { if (seen[ord[i]]) ++dup; seen[ord[i]] = 1; }
@@ -13937,7 +14633,7 @@ static void hTestBrowse() {
         { UserPreset u = {}; wcsncpy_s(u.name, L"ALFA", _TRUNCATE); u.model = 5; u.tags = (1u << 0); u.used = 100; g_userPresets.push_back(u); }
         { UserPreset u = {}; wcsncpy_s(u.name, L"ZETA", _TRUNCATE); u.model = 5; u.tags = (1u << 1); u.favColor = 2; u.used = 200; g_userPresets.push_back(u); }
 
-        int o[kMaxListEntries];
+        int o[kMaxListAll];
         g_brwSort = 0; g_brwColor = -1; g_brwOrigin = -1; g_brwChar = 0; g_brwAmp = 0; g_brwText[0] = 0;
         const int nAll = browseOrder(o);
 
@@ -13993,12 +14689,12 @@ static void hTestBrowse() {
         brwLayout();
         const int pieY = BRW_Y + BRW_H - 40;
         int fuera = 0, pisa = 0;
-        RECT all[5 + kFavColors + 3 + kCharCount + kAmpCount + 5];
+        RECT all[5 + kFavColors + kBrwOrgCount + kCharCount + kAmpCount + 5];
         int m = 0;
         all[m++] = g_brw.search; all[m++] = g_brw.hdr; all[m++] = g_brw.list;
         all[m++] = g_brw.close;  all[m++] = g_brw.info;
         for (int i = 0; i < kFavColors; ++i) all[m++] = g_brw.fav[i];
-        for (int i = 0; i < 3; ++i)          all[m++] = g_brw.org[i];
+        for (int i = 0; i < kBrwOrgCount; ++i)          all[m++] = g_brw.org[i];
         for (int i = 0; i < kCharCount; ++i) all[m++] = g_brw.chr[i];
         for (int i = 0; i < kAmpCount; ++i)  all[m++] = g_brw.amp[i];
         for (int i = 0; i < 5; ++i)          all[m++] = g_brw.ord[i];
@@ -14620,7 +15316,7 @@ static void hTestRtPriority() {
 
 // ---------------------------------------------------------------------------
 //  T16: el convolucionador de la cabina se reserva al PREPARAR la sesion, no en
-//  la primera muestra que pasa por el. Sus buffers son de tamaño fijo (N y
+//  la primera muestra que pasa por el. Sus buffers son de tamaÃ±o fijo (N y
 //  BLOCK) pero se reservaban de forma perezosa dentro del callback: seis
 //  reservas en el primer bloque, justo cuando el usuario empieza a tocar. Aqui
 //  se comprueba el contrato de prepare(): despues de el, dar de alta un IR (y
@@ -14652,9 +15348,316 @@ static void hTestCabConvPrep(int fs) {
 #endif
 }
 
+// W1..W6: las capturas .nam y el nivel de las doce voces.
+//  Lo que se corrigio aqui:
+//   - un A2 de TONE3000 es un SlimmableContainer (y el WaveNet de dentro trae
+//     kernel y activacion POR CAPA): se rechazaba con "arquitectura no
+//     soportada" y esas capturas no cargaban;
+//   - la ruta se pasaba a fopen en UTF-8, que en Windows no la entiende: una
+//     captura en una carpeta con acentos decia "no se puede abrir el fichero";
+//   - "sample_rate" no se leia nunca (todo se trataba como 48 kHz);
+//   - el modelo se ejecutaba a la tasa del motor aunque no fuera la suya;
+//   - DUO RECTO y KRAFT V4 iban 10,5 dB por debajo del resto.
+static void hNamFixes(int fs) {
+    char d[320];
+
+    // W1: contenedor A2 completo, ejecutando el submodelo entero
+    {
+        nam::Model m;
+        const bool ok = m.load("_nmaref/m_A2.nam");
+        float pk = 0.0f, nan = 0.0f;
+        if (ok) {
+            m.reset();
+            for (int i = 0; i < m.prewarmSamples; ++i) m.tick(0.0f);
+            for (int i = 0; i < 2048; ++i) {
+                const float y = m.tick(0.2f*(float)std::sin(2.0*M_PI*220.0*(double)i/(double)fs));
+                if (!std::isfinite(y)) nan += 1.0f;
+                const float a = std::fabs(y);
+                if (a > pk) pk = a;
+            }
+        }
+        sprintf_s(d, "_nmaref/m_A2.nam -> %s | %.0f Hz, %d canal(es), pico %.3f, no finitos %d",
+                  ok ? "carga" : m.err.c_str(), m.sampleRate, m.outChannels, pk, (int)nan);
+        hCheck(ok && pk > 0.0f && nan == 0.0f,
+               "W1 un A2 SlimmableContainer carga y ejecuta el submodelo entero", d);
+    }
+
+    // W2: captura en una ruta con acentos (loadW, la que usa la app)
+    {
+        const std::wstring dir = exeDirW() + L"\\_dsp_out\\captura con acentos \u00f1\u00e1\u00e9";
+        CreateDirectoryW((exeDirW() + L"\\_dsp_out").c_str(), nullptr);
+        CreateDirectoryW(dir.c_str(), nullptr);
+        const std::wstring dst = dir + L"\\modelo.nam";
+        const BOOL cp = CopyFileW((exeDirW() + L"\\_nmaref\\m_wavenet.nam").c_str(), dst.c_str(), FALSE);
+        nam::Model m;
+        const bool ok = cp && m.loadW(dst);
+        sprintf_s(d, "copia %s | carga %s", cp ? "hecha" : "FALLO",
+                  ok ? "ok" : m.err.c_str());
+        hCheck(ok, "W2 una captura en una carpeta con acentos carga", d);
+        DeleteFileW(dst.c_str());
+    }
+
+    // W3: sample_rate se lee del fichero (antes quedaba clavado en 48000)
+    {
+        std::string src, mod;
+        const bool read = hNamRead("_nmaref/m_wavenet.nam", src);
+        const bool sub  = read && hNamSubst(src, "\"sample_rate\": 48000", "\"sample_rate\": 44100", mod);
+        nam::Model m;
+        const bool ok = sub && m.loadText(mod);
+        sprintf_s(d, "sample_rate del fichero -> %.0f Hz (esperado 44100)", m.sampleRate);
+        hCheck(ok && std::fabs(m.sampleRate - 44100.0) < 1.0,
+               "W3 la frecuencia del .nam se lee y no se queda en 48000", d);
+    }
+
+    // W4: la conversion de frecuencia no cambia el tono ni el nivel
+    {
+        NamRateConv rc;
+        rc.configure(48000.0, 44100.0);
+        auto pass = [](float s) { return s; };
+        const int N = 44100;
+        std::vector<float> out((size_t)N, 0.0f);
+        for (int i = 0; i < N; ++i) {
+            const float x = 0.5f*(float)std::sin(2.0*M_PI*1000.0*(double)i/44100.0);
+            out[(size_t)i] = rc.tick(pass, x);
+        }
+        const size_t i0 = (size_t)N/2, n = i0 - 16;
+        const double m1 = hDft(out, i0, n, 1000.0, 44100.0);
+        double hmax = 0.0;
+        for (int h = 2; h <= 4; ++h) {
+            const double mm = hDft(out, i0, n, 1000.0*h, 44100.0);
+            if (mm > hmax) hmax = mm;
+        }
+        sprintf_s(d, "48k->44,1k: 1 kHz sale con amplitud %.4f (esperada 0,5000), peor armonico %.5f",
+                  m1, hmax);
+        hCheck(std::fabs(m1 - 0.5) < 0.01 && hmax < 0.002,
+               "W4 convertir 48k a 44,1k deja el tono y el nivel en su sitio", d);
+    }
+
+    // W5: la 2a etapa asimetrica no deja continua EN LA SALIDA con la MEZCLA al
+    // 0 % (sin cabina de por medio, que es el unico caso en que la continua
+    // llegaria al conector). Con la cabina puesta su propio paso alto ya la quita
+    // y la medida no distingue nada, por eso el caso util es este.
+    {
+        double worst = 0.0; int worstM = -1;
+        for (int m = 0; m < 12; ++m) {
+            if (kVoices[m].stage2 <= 0.01f) continue;
+            hPrepare(fs, m, kVoices[m].cab, kVoices[m].mic, kVoices[m].dist);
+            g_params.mixCab.store(0.0f);      // DESPUES de hPrepare: initDspDefaults la pone a 100
+            std::vector<float> in = hTone(220.0, -20.0, 1.0, fs);
+            std::vector<float> out = hRender(in);
+            double acc = 0.0; const size_t i0 = out.size()/2, n = out.size()/2 - 16;
+            for (size_t i = 0; i < n; ++i) acc += out[i0 + i];
+            const double dc = std::fabs(acc/(double)n);
+            const double rms = hRms(out, i0, n);
+            const double rel = (rms > 1e-9) ? dc/rms : dc;
+            if (rel > worst) { worst = rel; worstM = m; }
+        }
+        g_params.mixCab.store(100.0f);
+        sprintf_s(d, "peor desvio de continua %.4f%% del rms (ampli %d), sin cabina", 100.0*worst, worstM);
+        hCheck(worstM >= 0 && worst < 0.005,
+               "W5 el cabezal no saca continua (se bloquea a su salida)", d);
+    }
+
+    // W6: cambiar de ampli no puede dar un salto de nivel
+    {
+        std::vector<float> di = hMakeDI(fs, 8.0);
+        double lo = 1e9, hi = 0.0; int loM = -1, hiM = -1;
+        for (int m = 0; m < 12; ++m) {
+            hPrepare(fs, m, kVoices[m].cab, kVoices[m].mic, kVoices[m].dist);
+            std::vector<float> out = hRender(di);
+            const double r = hRms(out, 0, out.size());
+            if (r < lo) { lo = r; loM = m; }
+            if (r > hi) { hi = r; hiM = m; }
+        }
+        const double spreadDb = 20.0*std::log10((hi + 1e-12)/(lo + 1e-12));
+        sprintf_s(d, "rms %.4f (%s) .. %.4f (%s) = %.2f dB de diferencia",
+                  lo, kVoices[loM].name, hi, kVoices[hiM].name, spreadDb);
+        hCheck(spreadDb < 3.0, "W6 los doce amplis quedan nivelados entre si", d);
+    }
+
+    // W7: un hueco del anillo NO puede meter un escalon (era el chasquido).
+    //  Antes el render rellenaba con 0: en medio de una onda eso es un salto de
+    //  toda la amplitud, ida y vuelta, o sea un "crack". Ahora se mantiene la
+    //  ultima muestra y se desvanece: el salto entre muestras tiene que quedar
+    //  al nivel del de la propia senal, no muy por encima.
+    {
+        const double fsd = (double)fs;
+        const float fadeK = std::exp(-1.0f/(0.005f*fs));
+        float last = 0.0f, fade = 1.0f;
+        const int N = 4096, gapAt = 2048, gapN = 3;
+        double worstStep = 0.0, refStep = 0.0;
+        float prev = 0.0f;
+        for (int i = 0; i < N; ++i) {
+            float s;
+            if (i >= gapAt && i < gapAt + gapN) s = bridgeNextGapSample(last, fade, fadeK);
+            else {
+                s = (float)(0.5*std::sin(2.0*M_PI*1000.0*(double)i/fsd));
+                last = s; fade = 1.0f;
+            }
+            const double dd = std::fabs((double)s - (double)prev);
+            if (i > gapAt - 2 && i < gapAt + gapN + 2) { if (dd > worstStep) worstStep = dd; }
+            else if (i > 2 && dd > refStep) refStep = dd;
+            prev = s;
+        }
+        sprintf_s(d, "peor salto en el hueco %.5f vs %.5f de la senal (x%.2f)",
+                  worstStep, refStep, worstStep/(refStep + 1e-12));
+        hCheck(worstStep < refStep*1.6 + 1e-4,
+               "W7 un hueco del anillo no mete escalon (se mantiene, no se pone a cero)", d);
+    }
+
+    hPrepare(fs, 0);
+}
+
+// W8/W9: el boton RECARGAR DISPOSITIVOS del panel de ajustes.
+//  Windows solo lista los endpoints ACTIVOS al enumerar, asi que una interfaz
+//  enchufada despues de arrancar no aparece hasta volver a enumerar. Lo que se
+//  comprueba aqui es lo que puede romperse al recargar: que la seleccion siga
+//  al MISMO dispositivo (los indices bailan) y que no se toque el que esta
+//  sonando (el cambio lo hace APLICAR).
+static void hDevRefresh() {
+    char d[320];
+    // W8: recolocacion por ID, con listas sinteticas (no depende del hardware)
+    {
+        std::vector<AudioDeviceInfo> l, l2, vacia;
+        l.push_back({ L"id-A", L"A" });
+        l.push_back({ L"id-B", L"B" });
+        l.push_back({ L"id-C", L"C" });
+        l2.push_back({ L"id-B", L"B" });     // se ha ido el primero: los indices bajan
+        l2.push_back({ L"id-C", L"C" });
+        const int a = remapDeviceIdx(l,     L"id-C");   // 2
+        const int b = remapDeviceIdx(l2,    L"id-C");   // 1 (antes era 2)
+        const int c = remapDeviceIdx(l2,    L"id-A");   // 0: ya no esta
+        const int e = remapDeviceIdx(vacia, L"id-A");   // 0: lista vacia
+        sprintf_s(d, "mismo orden=%d | tras quitar uno=%d | desaparecido=%d | lista vacia=%d",
+                  a, b, c, e);
+        hCheck(a == 2 && b == 1 && c == 0 && e == 0,
+               "W8 recargar recoloca la seleccion por ID, no por posicion", d);
+    }
+    // W9: ida y vuelta con los dispositivos de esta maquina
+    {
+        const HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        EnumerateDevices(true);
+        const size_t nin = g_inputDevices.size(), nout = g_outputDevices.size();
+        std::wstring curIn, curOut;
+        {
+            std::lock_guard<std::mutex> lk(g_deviceMutex);
+            curIn = g_currentInputId; curOut = g_currentOutputId;
+        }
+        // Se elige el ULTIMO de cada lista: si la recarga se guiara por indice,
+        // al desaparecer uno de delante la seleccion se moveria de dispositivo.
+        g_selectedInputIdx  = (int)nin  > 0 ? (int)nin  - 1 : 0;
+        g_selectedOutputIdx = (int)nout > 0 ? (int)nout - 1 : 0;
+        const std::wstring wantIn  = nin  ? g_inputDevices[(size_t)g_selectedInputIdx].id   : L"";
+        const std::wstring wantOut = nout ? g_outputDevices[(size_t)g_selectedOutputIdx].id : L"";
+        RefreshDeviceLists();
+        const bool inOk  = (nin  == 0) || (g_inputDevices[(size_t)g_selectedInputIdx].id   == wantIn);
+        const bool outOk = (nout == 0) || (g_outputDevices[(size_t)g_selectedOutputIdx].id == wantOut);
+        std::wstring curIn2, curOut2;
+        {
+            std::lock_guard<std::mutex> lk(g_deviceMutex);
+            curIn2 = g_currentInputId; curOut2 = g_currentOutputId;
+        }
+        const bool keep = (curIn == curIn2) && (curOut == curOut2);
+        sprintf_s(d, "%d entrada(s) / %d salida(s) | seleccion conservada %d/%d | motor intacto %d",
+                  (int)nin, (int)nout, (int)inOk, (int)outOk, (int)keep);
+        hCheck(inOk && outOk && keep,
+               "W9 recargar no cambia el dispositivo con el que suena el motor", d);
+        if (SUCCEEDED(hrCo)) CoUninitialize();
+    }
+}
+
+// W10: los presets de TONE3000 dentro del catalogo de PRESETS.
+//  Se prueba con una biblioteca SINTETICA (no toca disco ni red). Lo que puede
+//  romperse es el espacio de indices compartido -que un preset de TONE3000 se
+//  cuele donde se espera uno del banco- y los filtros del navegador.
+static void hT3kPresets() {
+    char d[400];
+    std::vector<t3k::LocalPreset> bak;      // la real, si la hay: se devuelve
+    bak.swap(g_t3kLocal);
+    g_t3kLocal.clear();
+    const int base = presetTotal();
+
+    t3k::PresetBlock b1; b1.name = "A1"; b1.url = "https://x/a1.nam"; b1.nam = true;
+    t3k::PresetBlock b2; b2.name = "A2"; b2.url = "https://x/a2.nam"; b2.nam = true;
+    t3k::LocalPreset p1; p1.name = "RUIDO DE FONDO"; p1.ok = true;
+    p1.left.push_back(b1); p1.left.push_back(b2);
+    t3k::LocalPreset p2; p2.name = "CRUNCH SUCIO"; p2.ok = true;
+    p2.stereo = true; p2.left.push_back(b1);
+    g_t3kLocal.push_back(p1);
+    g_t3kLocal.push_back(p2);
+
+    const bool count  = (presetTotalAll() == base + 2);
+    const bool bounds = isT3kPreset(base) && isT3kPreset(base + 1) &&
+                        !isT3kPreset(base - 1) && !isT3kPreset(base + 2);
+    WCHAR nm[128] = L""; presetNameW(base, nm, 128);
+    const WCHAR* cm = presetComment(base);
+    const bool meta = (wcscmp(nm, L"RUIDO DE FONDO") == 0) &&
+                      (presetGroup(base) == 12) && (presetTags(base) == 0) &&
+                      (wcscmp(presetAuthor(base), L"TONE3000") == 0) &&
+                      (wcsstr(cm, L"2 capturas") != nullptr) &&
+                      (presetFavColor(base) == 0);
+
+    // El orden curado los deja PEGADOS al PERFIL (grupo 12) y sin duplicados.
+    int ord[kMaxListAll];
+    const int nord = presetOrder(ord);
+    int pos1 = -1, pos2 = -1, dup = 0;
+    bool seen[kMaxListAll] = {};
+    for (int i = 0; i < nord; ++i) {
+        if (ord[i] >= 0 && ord[i] < kMaxListAll) { if (seen[ord[i]]) ++dup; seen[ord[i]] = true; }
+        if (ord[i] == base)     pos1 = i;
+        if (ord[i] == base + 1) pos2 = i;
+    }
+
+    // Filtros de origen: TONE3000 solo ellos; FABRICA y MIOS ninguno.
+    const int   bakO = g_brwOrigin, bakC = g_brwColor, bakS = g_brwSort;
+    unsigned int bakCh = g_brwChar, bakAm = g_brwAmp;
+    WCHAR bakT[64]; wcsncpy_s(bakT, g_brwText, _TRUNCATE);
+    g_brwColor = -1; g_brwChar = 0; g_brwAmp = 0; g_brwText[0] = 0; g_brwSort = 0;
+    g_brwOrigin = 2; int o2[kMaxListAll]; const int n2 = browseOrder(o2);
+    g_brwOrigin = 0; int o0[kMaxListAll]; const int n0 = browseOrder(o0);
+    g_brwOrigin = 1; int o1[kMaxListAll]; const int n1 = browseOrder(o1);
+    bool t3kOnly = (n2 == 2);
+    for (int i = 0; i < n2; ++i) if (!isT3kPreset(o2[i])) t3kOnly = false;
+    bool fabOk = true, mioOk = true;
+    for (int i = 0; i < n0; ++i) if (isT3kPreset(o0[i])) fabOk = false;
+    for (int i = 0; i < n1; ++i) if (isT3kPreset(o1[i])) mioOk = false;
+    g_brwOrigin = bakO; g_brwColor = bakC; g_brwSort = bakS;
+    g_brwChar = bakCh; g_brwAmp = bakAm; wcsncpy_s(g_brwText, bakT, _TRUNCATE);
+
+    sprintf_s(d, "%d +2=%d | nombre/meta %d | orden %d,%d dup %d | origen T3K: %d (solo T3K %d) | fabrica sin T3K %d | mios sin T3K %d",
+              base, (int)count, (int)meta, pos1, pos2, dup, n2, (int)t3kOnly, (int)fabOk, (int)mioOk);
+    hCheck(count && bounds && meta && dup == 0 && pos1 >= 0 && pos2 == pos1 + 1 &&
+           t3kOnly && fabOk && mioOk,
+           "W10 los presets de TONE3000 entran en el catalogo de PRESETS", d);
+
+    // Cargar sin sesion y sin las capturas en disco: NO puede quedarse callado
+    // (tiene que abrir la hoja de conexion) y NO puede dejar el cabezal en el
+    // PERFIL sin capturas, que seria silencio sin explicacion.
+    {
+        const int ampBak = g_params.model.load();
+        g_t3kConnOpen = false;
+        g_params.model.store(0);
+        applyT3kPreset(base);
+        const bool aviso   = g_t3kConnOpen;
+        const bool intacto = (g_params.model.load() == 0);
+        g_t3kConnOpen = false;
+        g_params.model.store(ampBak);
+        rebuildKnobs();
+        sprintf_s(d, "pide conexion=%d | cabezal sin tocar=%d", (int)aviso, (int)intacto);
+        hCheck(aviso && intacto,
+               "W11 un preset de TONE3000 sin sesion avisa y no deja el cabezal a oscuras", d);
+    }
+
+    g_t3kLocal.clear();
+    bak.swap(g_t3kLocal);
+}
+
 static void hSelftest(int fs) {
     printf("\n== autotest de correcciones ==\n");
     hNamRejects();
+    hNamFixes(fs);
+    hDevRefresh();
+    hT3kPresets();
     hPrepareRebuild(fs);
     hRingContract();
     hIniContract();
@@ -14816,11 +15819,29 @@ static int hRender(const char* outPath, const char* state, int winW, int winH) {
     // (y, antes de arreglar pop(), tumbaba el proceso con una division por cero).
     g_amp.prepare(48000.0f);
 
+    // Los dispositivos, igual que WinMain: sin esto el panel de ajustes sale con
+    // "(sin dispositivos)" y la foto no ensena lo que ve el usuario.
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    EnumerateDevices();
+
     if (state) {   // los modales tambien se retratan
         if      (strcmp(state, "add") == 0)      { g_addOpen = true; g_addRow = 0; }
         else if (strcmp(state, "tuner") == 0)    g_tunerOpen.store(true);
         else if (strcmp(state, "settings") == 0) g_settingsOpen = true;
+        else if (strcmp(state, "audioon") == 0) g_audioEnabled.store(true);   // boton AUDIO ON
+        else if (strcmp(state, "perfil") == 0) {   // cabezal PERFIL con una captura cargada
+            g_params.model.store(12);
+            std::wstring msg;
+            namChainAdd(L"perfiles/wavenet_a1_standard.nam", msg);
+            rebuildKnobs();
+        }
         else if (strcmp(state, "browser") == 0)  { brwOpen(); g_brwSel = 0; }   // navegador (paso 18)
+        else if (strcmp(state, "browser_t3k") == 0) {   // catalogo filtrado por TONE3000
+            brwOpen();
+            g_brwOrigin = 2;
+            if (t3kPresetCount() > 0) g_brwSel = presetTotal();
+            g_brwScroll = 0;
+        }
         else if (strcmp(state, "browser_mio") == 0) {   // con presets mios y metadatos
             brwOpen();
             UserPreset u = {};

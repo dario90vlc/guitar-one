@@ -3,7 +3,9 @@
 #  Windows interpone el aviso de "editor desconocido" y hay que pulsar Ejecutar
 #  cada vez que se abre.
 $ErrorActionPreference = 'Continue'
-$root = 'C:\Users\Usuario\Desktop\Nueva carpeta (7)'
+# La raiz es la carpeta de ESTE script, no una ruta de esta maquina: con la ruta
+# clavada, el lanzador de una copia del proyecto abria (y recompilaba) la otra.
+$root = $PSScriptRoot
 $exe  = Join-Path $root 'native\GuitarAmp.exe'
 $src  = Join-Path $root 'native\GuitarAmpNative.cpp'
 $log  = Join-Path $env:TEMP 'guitaramp_build.log'
