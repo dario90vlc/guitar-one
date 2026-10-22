@@ -9,8 +9,9 @@ respuesta de impulso, afinador y grabación a WAV.
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows&logoColor=white)
 ![C%2B%2B17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
 ![Sin dependencias](https://img.shields.io/badge/dependencias-ninguna-2ea043)
-![Licencia MIT](https://img.shields.io/badge/licencia-MIT-e3b341)
+[![Licencia MIT](https://img.shields.io/badge/licencia-MIT-e3b341)](LICENSE)
 ![Autotest](https://img.shields.io/badge/autotest-89%20comprobaciones-2ea043)
+[![Release](https://img.shields.io/github/v/release/dario90vlc/guitar-one?color=e3b341&label=release)](https://github.com/dario90vlc/guitar-one/releases/latest)
 
 ![Ventana principal de GUITAR ONE](docs/img/main.png)
 
@@ -104,7 +105,8 @@ ventana fuera de pantalla.)*
 
 ## Descargar y ejecutar
 
-1. Descarga el ZIP de la última release y descomprímelo donde quieras.
+1. Descarga el [ZIP de la última release](https://github.com/dario90vlc/guitar-one/releases/latest)
+   y descomprímelo donde quieras.
 2. Doble clic en **`GuitarAmp.exe`**.
 3. Pulsa **AUDIO ON** en la cabecera: la app arranca en silencio a propósito.
 
@@ -117,11 +119,14 @@ TONE3000 **no se incluyen**: se descargan de su web desde el explorador integrad
 
 ## Compilar
 
-Solo hace falta **Visual Studio 2022 Build Tools** (`cl`). Nada más: no hay
+Solo hace falta **Visual Studio 2022 Build Tools** con el **Windows SDK**
+(`cl` compila y `rc` mete el icono y la ficha de versión). Nada más: no hay
 dependencias que descargar, ni CMake, ni vcpkg.
 
 ```powershell
-.\_build.ps1                 # app: cl /utf-8 /O2 /EHsc /std:c++17 + firma local si hay certificado
+git clone https://github.com/dario90vlc/guitar-one
+cd guitar-one
+.\_build.ps1                 # app: rc + cl /utf-8 /O2 /EHsc /std:c++17 + firma local si hay certificado
 .\native\_build_dsp.ps1      # banco de medida del DSP (sin UI ni audio)
 ```
 
