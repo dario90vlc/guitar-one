@@ -332,6 +332,31 @@ static void namComputeTrims(const nam::Model& m, NamSlot& sl)
     sl.outTrim.store(std::pow(10.0f, outDb/20.0f));
 }
 
+// La caja va horneada: si algun bloque ACTIVO de la cadena trae la caja
+// incluida (gear_type amp_cab), la cabina de la app no pinta nada y la MEZCLA
+// efectiva es 0 (el parametro se conserva: al quitar o apagar el bloque la
+// cabina vuelve sola). Comparacion manual sin locale: el fichero trae
+// minusculas, pero un "Amp_Cab" no debe colar una segunda caja.
+static bool namChainBakedCab(const NamChain* ch)
+{
+    if (!ch) return false;
+    for (const auto& sl : *ch) {
+        if (!sl || !sl->model) continue;
+        if (!sl->on.load(std::memory_order_relaxed)) continue;
+        const std::string& gt = sl->model->gearType;
+        if (gt.size() != 7) continue;
+        static const char kCab[8] = "amp_cab";
+        bool same = true;
+        for (size_t i = 0; i < 7; ++i) {
+            char c = gt[i];
+            if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+            if (c != kCab[i]) { same = false; break; }
+        }
+        if (same) return true;
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------------------
 //  Conversion de frecuencia para las capturas
 // ---------------------------------------------------------------------------
@@ -1768,6 +1793,8 @@ static const LangEntry kLangTable[] = {
                                                    L"PRESS LOAD PROFILE (.NAM) · %d IN YOUR LIBRARY" },
     { L"CABINA",                                   L"CABINET" },
     { L"MEZCLA",                                   L"MIX" },
+    { L"CAJA EN EL PERFIL \u00B7 MEZCLA SIN EFECTO",
+                                                   L"CAB BAKED IN PROFILE \u00B7 MIX HAS NO EFFECT" },
     { L"DIRECTO",                                  L"DIRECT" },
     { L"SIN AMPLIFICADOR",                         L"NO AMPLIFIER" },
     { L"Buscar amplificador...",                   L"Search amplifier..." },
@@ -3696,6 +3723,10 @@ struct AmpChain {
     // Conversion de frecuencia por bloque de la cadena (ver NamRateConv). El
     // modelo corre a SU tasa; esto lleva la senal y la devuelve.
     NamRateConv namConv[4];
+    bool namCabBaked = false;
+    // Un bloque ACTIVO con la caja incluida (amp_cab): la cabina no suena.
+    // Se calcula en namConfigure() (una vez por bloque) y lo lee el DSP;
+    // la interfaz lo recalcula de su instantanea (g_namLive).
     TubeStage  tube;
     NoiseGate  gate;
     Compressor comp;
@@ -4101,7 +4132,8 @@ struct AmpChain {
     // Se llama una vez por bloque (audioBlockBegin); configure() no hace nada si
     // las tasas no han cambiado, asi que el coste es comparar cuatro dobles.
     void namConfigure() {
-        if (!namBlk) return;
+        if (!namBlk) { namCabBaked = false; return; }
+        namCabBaked = namChainBakedCab(namBlk);
         int i = 0;
         for (const auto& sl : *namBlk) {
             if (i >= 4) break;
@@ -4318,8 +4350,12 @@ struct AmpChain {
                     wet = wet*0.70f + d*0.20f;
                 }
             }
-            // Mezcla directa / micro (knob MIX del cluster CAB)
-            const float mix = g_params.mixCab.load()*0.01f;
+            // Mezcla directa / micro (knob MIX del cluster CAB). Con la caja
+            // horneada en el PERFIL (amp_cab activo en su cadena) la cabina no
+            // suena: la mezcla efectiva es 0 pero el parametro se conserva, asi
+            // que al quitar o apagar ese bloque la cabina vuelve sola.
+            const float mix = (namAmp && namCabBaked) ? 0.0f
+                                                          : g_params.mixCab.load()*0.01f;
             x = dry*(1.0f - mix) + wet*mix;
         }
 
@@ -11828,6 +11864,22 @@ static void paintWindow(HWND hwnd) {
             drawSpaced(g, wv, fVal, vivo ? kAcc : kFTxt,
                        (G::REAL)(MIX_SL_X + MIX_SL_W) - vw, (G::REAL)MIX_LBL_Y + 1.0f, 0.15f);
         }
+        // Caja horneada (amp_cab activo en la cadena del PERFIL): la cifra de
+        // arriba es el parametro guardado, pero la que suena es 0. Se dice en
+        // una linea propia entre la leyenda y el visualizador (cabe: 634..664),
+        // en marfil bajo y con ajuste encajado, nunca en ambar (no es un control).
+        {
+            const std::shared_ptr<const NamChain> chUi =
+                std::atomic_load(&g_namLive);
+            const bool bakedUi = (g_params.model.load() == 12) &&
+                                 namChainBakedCab(chUi.get());
+            if (bakedUi) {
+                drawTxFitC(g, L"CAJA EN EL PERFIL \u00B7 MEZCLA SIN EFECTO",
+                           G::FontStyleBold, kFTxt3,
+                           (G::REAL)(MIX_SL_X + MIX_SL_W*0.5f), 638.0f, 0.4f,
+                           (G::REAL)(MIX_SL_W - 8), TxRotulo);
+            }
+        }
     }
 
     profMark("Barra inferior dinamica ---");   //PFMARK
@@ -16298,6 +16350,55 @@ static void hNamFixes(int fs) {
                   m1, hmax);
         hCheck(std::fabs(m1 - 0.5) < 0.01 && hmax < 0.002,
                "W4 convertir 48k a 44,1k deja el tono y el nivel en su sitio", d);
+    }
+
+    // W12: una captura con la caja incluida (amp_cab) desactiva la cabina sola.
+    // Con amp_cab activo, MEZCLA 100 y MEZCLA 0 tienen que sonar IDENTICO
+    // (la efectiva es 0 en los dos); con una captura normal tienen que diferir
+    // (a 1 kHz la IR manda 1,28 contra 1,0 del directo: ~25 % esperado).
+    // (nam::Model no se copia: lleva el submodelo en unique_ptr. Cada mezcla
+    //  carga su propio modelo desde el texto ya sustituido.)
+    {
+        std::string src, modCab, modAmp;
+        const bool ok = hNamRead("perfiles/lstm.nam", src)
+            && hNamSubst(src, "\"gear_type\": \"amp\"", "\"gear_type\": \"amp_cab\"", modCab)
+            && hNamSubst(src, "\"gear_type\": \"amp\"", "\"gear_type\": \"amp\"", modAmp);
+        double relCab = -1.0, relAmp = -1.0;
+        bool bakedCab = false, bakedAmp = true;
+        if (ok) {
+            std::vector<float> in = hTone(1000.0, -14.0, 2.0, fs);
+            const size_t i0 = in.size()/2, n = in.size()/2 - 16;
+            auto renderMix = [&](const std::string& modText, float mix, bool& baked) {
+                auto pm = std::make_shared<nam::Model>();
+                if (!pm->loadText(modText)) return -1.0;
+                auto sl = std::make_shared<NamSlot>();
+                sl->model = pm;
+                namComputeTrims(*pm, *sl);
+                { std::lock_guard<std::mutex> lk(g_namMutex);
+                  g_namUi.clear(); g_namUi.push_back(sl); g_namSel = 0; }
+                namPublish();
+                hPrepare(fs, 12, 0, 1, 1);
+                g_amp.namBlk = g_namAudio.load(std::memory_order_acquire);
+                g_amp.namConfigure();
+                baked = g_amp.namCabBaked;
+                g_params.mixCab.store(mix);
+                std::vector<float> out = hRender(in);
+                namChainClear();
+                return hRms(out, i0, n);
+            };
+            const double rCab100 = renderMix(modCab, 100.0f, bakedCab);
+            const double rCab0   = renderMix(modCab, 0.0f, bakedCab);
+            const double rAmp100 = renderMix(modAmp, 100.0f, bakedAmp);
+            const double rAmp0   = renderMix(modAmp, 0.0f, bakedAmp);
+            if (rCab100 > 0.0 && rAmp100 > 0.0) {
+                relCab = std::fabs(rCab100 - rCab0)/(rCab100 + 1e-9);
+                relAmp = std::fabs(rAmp100 - rAmp0)/(rAmp100 + 1e-9);
+            }
+        }
+        sprintf_s(d, "amp_cab: MIX100 vs MIX0 difieren %.5f (debe ser ~0); amp: %.3f (debe moverse)",
+                  relCab, relAmp);
+        hCheck(ok && relCab >= 0.0 && relCab < 1e-3 && bakedCab && !bakedAmp && relAmp > 0.1,
+               "W12 amp_cab desactiva la cabina sola; con amp normal la MEZCLA manda", d);
     }
 
     // W5: la 2a etapa asimetrica no deja continua EN LA SALIDA con la MEZCLA al

@@ -165,8 +165,7 @@ tocar nada del cargador de arte**:
   oficial, con el oraculo de `native/_nmaref/`). Lo que sigue fuera, y se
   rechaza con mensaje claro: `gating`, `SlimmableContainer` y `Sequential`.
 - **Re-muestreo** cuando la frecuencia del fichero no es la de la sesion: **hecho y verificado** (`NamRateConv`: sinc con Hann, 24 coef/256 fases, el modelo corre a SU tasa y `namConfigure()` lo ajusta una vez por bloque). La pantalla muestra la frecuencia del modelo como dato, no como aviso. Pruebas W3 (lee `sample_rate`) y W4 (48k->44,1k deja tono y nivel: 0,4993, peor armonico 0,00000) en verde en el `selftest`.
-- **`gear_type = amp_cab`**: hoy la cabina se aplica siempre; falta que una
-  captura con la caja incluida la desactive sola.
+- **`gear_type = amp_cab`**: **hecho y verificado**. Si un bloque ACTIVO trae la caja incluida, la mezcla efectiva es 0 (el parametro MEZCLA se conserva: al quitar o apagar el bloque la cabina vuelve sola) y la columna CABINA lo dice en una linea propia (`CAJA EN EL PERFIL · MEZCLA SIN EFECTO`). Prueba W12 en verde: con amp_cab MIX100 y MIX0 suenan identico (dif 0,00000) y con amp normal difieren (0,214 a 1 kHz).
 
 
 ---
