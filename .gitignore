@@ -40,6 +40,9 @@ native/amps_frontales/filmstrips/*.png
 # Capturas de pantalla de depuracion: hay varias decenas y suman ~16 MB.
 # El arte de verdad vive en native/amps_frontales/, no aqui.
 native/*.png
+# ...salvo el logotipo de la cabecera: va incrustado en el .exe como RCDATA, o
+# sea que es PRODUCTO y rc lo necesita para compilar.
+!native/brand_logo.png
 _ga/
 _oil/
 
@@ -95,10 +98,11 @@ Thumbs.db
 *.suo
 amp_frontales_v2.zip
 .freebuff/
+.claude/
 
-# --- Plugin JUCE abandonado (arbol src/) ------------------------------------
-# build.ps1 aborta si falta la carpeta JUCE/, asi que esto no compila.
-# Se conserva por si algun dia se resucita.
+# --- Plugin JUCE archivado (attic/) -------------------------------------------
+# El prototipo JUCE vive en attic/ y no se compila: no necesita reglas propias.
+# Se conserva por si algun dia se resucita alguna idea de DSP.
 *.vst3
 *.vst
 *.component
