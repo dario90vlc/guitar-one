@@ -145,7 +145,7 @@ tocar nada del cargador de arte**:
 |---|---|---|
 | 1. Parser + forward pass | **Hecho** | `native/nam.h` (WaveNet/LSTM/ConvNet). Comparado muestra a muestra contra el core oficial compilado: A1 estandar (13.802 pesos) dif/pico = **3e-6**; LSTM 2.8e-6; ConvNet 1e-7. Escalera de 20 modelos minimos: todos OK. |
 | 2. Ampli 13 en el motor | **Hecho** | `kVoices[12]`, `g_params.amp[12]`, arte del frontal, cadena con la captura, normalizacion por niveles del fichero, `.ini`. |
-| 3. UI | **Hecho** | Pantalla con nombre/material/frecuencia + aviso de frecuencia distinta, boton CARGAR PERFIL (dialogo), 5 mandos con accion real. |
+| 3. UI | **Hecho** | Pantalla con nombre/material/frecuencia del modelo (dato, no aviso: el motor convierte), boton CARGAR PERFIL (dialogo), 5 mandos con accion real. |
 | 4. Optimizacion | **Parcial** | Anillo por muestras + pesos reempaquetados contiguos + producto punto con 4 acumuladores: 65,8 % -> **44,4 %** de un nucleo (x2,3). Falta SIMD explicito (AVX2/FMA). |
 | 5. Presets | **Hecho** | Banco regenerado: 78 presets (13 x 6) con lote propio del PERFIL. |
 
@@ -164,8 +164,7 @@ tocar nada del cargador de arte**:
 - **A2 con `condition_dsp`**: **hecho y verificado** (3,0e-07 contra el core
   oficial, con el oraculo de `native/_nmaref/`). Lo que sigue fuera, y se
   rechaza con mensaje claro: `gating`, `SlimmableContainer` y `Sequential`.
-- **Re-muestreo** cuando la frecuencia del fichero no es la de la sesion: hoy
-  se avisa en la pantalla y se ejecuta igual (el perfil suena desviado).
+- **Re-muestreo** cuando la frecuencia del fichero no es la de la sesion: **hecho y verificado** (`NamRateConv`: sinc con Hann, 24 coef/256 fases, el modelo corre a SU tasa y `namConfigure()` lo ajusta una vez por bloque). La pantalla muestra la frecuencia del modelo como dato, no como aviso. Pruebas W3 (lee `sample_rate`) y W4 (48k->44,1k deja tono y nivel: 0,4993, peor armonico 0,00000) en verde en el `selftest`.
 - **`gear_type = amp_cab`**: hoy la cabina se aplica siempre; falta que una
   captura con la caja incluida la desactive sola.
 
