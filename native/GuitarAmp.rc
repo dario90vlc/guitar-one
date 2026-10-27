@@ -5,11 +5,14 @@
 #include <windows.h>
 
 1 ICON "GuitarAmp.ico"
+// Logotipo de la cabecera (PNG con alfa) como RECURSO: el .exe sigue siendo un
+// solo fichero y la marca viaja con el, sin depender de la carpeta de arte.
+2 RCDATA "brand_logo.png"
 #define GA_ICON 1
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,0,0
- PRODUCTVERSION 1,0,0,0
+ FILEVERSION 1,0,1,0
+ PRODUCTVERSION 1,0,1,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -22,12 +25,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "GuitarAmp"
             VALUE "FileDescription",  "GUITAR ONE - simulador de amplificadores de guitarra"
-            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "FileVersion",      "1.0.1.0"
             VALUE "InternalName",     "GuitarAmp"
             VALUE "LegalCopyright",   "MIT License"
             VALUE "OriginalFilename", "GuitarAmp.exe"
             VALUE "ProductName",      "GUITAR ONE"
-            VALUE "ProductVersion",   "1.0.0"
+            VALUE "ProductVersion",   "1.0.1"
         END
     END
     BLOCK "VarFileInfo"

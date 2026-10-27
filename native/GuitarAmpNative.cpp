@@ -105,6 +105,9 @@ extern "C" BOOL __stdcall GetOpenFileNameW(LPOPENFILENAMEW);
 #include <cstdlib>
 #include <new>
 
+// Traduccion de textos de interfaz (tabla y funcion, mas abajo).
+static const WCHAR* tr(const WCHAR* es);
+
 // ============================================================================
 //  AUDITORIA DE RESERVAS DEL CAMINO DE TIEMPO REAL (solo el banco de pruebas)
 //  T13 y T15 comprueban que procesar un bloque de audio no llama a new. El hilo
@@ -655,11 +658,11 @@ static std::wstring t3kGearLabel(const std::string& g) {
 static std::wstring t3kAge(long long days) {
     WCHAR b[32];
     if (days < 0) return std::wstring();
-    if (days <= 0)       wcscpy_s(b, L"hoy");
+    if (days <= 0)       wcscpy_s(b, tr(L"hoy"));
     else if (days < 7)   swprintf_s(b, L"%lld d", days);
-    else if (days < 30)  swprintf_s(b, L"%lld sem", days/7);
-    else if (days < 365) swprintf_s(b, L"%lld mes", days/30);
-    else                 swprintf_s(b, L"%lld a", days/365);
+    else if (days < 30)  swprintf_s(b, tr(L"%lld sem"), days/7);
+    else if (days < 365) swprintf_s(b, tr(L"%lld mes"), days/30);
+    else                 swprintf_s(b, tr(L"%lld a"), days/365);
     return b;
 }
 // 100643 -> "100,6K" (como lo escribe la web)
@@ -848,7 +851,7 @@ static void t3kStartList(int which) {
     }
     g_t3kBusy = true;
     g_t3kPage = 1;
-    t3kStatusW(std::wstring(L"CARGANDO ") + kT3kListNames[which] + L"...");
+    t3kStatusW(std::wstring(tr(L"CARGANDO ")) + tr(kT3kListNames[which]) + L"...");
     std::thread(t3kWorkGet,
                 std::string("https://www.tone3000.com/api/v1/tones/") + kT3kLists[which],
                 std::string("trend"), tok).detach();
@@ -1449,6 +1452,48 @@ static void artBaseDir() {
     if (sl) *sl = 0;
     swprintf_s(g_artDir, L"%s\\amps_frontales", mod);
 }
+// Logotipo de la cabecera: va incrustado en el .exe como RCDATA (2) y se
+// decodifica UNA vez desde memoria. Si el recurso faltara (un .res viejo), la
+// cabecera cae al wordmark de texto de siempre.
+static G::Bitmap* g_brandLogo  = nullptr;
+static bool       g_brandTried = false;
+static G::Bitmap* brandLogo() {
+    if (g_brandTried) return g_brandLogo;
+    g_brandTried = true;
+    HRSRC hr = FindResourceA(nullptr, MAKEINTRESOURCEA(2), RT_RCDATA);
+    if (!hr) return nullptr;
+    const DWORD n = SizeofResource(nullptr, hr);
+    HGLOBAL hg = LoadResource(nullptr, hr);
+    void* p = hg ? LockResource(hg) : nullptr;
+    if (!p || !n) return nullptr;
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, n);
+    if (!mem) return nullptr;
+    void* mp = GlobalLock(mem);
+    if (!mp) { GlobalFree(mem); return nullptr; }
+    memcpy(mp, p, n);
+    GlobalUnlock(mem);
+    IStream* st = nullptr;
+    if (FAILED(CreateStreamOnHGlobal(mem, TRUE, &st)) || !st) { GlobalFree(mem); return nullptr; }
+    G::Bitmap* bm = G::Bitmap::FromStream(st, FALSE);
+    st->Release();
+    if (bm && bm->GetLastStatus() == G::Ok) {
+        // Copia propia, ya desacoplada del stream (que se libera al salir).
+        G::Bitmap* copy = new G::Bitmap(bm->GetWidth(), bm->GetHeight(), PixelFormat32bppPARGB);
+        if (copy && copy->GetLastStatus() == G::Ok) {
+            G::Graphics gg(copy);
+            gg.SetCompositingMode(G::CompositingModeSourceCopy);
+            gg.DrawImage(bm, 0, 0, bm->GetWidth(), bm->GetHeight());
+            g_brandLogo = copy;
+        } else {
+            delete copy;
+        }
+        delete bm;
+    } else {
+        delete bm;
+    }
+    return g_brandLogo;
+}
+
 static G::Image* artLoad(const WCHAR* rel) {
     artBaseDir();
     WCHAR p[MAX_PATH];
@@ -1540,6 +1585,13 @@ static std::atomic<bool> g_audioQuit{false};
 static std::atomic<bool> g_deviceChanged{false};
 // Boton global AUDIO ON/OFF: arranca apagado; el usuario lo enciende
 static std::atomic<bool> g_audioEnabled{false};
+// Lo que el motor CONSIGUIO al abrir la sesion (modo, frecuencia y buffer
+// reales). La linea de estado ensena esto, no lo que se PIDIO: en modo
+// compartido el dispositivo impone su periodo, y exclusivo puede caer a
+// compartido si el endpoint no lo acepta.
+static std::atomic<int> g_sessRate{0};
+static std::atomic<int> g_sessBufFrames{0};
+static std::atomic<int> g_sessExclusive{0};
 
 static std::wstring GetDeviceFriendlyName(IMMDevice* dev) {
     if (!dev) return L"Desconocido";
@@ -1678,8 +1730,360 @@ static int  g_setOutIdx = 0;
 static bool g_settingsOpen = false;
 
 // Rects del panel para hit-testing (se actualizan al pintar)
-static const int kSetPanelW = 940, kSetPanelH = 424;   // alto: 5 filas + RECARGAR + estado
-static RECT g_panelRows[6] = {};
+static const int kSetPanelW = 940, kSetPanelH = 460;   // alto: 6 filas + RECARGAR + estado
+static RECT g_panelRows[7] = {};
+// REJILLA del panel AJUSTES. Todo lo que va dentro (titulo, rotulos, ayuda y
+// botones) comparte estos ejes; antes cada bloque tiraba de su propio margen
+// (titulo 30, banda 32, rotulo 44) y las flechas eran dos circulos FUERA de la
+// pastilla, asi que cada fila tenia cuatro cajas a cuatro x distintas.
+//   X0/X1      margenes de contenido          (relativos a px)
+//   LABEL_W    columna del rotulo
+//   PILL_L     donde empieza la pastilla       (relativo a px)
+//   ROW_Y0/PITCH  ritmo vertical de las filas
+static const float kSetX0 = 32.0f, kSetX1 = 908.0f;
+static const float kSetLabelW = 150.0f, kSetPillL = 192.0f, kSetPillH = 30.0f;
+static const float kSetRowY0 = 70.0f, kSetRowPitch = 36.0f;
+
+// ---------------------------------------------------------------------------
+//  IDIOMA DE LA INTERFAZ (espanol / ingles)
+// ---------------------------------------------------------------------------
+//  La clave de la tabla es el texto TAL Y COMO esta escrito en el codigo (en
+//  espanol) y el valor es su version inglesa. tr() devuelve el MISMO puntero si
+//  no hay entrada, asi que lo que no es texto de interfaz (nombres de preset
+//  del usuario, rutas, valores ya formateados) pasa intacto. Se llama solo al
+//  pintar (hilo de la ventana).
+static int g_lang = 0;                 // 0 = espanol, 1 = ingles
+struct LangEntry { const WCHAR* es; const WCHAR* en; };
+static const LangEntry kLangTable[] = {
+    { L"SIMULADOR DE AMPLIFICADORES",              L"GUITAR AMP SIMULATOR" },
+    { L"←→ presets · ↑↓ lista · ESPACIO audio · ESC salir",
+                                                   L"←→ presets · ↑↓ list · SPACE audio · ESC close" },
+    { L"ANTES DEL AMPLIFICADOR",                   L"BEFORE THE AMP" },
+    { L"CABEZAL",                                  L"AMP HEAD" },
+    { L"DESPUÉS DEL AMPLIFICADOR",                 L"AFTER THE AMP" },
+    { L"+ AÑADIR",                                 L"+ ADD" },
+    { L"perfil .nam",                              L".nam file" },
+    { L"SIN PERFIL",                               L"NO PROFILE" },
+    { L"PULSA CARGAR PERFIL (.NAM) · %d EN TU LIBRERIA",
+                                                   L"PRESS LOAD PROFILE (.NAM) · %d IN YOUR LIBRARY" },
+    { L"CABINA",                                   L"CABINET" },
+    { L"MEZCLA",                                   L"MIX" },
+    { L"DIRECTO",                                  L"DIRECT" },
+    { L"SIN AMPLIFICADOR",                         L"NO AMPLIFIER" },
+    { L"Buscar amplificador...",                   L"Search amplifier..." },
+    { L"PERFIL",                                   L"PROFILE" },
+    { L"CAPTURA · NEURONAL",                       L"CAPTURE · NEURAL" },
+    { L"VERIFICADOS",                              L"VERIFIED" },
+    { L"TODOS",                                    L"ALL" },
+    { L"TENDENCIAS (%s): %d de %d",                L"TRENDING (%s): %d of %d" },
+    { L"RESULTADOS (%s en la pagina): %d de %d",   L"RESULTS (%s on page): %d of %d" },
+    { L"LA BUSQUEDA NECESITA CONECTAR CON TONE3000",
+                                                   L"SEARCH NEEDS A TONE3000 CONNECTION" },
+    { L"TENDENCIAS DE TONE3000 (publico, sin clave)",
+                                                   L"TONE3000 TRENDING (public, no key)" },
+    { L"RESULTADOS DE LA BUSQUEDA",                L"SEARCH RESULTS" },
+    { L"LA RESPUESTA NO SE PUDO LEER",             L"THE RESPONSE COULD NOT BE READ" },
+    { L"LA BUSQUEDA CON FILTROS NECESITA TU TOKEN: PULSA CONECTAR O USA \"VER TONE3000\"",
+                                                   L"FILTERED SEARCH NEEDS YOUR TOKEN: PRESS CONNECT OR USE \"SEE TONE3000\"" },
+    { L"TU TOKEN DE TONE3000 NO VALE O HA CADUCADO: VUELVE A PEGARLO",
+                                                   L"YOUR TONE3000 TOKEN IS INVALID OR EXPIRED: PASTE IT AGAIN" },
+    { L"TONES/SEARCH ESTA FUERA DE LA CAPA GRATUITA: USA \"VER TONE3000\"",
+                                                   L"TONES/SEARCH IS OUTSIDE THE FREE TIER: USE \"SEE TONE3000\"" },
+    { L"SIN CONEXION CON TONE3000",                L"NO CONNECTION TO TONE3000" },
+    { L"EL SERVIDOR DEVOLVIO %d",                  L"THE SERVER RETURNED %d" },
+    { L"PRESET CARGADO",                           L"PRESET LOADED" },
+    { L"CONFIRMA EL CODIGO EN EL NAVEGADOR (YA LO TIENES COPIADO)",
+                                                   L"CONFIRM THE CODE IN YOUR BROWSER (ALREADY COPIED)" },
+    { L"CONFIRMA EL CODIGO EN EL NAVEGADOR",       L"CONFIRM THE CODE IN YOUR BROWSER" },
+    { L"ESA NO ES UNA CLAVE PUBLICABLE (t3k_pub_...). YA HE VACIADO EL CAMPO:",
+                                                   L"THAT IS NOT A PUBLISHABLE KEY (t3k_pub_...). I CLEARED THE FIELD:" },
+    { L" PULSA CONECTAR OTRA VEZ Y LO HAGO SOLO",  L" PRESS CONNECT AGAIN AND I WILL DO IT" },
+    { L"NO SE PUDO CONECTAR: ",                    L"COULD NOT CONNECT: " },
+    { L"EL SERVIDOR NO DEVOLVIO TOKEN",            L"THE SERVER RETURNED NO TOKEN" },
+    { L"CONECTADO CON TONE3000",                   L"CONNECTED TO TONE3000" },
+    { L"CONECTADO CON LA SESION DE TU TONE3000 INSTALADO",
+                                                   L"CONNECTED WITH YOUR INSTALLED TONE3000 SESSION" },
+    { L"LA SESION INSTALADA YA NO VALE: TE DOY UN CODIGO PARA CONFIRMAR",
+                                                   L"THE INSTALLED SESSION IS INVALID: I WILL GIVE YOU A CODE TO CONFIRM" },
+    { L"ESA CLAVE O TOKEN NO VALE (",              L"THAT KEY OR TOKEN IS NOT VALID (" },
+    { L"). YA HE VACIADO EL CAMPO: PULSA CONECTAR OTRA VEZ Y NECESITARE UN CODIGO",
+                                                   L"). I CLEARED THE FIELD: PRESS CONNECT AGAIN AND I WILL NEED A CODE" },
+    { L"EN LA CELDA ",                             L"IN SLOT " },
+    { L"CAPTURA PUESTA EN LA CELDA",               L"CAPTURE PLACED IN SLOT" },
+    { L"EL FICHERO NO VALE: ",                     L"INVALID FILE: " },
+    { L"NO SE PUDO BAJAR: ",                       L"DOWNLOAD FAILED: " },
+    { L"NO SE PUDO BAJAR (HTTP ",                  L"DOWNLOAD FAILED (HTTP " },
+    { L"CONECTAR CON TONE3000",                    L"CONNECT TO TONE3000" },
+    { L"Abre la pagina, entra en tu cuenta y confirma este codigo:",
+                                                   L"Open the page, sign in to your account and confirm this code:" },
+    { L"El codigo caduca en %d minutos",           L"The code expires in %d minutes" },
+    { L"ABRIR TONE3000.COM/ACTIVATE",              L"OPEN TONE3000.COM/ACTIVATE" },
+    { L"Pulsa CONECTAR y me busco la vida: uso tu TONE3000 instalado, o te doy un codigo.",
+                                                   L"Press CONNECT and I will sort it out: I use your installed TONE3000, or give you a code." },
+    { L"  Ctrl+V solo si quieres pegar una clave secreta o un token.",
+                                                   L"  Ctrl+V only if you want to paste a secret key or a token." },
+    { L"clave o token",                            L"key or token" },
+    { L"Vacio: cojo la sesion de tu TONE3000 instalado (y si no, te doy",
+                                                   L"Empty: I use your installed TONE3000 session (and if not, I give you" },
+    { L"un codigo). Con clave secreta o token pegados: entra directo.",
+                                                   L"a code). With a secret key or token pasted: it goes straight in." },
+    { L"TENDENCIAS",                               L"TRENDING" },
+    { L"NUEVOS",                                   L"NEW" },
+    { L"FAVORITOS",                                L"FAVORITES" },
+    { L"DESCARGADOS",                              L"DOWNLOADED" },
+    { L"CONECTAR",                                 L"CONNECT" },
+    { L"CANCELAR",                                 L"CANCEL" },
+    { L"PERFILES NEURALES · CAPTURAS .NAM",        L"NEURAL PROFILES · .NAM CAPTURES" },
+    { L"buscar (fender, jcm800, sd-1...)",         L"search (fender, jcm800, sd-1...)" },
+    { L"conectar para buscar",                     L"connect to search" },
+    { L"BUSCAR",                                   L"SEARCH" },
+    { L"BIBLIOTECA ✓",                             L"LIBRARY ✓" },
+    { L"BIBLIOTECA",                               L"LIBRARY" },
+    { L"CONECTADO",                                L"CONNECTED" },
+    { L"VER TONE3000",                             L"SEE TONE3000" },
+    { L"Todos",                                    L"All" },
+    { L"CONSULTANDO TONE3000...",                  L"QUERYING TONE3000..." },
+    { L"sin resultados: prueba una lista o conecta para buscar",
+                                                   L"no results: try a list or connect to search" },
+    { L"%d bloque%s  ·  .t3kpreset",               L"%d block%s  ·  .t3kpreset" },
+    { L"carga las capturas de su cadena",          L"loads the captures in its chain" },
+    { L"%d modelo%s  A1 %d / A2 %d",               L"%d model%s  A1 %d / A2 %d" },
+    { L"CLIC: CARGAR EN LA CADENA",                L"CLICK: LOAD INTO THE CHAIN" },
+    { L"CLIC: BAJAR Y AÑADIR A LA CADENA",         L"CLICK: DOWNLOAD AND ADD TO THE CHAIN" },
+    { L"captura .nam",                             L".nam capture" },
+    { L"✓ AUTORES VERIFICADOS",                    L"✓ VERIFIED AUTHORS" },
+    { L"%d tonos",                                 L"%d tones" },
+    { L"LISTO",                                    L"READY" },
+    { L"los perfiles son de sus autores: se descargan, no se incluyen",
+                                                   L"profiles belong to their authors: downloaded, not included" },
+    { L"CURADO",                                   L"CURATED" },
+    { L"AMPLI",                                    L"AMP" },
+    { L"RECIENTES",                                L"RECENT" },
+    { L"SIN COLOR",                                L"NO COLOR" },
+    { L"AMBAR",                                    L"AMBER" },
+    { L"ROJO",                                     L"RED" },
+    { L"AZUL",                                     L"BLUE" },
+    { L"VERDE",                                    L"GREEN" },
+    { L"FABRICA",                                  L"FACTORY" },
+    { L"MIOS",                                     L"MINE" },
+    { L"%d CAPTURA%s",                             L"%d CAPTURE%s" },
+    { L"SIN ETIQUETA",                             L"UNTAGGED" },
+    { L"LIMPIO",                                   L"CLEAN" },
+    { L"AMBIENTE",                                 L"AMBIENT" },
+    { L"OTROS",                                    L"OTHER" },
+    { L"NAVEGADOR  ·  %d DE %d",                   L"BROWSER  ·  %d OF %d" },
+    { L"FAVORITO",                                 L"FAVORITE" },
+    { L"ORIGEN",                                   L"SOURCE" },
+    { L"CARACTER",                                 L"CHARACTER" },
+    { L"AMPLIFICADOR",                             L"AMPLIFIER" },
+    { L"Buscar preset...",                         L"Search preset..." },
+    { L"sin resultados",                           L"no results" },
+    { L" (no disponible)",                         L" (unavailable)" },
+    { L"Buscar por nombre, ampli, etiqueta o autor",
+                                                   L"Search by name, amp, tag or author" },
+    { L"SIN AMPLI",                                L"NO AMP" },
+    { L"MIO",                                      L"MINE" },
+    { L"NINGUN PRESET CUMPLE LOS FILTROS",         L"NO PRESET MATCHES THE FILTERS" },
+    { L"INFORMACION",                              L"INFO" },
+    { L"PRESET MIO",                               L"MY PRESET" },
+    { L"DE FABRICA",                               L"FACTORY" },
+    { L"AUTOR",                                    L"AUTHOR" },
+    { L"COMENTARIO",                               L"COMMENT" },
+    { L"ETIQUETAS",                                 L"TAGS" },
+    { L"CREADO %s   ·   USADO %s",                 L"CREATED %s   ·   USED %s" },
+    { L"SEGURO? PULSA OTRA VEZ",                   L"SURE? PRESS AGAIN" },
+    { L"BORRAR PRESET",                            L"DELETE PRESET" },
+    { L"los presets de fabrica no se editan: guarda una copia para tocar sus metadatos",
+                                                   L"factory presets are read-only: save a copy to edit its metadata" },
+    { L"ESC CIERRA   ·   UN CLIC CARGA EL PRESET   ·   EL PUNTO DE COLOR ES EL FAVORITO   ·   EN UN PRESET MIO SE ESCRIBEN LOS CAMPOS Y BORRAR PIDE DOS CLICS",
+                                                   L"ESC CLOSES   ·   ONE CLICK LOADS THE PRESET   ·   THE COLOR DOT IS THE FAVORITE   ·   MY PRESETS HAVE EDITABLE FIELDS AND DELETE NEEDS TWO CLICKS" },
+    { L"METADATOS GUARDADOS",                      L"METADATA SAVED" },
+    { L"RENOMBRAR PRESET",                         L"RENAME PRESET" },
+    { L"GUARDAR COMO",                             L"SAVE AS" },
+    { L"GRABAR",                                   L"RECORD" },
+    // Nombres de los 78 presets de fabrica: el nombre es contenido, pero en una
+    // interfaz inglesa un catalogo en espanol se lee a medias.
+    { L"LIMPIO DIAMANTE",                        L"CLEAN DIAMOND" },
+    { L"TWANG DE PUENTE",                        L"BRIDGE TWANG" },
+    { L"ROMPE SUAVE",                            L"SOFT BREAKUP" },
+    { L"SOLO CREMA",                             L"CREAMY LEAD" },
+    { L"NIEBLA PLATEADA",                        L"SILVER HAZE" },
+    { L"FUZZ DE GARAJE",                         L"GARAGE FUZZ" },
+    { L"CAMPANA PURA",                           L"PURE BELL" },
+    { L"JANGLE BRIT",                            L"BRIT JANGLE" },
+    { L"EDGE VOX",                               L"VOX EDGE" },
+    { L"SOLO CRISTAL",                           L"CRYSTAL LEAD" },
+    { L"TREMOLO AZUL",                           L"BLUE TREMOLO" },
+    { L"FUZZ BEATLE",                            L"BEATLE FUZZ" },
+    { L"TWEED LIMPIO",                           L"CLEAN TWEED" },
+    { L"EDGE DE NOCHE",                          L"NIGHT EDGE" },
+    { L"CRUNCH 5E3",                             L"5E3 CRUNCH" },
+    { L"SOLO CALIENTE",                          L"HOT LEAD" },
+    { L"SALA DE MADERA",                         L"WOODEN ROOM" },
+    { L"TREMOLO DE TWEED",                       L"TWEED TREMOLO" },
+    { L"PRISTINO",                               L"PRISTINE" },
+    { L"CORO ANCHO",                             L"WIDE CHORUS" },
+    { L"ROTURA SOLIDA",                          L"SOLID BREAKUP" },
+    { L"SOLO VIDRIO",                            L"GLASS LEAD" },
+    { L"CIELO AZUL",                             L"BLUE SKY" },
+    { L"PLEXI LIMPIO",                           L"CLEAN PLEXI" },
+    { L"CRUNCH 800",                             L"800 CRUNCH" },
+    { L"SOLO 800",                               L"800 LEAD" },
+    { L"ECO DE SALA",                            L"ROOM ECHO" },
+    { L"FUZZ MARSHALL",                          L"MARSHALL FUZZ" },
+    { L"PLEXI AIRE",                             L"AIRY PLEXI" },
+    { L"ROMPE PLEXI",                            L"PLEXI BREAKUP" },
+    { L"CRUNCH 1959",                            L"1959 CRUNCH" },
+    { L"LEAD CLASICO",                           L"CLASSIC LEAD" },
+    { L"SALA PLEXI",                             L"PLEXI ROOM" },
+    { L"VIENTO PSICODELICO",                     L"PSYCHEDELIC WIND" },
+    { L"NARANJA LIMPIA",                         L"CLEAN ORANGE" },
+    { L"ROMPE NARANJA",                          L"ORANGE BREAKUP" },
+    { L"CRUNCH GORDO",                           L"FAT CRUNCH" },
+    { L"SOLO GORDO",                             L"FAT LEAD" },
+    { L"NIEBLA NARANJA",                         L"ORANGE HAZE" },
+    { L"FUZZ NARANJA",                           L"ORANGE FUZZ" },
+    { L"BLUES LIMPIO",                           L"CLEAN BLUES" },
+    { L"BLUES MORDIDO",                          L"BITING BLUES" },
+    { L"CRUNCH BLUES",                           L"BLUES CRUNCH" },
+    { L"SOLO BLUES",                             L"BLUES LEAD" },
+    { L"HABITACION BLUES",                       L"BLUES ROOM" },
+    { L"WAH BLUES",                              L"BLUES WAH" },
+    { L"SESION LIMPIA",                          L"CLEAN SESSION" },
+    { L"TERCIOPELO",                             L"VELVET" },
+    { L"CRUNCH VOCAL",                           L"VOCAL CRUNCH" },
+    { L"SOLO VOCAL",                             L"VOCAL LEAD" },
+    { L"PAD VOCAL",                              L"VOCAL PAD" },
+    { L"FUZZ CANTADO",                           L"SINGING FUZZ" },
+    { L"RECTO LIMPIO",                           L"CLEAN RECTO" },
+    { L"RECTO MODERNO",                          L"MODERN RECTO" },
+    { L"SOLO RECTO",                             L"RECTO LEAD" },
+    { L"RECTO ESPACIO",                          L"RECTO SPACE" },
+    { L"MURO DE RECTO",                          L"RECTO WALL" },
+    { L"KRAFT LIMPIO",                           L"CLEAN KRAFT" },
+    { L"KRAFT BORDE",                            L"KRAFT EDGE" },
+    { L"KRAFT APRETADO",                         L"TIGHT KRAFT" },
+    { L"SOLO KRAFT",                             L"KRAFT LEAD" },
+    { L"KRAFT ETEREO",                           L"ETHEREAL KRAFT" },
+    { L"MURO KRAFT",                             L"KRAFT WALL" },
+    { L"HAVOC LIMPIO",                           L"CLEAN HAVOC" },
+    { L"HAVOC FILO",                             L"HAVOC EDGE" },
+    { L"HAVOC SATURADO",                         L"SATURATED HAVOC" },
+    { L"SOLO HAVOC",                             L"HAVOC LEAD" },
+    { L"HAVOC NEBLINA",                          L"HAVOC MIST" },
+    { L"HAVOC CAOS",                             L"HAVOC CHAOS" },
+    { L"CAPTURA LIMPIA",                         L"CLEAN CAPTURE" },
+    { L"PERFIL BORDE",                           L"PROFILE EDGE" },
+    { L"PERFIL CRUNCH",                          L"PROFILE CRUNCH" },
+    { L"SOLO NEURONAL",                          L"NEURAL LEAD" },
+    { L"SALA NEURONAL",                          L"NEURAL ROOM" },
+    { L"PERFIL ESPECIAL",                        L"SPECIAL PROFILE" },
+    { L"SILENCIO",                                 L"MUTED" },
+    { L"GUARDAR",                                  L"SAVE" },
+    { L"ENTRADA",                                  L"INPUT" },
+    { L"SALIDA",                                   L"OUTPUT" },
+    { L"CARGAR IR",                                L"LOAD IR" },
+    { L"AFINADOR",                                 L"TUNER" },
+    { L"SIN AMPLIFICADORES CON ESE FILTRO",        L"NO AMPS WITH THAT FILTER" },
+    { L"la estrella filtra: solo tus amplis marcados",
+                                                   L"the star filters: only your starred amps" },
+    { L"borra el filtro de la caja de busqueda",   L"clear the search box filter" },
+    { L"AÑADIR",                                   L"ADD" },
+    { L"AÑADIR PEDAL",                             L"ADD PEDAL" },
+    { L"YA EN LA CADENA",                         L"IN THE CHAIN" },
+    { L"CLIC PARA AÑADIR",                         L"CLICK TO ADD" },
+    { L"MOTOR",                                    L"ENGINE" },
+    { L"FREC",                                     L"RATE" },
+    { L"AJUSTES DE AUDIO",                         L"AUDIO SETTINGS" },
+    { L"DISPOSITIVOS",                             L"DEVICES" },
+    { L"RECARGAR",                                 L"REFRESH" },
+    { L"APLICAR",                                  L"APPLY" },
+    { L"IDIOMA",                                   L"LANGUAGE" },
+    { L"TOCA UNA CUERDA PARA AFINAR",              L"PLAY A STRING TO TUNE" },
+    { L"%+.0f centavos",                           L"%+.0f cents" },
+    { L"CERRAR",                                   L"CLOSE" },
+    { L"PAGINA ABIERTA · CODIGO COPIADO: PEGALO SI TE LO PIDE",
+                                                   L"PAGE OPENED · CODE COPIED: PASTE IT IF ASKED" },
+    { L"PAGINA ABIERTA EN EL NAVEGADOR",           L"PAGE OPENED IN YOUR BROWSER" },
+    { L"NO PUDE ABRIR EL NAVEGADOR: CODIGO COPIADO, PEGALO EN TONE3000.COM/ACTIVATE",
+                                                   L"COULD NOT OPEN THE BROWSER: CODE COPIED, PASTE IT AT TONE3000.COM/ACTIVATE" },
+    { L"NO PUDE ABRIR EL NAVEGADOR: VE A TONE3000.COM/ACTIVATE Y ESCRIBE EL CODIGO",
+                                                   L"COULD NOT OPEN THE BROWSER: GO TO TONE3000.COM/ACTIVATE AND TYPE THE CODE" },
+    { L"PARA CARGAR UN PRESET HAY QUE CONECTAR: SUS CAPTURAS SE DESCARGAN",
+                                                   L"TO LOAD A PRESET YOU MUST CONNECT: ITS CAPTURES ARE DOWNLOADED" },
+    { L"LAS CELDAS ESTAN LLENAS: QUITA UNA CAPTURA ANTES",
+                                                   L"THE SLOTS ARE FULL: REMOVE A CAPTURE FIRST" },
+    { L"BAJANDO LAS CAPTURAS DEL PRESET...",       L"DOWNLOADING THE PRESET CAPTURES..." },
+    { L"PARA BAJAR UN PERFIL HAY QUE CONECTAR CON TONE3000",
+                                                   L"TO DOWNLOAD A PROFILE YOU MUST CONNECT TO TONE3000" },
+    { L"BAJANDO LA CAPTURA DE ",                   L"DOWNLOADING THE CAPTURE OF " },
+    { L"LO QUE ELIJAS IRA A ESA CELDA",            L"WHAT YOU PICK WILL GO INTO THAT SLOT" },
+    { L"PULSA OTRA VEZ PARA QUITAR LA CAPTURA",    L"PRESS AGAIN TO REMOVE THE CAPTURE" },
+    { L"CAPTURAS INTERCAMBIADAS DE CELDA",         L"CAPTURES SWAPPED BETWEEN SLOTS" },
+    { L"CAPTURA AÑADIDA A LA CADENA",              L"CAPTURE ADDED TO THE CHAIN" },
+    { L"Anadir captura (.nam) a la cadena del PERFIL",
+                                                   L"Add (.nam) capture to the PROFILE chain" },
+    { L"Cargar IR de cabina (WAV)",                L"Load cabinet IR (WAV)" },
+    { L"No se pudo cargar el WAV como respuesta de impulso.\nFormatos admitidos: PCM 8/16/24/32 bits o float 32/64.",
+                                                   L"The WAV could not be loaded as an impulse response.\nSupported formats: PCM 8/16/24/32 bits or float 32/64." },
+    { L"LAS CELDAS ESTAN LLENAS: QUITA UNA PARA PONER OTRA",
+                                                   L"THE SLOTS ARE FULL: REMOVE ONE TO ADD ANOTHER" },
+    { L"no se pudo cargar: ",                      L"could not be loaded: " },
+    { L"BLOQUE PUESTO EN LA CELDA",                L"BLOCK PLACED IN SLOT" },
+    { L"CARGANDO EL PRESET DESDE TU LIBRERIA",     L"LOADING THE PRESET FROM YOUR LIBRARY" },
+    { L"SIN ESPACIO: BORRA UN PRESET",             L"NO SPACE: DELETE A PRESET" },
+    { L"PRESET ACTUALIZADO",                       L"PRESET UPDATED" },
+    { L"EL PRESET NECESITA UN NOMBRE",             L"THE PRESET NEEDS A NAME" },
+    { L"PRESET GUARDADO",                          L"PRESET SAVED" },
+    { L"PRESET RENOMBRADO",                        L"PRESET RENAMED" },
+    { L"PRESET BORRADO",                           L"PRESET DELETED" },
+    { L"CARGANDO TENDENCIAS...",                   L"LOADING TRENDING..." },
+    { L"ESA LISTA NECESITA TU TOKEN DE TONE3000",  L"THAT LIST NEEDS YOUR TONE3000 TOKEN" },
+    { L"CARGANDO ",                                L"LOADING " },
+    { L"BUSCANDO...",                              L"SEARCHING..." },
+    { L"CONECTANDO CON TU TONE3000 INSTALADO...",  L"CONNECTING WITH YOUR INSTALLED TONE3000..." },
+    { L"TE DOY UN CODIGO PARA CONFIRMAR EN TONE3000.COM/ACTIVATE",
+                                                   L"I WILL GIVE YOU A CODE TO CONFIRM AT TONE3000.COM/ACTIVATE" },
+    { L"CONECTANDO CON CODIGO: SIGUE LOS PASOS EN TONE3000.COM",
+                                                   L"CONNECTING WITH CODE: FOLLOW THE STEPS AT TONE3000.COM" },
+    { L"BUSCANDO TU SESION DE TONE3000...",        L"LOOKING FOR YOUR TONE3000 SESSION..." },
+    { L"HABLANDO CON TONE3000...",                 L"TALKING TO TONE3000..." },
+    { L"hoy",                                      L"today" },
+    { L"%lld sem",                                 L"%lld w" },
+    { L"%lld mes",                                 L"%lld mo" },
+    { L"%lld a",                                   L"%lld y" },
+    { L"MOTOR DE AUDIO",                           L"AUDIO ENGINE" },
+    { L"PARAR %lu:%02lu",                          L"STOP %lu:%02lu" },
+    { L"SIN CAMBIOS",                              L"NO CHANGES" },
+    { L"DETECTADO",                                L"DETECTED" },
+    { L"SE HA DESCONECTADO ALGO",                  L"SOMETHING WAS DISCONNECTED" },
+    { L" ENTRADA(S), ",                            L" INPUT(S), " },
+    { L" SALIDA(S)",                               L" OUTPUT(S)" },
+    { L"WASAPI EXCLUSIVO",                         L"WASAPI EXCLUSIVE" },
+    { L"WASAPI COMPARTIDO",                        L"WASAPI SHARED" },
+    { L"(sin dispositivos)",                       L"(no devices)" },
+    { L"FRECUENCIA",                               L"SAMPLE RATE" },
+    { L"%d muestras (%.1f ms)",                    L"%d samples (%.1f ms)" },
+    { L"Latencia estimada (captura + salida): ~%.1f ms",
+                                                   L"Estimated latency (capture + output): ~%.1f ms" },
+    { L"Anillo corto: %lld bloque(s), peor hueco %lld muestras | tardios: %lld | colchon: %d",
+                                                   L"Short ring: %lld block(s), worst gap %lld samples | late: %lld | cushion: %d" },
+};
+static const WCHAR* tr(const WCHAR* es) {
+    if (g_lang == 0 || !es || !es[0]) return es;
+    // Ordenada una vez, al primer uso: la tabla de arriba se escribe por bloques
+    // y no puede exigir que nadie la mantenga alfabetica a mano.
+    static const std::vector<LangEntry> tbl = [] {
+        std::vector<LangEntry> v(kLangTable, kLangTable + sizeof(kLangTable)/sizeof(kLangTable[0]));
+        std::sort(v.begin(), v.end(), [](const LangEntry& a, const LangEntry& b) {
+            return wcscmp(a.es, b.es) < 0;
+        });
+        return v;
+    }();
+    auto it = std::lower_bound(tbl.begin(), tbl.end(), es,
+        [](const LangEntry& e, const WCHAR* s) { return wcscmp(e.es, s) < 0; });
+    return (it != tbl.end() && wcscmp(it->es, es) == 0) ? it->en : es;
+}
 static RECT g_panelApply = {}, g_panelCancel = {};
 
 // Estado del boton RECARGAR DISPOSITIVOS: lo que se encontro y cuando.
@@ -1735,11 +2139,11 @@ static void RefreshDeviceLists(bool quiet = false)
     const int din  = (int)g_inputDevices.size()  - nin;
     const int dout = (int)g_outputDevices.size() - nout;
     std::wstring m;
-    if (din == 0 && dout == 0) m = L"SIN CAMBIOS";
-    else if (din > 0 || dout > 0) m = L"DETECTADO";
-    else m = L"SE HA DESCONECTADO ALGO";
-    m += L" \xB7 " + std::to_wstring(g_inputDevices.size()) + L" ENTRADA(S), " +
-         std::to_wstring(g_outputDevices.size()) + L" SALIDA(S)";
+    if (din == 0 && dout == 0) m = tr(L"SIN CAMBIOS");
+    else if (din > 0 || dout > 0) m = tr(L"DETECTADO");
+    else m = tr(L"SE HA DESCONECTADO ALGO");
+    m += L" \xB7 " + std::to_wstring(g_inputDevices.size()) + tr(L" ENTRADA(S), ") +
+         std::to_wstring(g_outputDevices.size()) + tr(L" SALIDA(S)");
     g_devMsg = m;
     g_devMsgAt = GetTickCount();
 }
@@ -1914,6 +2318,8 @@ static const int kNumPresets = (int)(sizeof(g_presets) / sizeof(g_presets[0]));
 static_assert(kNumPresets == 13 * kPresetsPerAmp, "el banco debe tener 6 lotes por amp");
 static int presetAmp(int p) { return (p >= 0 && p < kNumPresets) ? g_presets[p].model : -1; }
 static int   g_presetIdx = 0;
+
+
 // Mascaras de favoritos de la lista: bit i = ampli i marcado con estrella.
 // Se declara aqui porque saveIni/loadIni (muy mas abajo en el fichero) la
 // persisten, y el corazon del pie refleja el bit del ampli cargado.
@@ -1971,6 +2377,20 @@ static bool isUserPreset(int idx) { return idx >= kNumPresets && idx < presetTot
 //     preset del banco, y eso es justo lo que marca el punto de MODIFICADO.
 static const int kMaxT3kPresets = 1024;                      // tope de la lista
 static const int kMaxListAll    = kMaxListEntries + kMaxT3kPresets;
+
+// ---------------------------------------------------------------------------
+//  BUSCADOR DE PRESETS DE LA CABECERA
+//  La caja del preset (arriba) se despliega: escribe y la lista se filtra en
+//  vivo por nombre, ampli, caracter y autor (lo mismo que busca el navegador).
+//  La lista se filtra UNA vez por cambio de texto, no por frame: el despliegue
+//  puede tener 370 presets.
+// ---------------------------------------------------------------------------
+static bool  g_topOpen = false;
+static WCHAR g_topQuery[40] = L"";
+static int   g_topSel = -1;          // fila resaltada DENTRO de la lista filtrada
+static int   g_topScroll = 0;        // primera fila visible
+static int   g_topList[kMaxListAll]; // indices de preset ya filtrados
+static int   g_topCount = 0;
 static int  t3kPresetCount()     { return (int)g_t3kLocal.size(); }
 static int  presetTotalAll()     { return presetTotal() + t3kPresetCount(); }
 static bool isT3kPreset(int idx) { return idx >= presetTotal() && idx < presetTotalAll(); }
@@ -2283,7 +2703,7 @@ static void presetNameW(int idx, WCHAR* out, int n) {
         if (!wn.empty()) wcsncpy_s(out, (size_t)n, wn.c_str(), _TRUNCATE);
         else             swprintf_s(out, (size_t)n, L"PRESET TONE3000 %d", idx - presetTotal() + 1);
     } else if (idx >= 0 && idx < kNumPresets) {
-        wcsncpy_s(out, (size_t)n, g_presets[idx].name, _TRUNCATE);
+        wcsncpy_s(out, (size_t)n, tr(g_presets[idx].name), _TRUNCATE);
     } else if (idx >= 0 && idx < presetTotal()) {
         wcsncpy_s(out, (size_t)n, g_userPresets[idx - kNumPresets].name, _TRUNCATE);
     } else {
@@ -2754,6 +3174,10 @@ static CabIR g_procIR[6];                 // 6 cabes procedurales (generados al 
 static bool  g_procIRBuilt = false;
 static float g_procIRFs = 0.0f;
 static CabIR* g_userIRPtr = nullptr;      // ultimo IR cargado por el usuario
+// Tasa a la que esta construido el IR de usuario. La convolucion supone esa
+// frecuencia: si la sesion cambia (44,1 -> 48) hay que REHACERLO o el gabinete
+// queda desafinado un 8,8%.
+static std::atomic<int> g_irBuiltRate{0};
 // g_procIR / g_procIR2 viven en tablas estaticas: NUNCA se les puede hacer
 // delete. La marca esta en CabIR::owned, que solo pone loadIRFromWav.
 
@@ -2825,8 +3249,8 @@ static bool loadIRFromWav(const wchar_t* path) {
     // re-muestrea (lineal: es un impulso de 512 tomas), porque convolucionarlo
     // tal cual desplazaba todo el gabinete por la relacion de tasas (48/44,1 =
     // 8,8%: el corte de 5 kHz caia en 4,6 kHz).
+    int sessRate = 48000;
     {
-        int sessRate = 48000;
         { std::lock_guard<std::mutex> lk(g_settingsMutex); sessRate = kRates[g_appliedSet.rateIdx]; }
         if (rate > 0 && (int)rate != sessRate) {
             const double k = (double)rate/(double)sessRate;
@@ -2887,7 +3311,8 @@ static bool loadIRFromWav(const wchar_t* path) {
         const wchar_t* nm = bs ? bs + 1 : path;
         WideCharToMultiByte(CP_ACP, 0, nm, -1, ir->nameW, (int)sizeof(ir->nameW), nullptr, nullptr);
     }
-    CabIR* old = g_cabIRPtr.exchange(ir);   // el audio pasara a leerlo en su proximo bloque
+    g_irBuiltRate.store(sessRate);           // tasa a la que se ha remuestreado
+CabIR* old = g_cabIRPtr.exchange(ir);   // el audio pasara a leerlo en su proximo bloque
     if (old && old->owned) g_cabRetirados.push_back(old);   // retira solo IRs reservados aqui
     g_userIRPtr = ir;
     g_cabIRPath = path;
@@ -4132,6 +4557,7 @@ static void saveIni() {
                 g_outputDevices[g_selectedOutputIdx].name.c_str(), g_iniPath.c_str());
     }
     swprintf_s(buf, L"%d", g_params.model.load());      WritePrivateProfileStringW(L"state", L"model", buf, g_iniPath.c_str());
+    swprintf_s(buf, L"%d", g_lang);                     WritePrivateProfileStringW(L"state", L"lang", buf, g_iniPath.c_str());
     swprintf_s(buf, L"%.4f", (double)g_params.master.load()); WritePrivateProfileStringW(L"state", L"master", buf, g_iniPath.c_str());
     swprintf_s(buf, L"%.4f", (double)g_params.inTrim.load()); WritePrivateProfileStringW(L"state", L"inTrim", buf, g_iniPath.c_str());
     swprintf_s(buf, L"%d", g_params.cabModel.load()); WritePrivateProfileStringW(L"state", L"cabModel", buf, g_iniPath.c_str());
@@ -4411,6 +4837,10 @@ static void loadIni() {
     if (st.bufIdx  < 0 || st.bufIdx  >= kNumBufs)  st.bufIdx  = 2;
     st.enableInput  = iniGetInt(L"audio", L"in",  st.enableInput  ? 1 : 0) != 0;
     st.enableOutput = iniGetInt(L"audio", L"out", st.enableOutput ? 1 : 0) != 0;
+    // Idioma: si el .ini no lo trae se queda el que eligio el arranque (el del
+    // sistema). Un valor raro tambien cae al espanol.
+    g_lang = iniGetInt(L"state", L"lang", g_lang);
+    if (g_lang != 0 && g_lang != 1) g_lang = 0;
     { std::lock_guard<std::mutex> lk(g_settingsMutex); g_appliedSet = st; g_settings = st; }
     // Dispositivos por nombre (sobreviven a reordenaciones y reinicios)
     wchar_t wantIn[256] = L"", wantOut[256] = L"";
@@ -5147,7 +5577,6 @@ static DWORD WINAPI AudioThread(LPVOID) {
     if (capDev) capDev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&capCli);
     if (renDev) renDev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&renCli);
 
-    const REFERENCE_TIME BUF = (REFERENCE_TIME)((double)bsize * 10000000.0 / rate);
     const double bufMs = (double)bsize * 1000.0 / (double)rate;   // GA_PROF
 
     // Formato solicitado: float32 estereo a la frecuencia elegida
@@ -5166,45 +5595,91 @@ static DWORD WINAPI AudioThread(LPVOID) {
 
     bool exclusive = (st.system == 1);
     HRESULT hrCap = E_FAIL, hrRen = E_FAIL;
-    if (exclusive && capCli) {
-        WAVEFORMATEX* mix = nullptr;
-        capCli->GetMixFormat(&mix);
-        hrCap = capCli->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE,
-                                   AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                                   0, BUF, mix, nullptr);
-        if (mix) CoTaskMemFree(mix);
+    const WAVEFORMATEX* capFmt = nullptr;
+    const WAVEFORMATEX* renFmt = nullptr;
+    // Duracion del buffer para N frames a la frecuencia de ESE stream.
+    const auto bufFor = [](int frames, int sr) {
+        return (REFERENCE_TIME)((double)frames * 10000000.0 / (double)sr + 0.5);
+    };
+    // Inicializa un stream EXCLUSIVO. La duracion va en el 3er argumento y la
+    // periodicidad en 0: antes iba al reves (0, BUF), que es invalido y hacia
+    // que exclusivo fallara SIEMPRE y se cayera a compartido en silencio.
+    const auto initExcl = [](IAudioClient* cli, const WAVEFORMATEX* fmt, REFERENCE_TIME dur) {
+        HRESULT hr = cli->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE,
+                                     AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                                     (UINT32)dur, 0, fmt, nullptr);
+        if (hr == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {
+            // El driver exige un buffer alineado: da el tamano bueno y se
+            // reintenta con ESA duracion (patron documentado por Microsoft).
+            UINT32 fr = 0;
+            if (SUCCEEDED(cli->GetBufferSize(&fr)) && fr > 0) {
+                const REFERENCE_TIME d2 =
+                    (REFERENCE_TIME)(10000000.0 * fr / fmt->nSamplesPerSec + 0.5);
+                hr = cli->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE,
+                                     AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                                     (UINT32)d2, 0, fmt, nullptr);
+            }
+        }
+        return hr;
+    };
+    // Formatos que se prueban en EXCLUSIVO, TODOS a la frecuencia PEDIDA. El
+    // motor entero (IR del gabinete, afinador, grabadora, medidores) corre a UNA
+    // tasa; aceptar el mix del dispositivo a otra frecuencia dejaba el gabinete
+    // desafinado un 8,8% (48/44,1). Si el endpoint no acepta ninguno a la tasa
+    // pedida, se cae a COMPARTIDO, que convierte a esa misma tasa.
+    WAVEFORMATEXTENSIBLE reqPcm16{}, reqPcm24{};
+    {
+        const auto mkPcm = [&](WAVEFORMATEXTENSIBLE& f, int bits) {
+            f = req;
+            f.Format.wBitsPerSample = (WORD)bits;
+            f.Format.nBlockAlign    = (WORD)(2 * bits / 8);
+            f.Format.nAvgBytesPerSec= (DWORD)(rate * 2 * bits / 8);
+            f.Samples.wValidBitsPerSample = (WORD)bits;
+            f.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+        };
+        mkPcm(reqPcm16, 16);
+        mkPcm(reqPcm24, 24);
     }
-    if (exclusive && renCli) {
-        WAVEFORMATEX* mix = nullptr;
-        renCli->GetMixFormat(&mix);
-        hrRen = renCli->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE,
-                                   AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                                   0, BUF, mix, nullptr);
-        if (mix) CoTaskMemFree(mix);
-    }
-    if (FAILED(hrCap) || FAILED(hrRen)) {
-        // Fallback automatico a compartido con conversion de formato
-        if (exclusive) {
+    const auto openExcl = [&](IAudioClient* cli, const WAVEFORMATEX** fmtOut) -> HRESULT {
+        const WAVEFORMATEX* tries[3] = {
+            (const WAVEFORMATEX*)&req,
+            (const WAVEFORMATEX*)&reqPcm16,
+            (const WAVEFORMATEX*)&reqPcm24
+        };
+        for (int i = 0; i < 3; ++i) {
+            const HRESULT hr = initExcl(cli, tries[i], bufFor(bsize, rate));
+            if (SUCCEEDED(hr)) { *fmtOut = tries[i]; return hr; }
+        }
+        return E_FAIL;
+    };
+
+    if (exclusive) {
+        if (capCli) hrCap = openExcl(capCli, &capFmt);
+        if (renCli) hrRen = openExcl(renCli, &renFmt);
+        if (FAILED(hrCap) || FAILED(hrRen)) {
             if (capCli) { capCli->Release(); capCli = nullptr; }
             if (renCli) { renCli->Release(); renCli = nullptr; }
             if (capDev) capDev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&capCli);
             if (renDev) renDev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&renCli);
+            exclusive = false;
+            capFmt = renFmt = nullptr;
+            hrCap = hrRen = E_FAIL;
         }
-        exclusive = false;
-        if (capCli) {
-            hrCap = capCli->Initialize(AUDCLNT_SHAREMODE_SHARED,
-                       AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
-                       AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY |
-                       AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                       0, BUF, (WAVEFORMATEX*)&req, nullptr);
-        }
-        if (renCli) {
-            hrRen = renCli->Initialize(AUDCLNT_SHAREMODE_SHARED,
-                       AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
-                       AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY |
-                       AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                       0, BUF, (WAVEFORMATEX*)&req, nullptr);
-        }
+    }
+    if (!exclusive) {
+        // La duracion va en el 3er argumento (hnsBufferDuration) y la
+        // periodicidad en 0. Antes iba (0, BUF) y el motor IGNORABA el ajuste de
+        // BUFFER: todas las opciones daban el mismo buffer del sistema.
+        const REFERENCE_TIME dur = bufFor(bsize, rate);
+        const DWORD sflags = AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
+                             AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY |
+                             AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+        if (capCli) hrCap = capCli->Initialize(AUDCLNT_SHAREMODE_SHARED, sflags,
+                                               (UINT32)dur, 0, (WAVEFORMATEX*)&req, nullptr);
+        if (renCli) hrRen = renCli->Initialize(AUDCLNT_SHAREMODE_SHARED, sflags,
+                                               (UINT32)dur, 0, (WAVEFORMATEX*)&req, nullptr);
+        if (SUCCEEDED(hrCap)) capFmt = (const WAVEFORMATEX*)&req;
+        if (SUCCEEDED(hrRen)) renFmt = (const WAVEFORMATEX*)&req;
     }
     if ((wantInput && FAILED(hrCap)) || (wantOutput && FAILED(hrRen))) {
         if (capCli) capCli->Release();
@@ -5216,16 +5691,12 @@ static DWORD WINAPI AudioThread(LPVOID) {
         continue;
     }
 
-    // Formato realmente usado por cada stream
-    WAVEFORMATEX* usedCapFmt = nullptr;
-    WAVEFORMATEX* usedRenFmt = nullptr;
-    if (exclusive) {
-        if (capCli) capCli->GetMixFormat(&usedCapFmt);
-        if (renCli) renCli->GetMixFormat(&usedRenFmt);
-    } else {
-        usedCapFmt = (WAVEFORMATEX*)&req;
-        usedRenFmt = (WAVEFORMATEX*)&req;
-    }
+    // Formato del stream = el que se PIDIO al Initialize (req o el mix). Antes
+    // se preguntaba GetMixFormat() otra vez, que devuelve el mix del endpoint y
+    // NO el formato aceptado por el stream exclusivo: si el endpoint aceptaba
+    // otro, la copia leia bytes con el layout equivocado.
+    const WAVEFORMATEX* usedCapFmt = capFmt;
+    const WAVEFORMATEX* usedRenFmt = renFmt;
     const auto isFloat = [](const WAVEFORMATEX* f) {
         if (!f) return false;
         if (f->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) return true;
@@ -5299,6 +5770,15 @@ static DWORD WINAPI AudioThread(LPVOID) {
 
     if (capCli) capCli->Start();
     if (renCli) renCli->Start();
+    // Lo que CORRE de verdad (la UI lo ensena en la linea de estado).
+    {
+        UINT32 rf = 0;
+        if (renCli && FAILED(renCli->GetBufferSize(&rf))) rf = 0;
+        if (rf == 0 && capCli) capCli->GetBufferSize(&rf);
+        g_sessRate.store((int)fs);
+        g_sessBufFrames.store((int)rf);
+        g_sessExclusive.store(exclusive ? 1 : 0);
+    }
     g_params.audioActive.store(true);
     // Prioridad de tiempo real de la sesion (MMCSS si esta; T15).
     mmcss = audioRtEnter();
@@ -5308,6 +5788,7 @@ static DWORD WINAPI AudioThread(LPVOID) {
     // Bucle principal: timeout NO destruye la sesion (evita cortes)
     HANDLE evts[2] = { renEvent ? renEvent : capEvent, capEvent ? capEvent : renEvent };
     const bool useBoth = (renEvent && capEvent);
+    int devDead = 0;   // llamadas seguidas con DEVICE_INVALIDATED (endpoint ido)
     for (;;) {
         DWORD w = WaitForMultipleObjects(useBoth ? 2 : 1, evts, FALSE, 50);
         if (g_audioQuit.load() || g_deviceChanged.load()) break;
@@ -5326,6 +5807,7 @@ static DWORD WINAPI AudioThread(LPVOID) {
             g_paLastEv = evNow;
         }
 
+        HRESULT hrCapPoll = S_OK, hrRenPoll = S_OK;   // estado de los endpoints
         float pkIn = 0.0f, pkOut = 0.0f;
         // Trim de entrada (una vez por bloque): el medidor INPUT y el DSP ven
         // la senal ya recortada, como el gain de una preamp real.
@@ -5338,7 +5820,8 @@ static DWORD WINAPI AudioThread(LPVOID) {
             // Cadena y perfil del bloque: UNA vez por bloque, no por muestra
             audioBlockBegin();
             UINT32 packet = 0;
-            capCap->GetNextPacketSize(&packet);
+            hrCapPoll = capCap->GetNextPacketSize(&packet);
+            if (FAILED(hrCapPoll)) packet = 0;
             while (packet > 0) {
                 BYTE* capData = nullptr;  UINT32 frames = 0;  DWORD flags = 0;
                 if (SUCCEEDED(capCap->GetBuffer(&capData, &frames, &flags, nullptr, nullptr))) {
@@ -5463,9 +5946,9 @@ static DWORD WINAPI AudioThread(LPVOID) {
         // dispositivo y provoca crujidos y cortes continuos.
         if (renCap && (w == WAIT_OBJECT_0 || !useBoth || w == WAIT_TIMEOUT)) {
             UINT32 bufSize = 0, padding = 0;
-            if (SUCCEEDED(renCli->GetBufferSize(&bufSize)) &&
-                SUCCEEDED(renCli->GetCurrentPadding(&padding)) &&
-                bufSize > padding) {
+            hrRenPoll = renCli->GetBufferSize(&bufSize);
+            if (SUCCEEDED(hrRenPoll)) hrRenPoll = renCli->GetCurrentPadding(&padding);
+            if (SUCCEEDED(hrRenPoll) && bufSize > padding) {
                 UINT32 renFrames = bufSize - padding;
                 if (renFrames > (UINT32)outBuf.size()) renFrames = (UINT32)outBuf.size();
                 BYTE* renData = nullptr;
@@ -5524,9 +6007,24 @@ static DWORD WINAPI AudioThread(LPVOID) {
                 }
             }
         }
+        // ENDPOINT IDO (USB desenchufado, Bluetooth apagado, cambio de
+        // dispositivo por defecto): WASAPI devuelve DEVICE_INVALIDATED y antes el
+        // motor se quedaba mudo para siempre hasta pulsar APLICAR. A la decima
+        // llamada seguida se cierra la sesion y el bucle exterior la reabre con
+        // los dispositivos que haya ahora.
+        if (hrCapPoll == AUDCLNT_E_DEVICE_INVALIDATED ||
+            hrRenPoll == AUDCLNT_E_DEVICE_INVALIDATED) ++devDead;
+        else devDead = 0;
+        if (devDead >= 10) {
+            g_deviceChanged.store(true);
+            break;
+        }
     }
 
     g_params.audioActive.store(false);
+    g_sessRate.store(0);
+    g_sessBufFrames.store(0);
+    g_sessExclusive.store(0);
     audioRtLeave(mmcss);                 // se suelta ANTES de las esperas del cierre
     volSnapshot("parada del motor:");    // y al cerrarlo: si algo lo bajo, se ve el antes/despues
     if (capCli) capCli->Stop();
@@ -5855,10 +6353,11 @@ static void namPickAndAdd(HWND hwnd) {
     wchar_t file[MAX_PATH] = L"";
     OPENFILENAMEW ofn = { sizeof(ofn) };
     ofn.hwndOwner   = hwnd;
-    ofn.lpstrFilter = L"Capturas neurales (*.nam)\0*.nam\0Todos los archivos\0*.*\0";
+    ofn.lpstrFilter = g_lang ? L"Neural captures (*.nam)\0*.nam\0All files\0*.*\0"
+                                : L"Capturas neurales (*.nam)\0*.nam\0Todos los archivos\0*.*\0";
     ofn.lpstrFile   = file;
     ofn.nMaxFile    = MAX_PATH;
-    ofn.lpstrTitle  = L"Anadir captura (.nam) a la cadena del PERFIL";
+    ofn.lpstrTitle  = tr(L"Anadir captura (.nam) a la cadena del PERFIL");
     ofn.lpstrInitialDir = g_t3kProfilesDir;
     ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (GetOpenFileNameW(&ofn)) {
@@ -6385,6 +6884,7 @@ static void freeBackbuffer() {
 // --- Estado del pedalboard: arrastre y panel de anadido ---
 static int  g_dragPedalRow = -1, g_dragPedalIdx = -1, g_dragPedalType = -1;
 static int  g_dropRow = -1, g_dropIdx = -1;             // insercion valida
+static int  g_dropSwap = -1;                            // plaza a INTERCAMBIAR (arrastrar sobre una tarjeta)
 static bool g_addOpen = false;                          // panel "anadir pedal"
 static int  g_addRow = 0;                               // fila destino del anadido
 static bool g_brwOpen = false;                          // navegador de presets (paso 18)
@@ -6394,6 +6894,7 @@ static bool g_brwOpen = false;                          // navegador de presets 
 // (add < t3k < settings < tuner < rename) dejaba el de abajo robando el clic
 // al de arriba, y el hoverKey ni siquiera conocia a RENOMBRAR.
 static void modalCloseAll() {
+    g_topOpen      = false;
     g_settingsOpen = false;
     g_addOpen      = false;
     g_t3kOpen      = false;
@@ -6568,8 +7069,11 @@ static G::REAL glyphAdvance(G::Graphics& g, const G::Font& f, WCHAR ch) {
 
 static G::REAL drawSpaced(G::Graphics& g, const WCHAR* s, const G::Font& f, G::Color c,
                           G::REAL x, G::REAL y, G::REAL spacing) {
+    s = tr(s);
     G::SolidBrush br(c);
-    G::StringFormat sf(G::StringFormatFlagsNoFitBlackBox);
+    // NoClip: la tilde de una mayuscula (É) sobresale de la caja de la celda y,
+    // sin esta bandera, GDI+ la recortaba al escalar (a 1,25 se leia "DESPUES").
+    G::StringFormat sf((INT)(G::StringFormatFlagsNoFitBlackBox | G::StringFormatFlagsNoClip));
     G::REAL cx = x;
     for (const WCHAR* p = s; *p; ++p) {
         const WCHAR ch[2] = { *p, 0 };
@@ -6583,6 +7087,7 @@ static G::REAL drawSpaced(G::Graphics& g, const WCHAR* s, const G::Font& f, G::C
 // wordmark en metal (degradado dentro de las letras, no un color plano).
 static G::REAL drawSpacedB(G::Graphics& g, const WCHAR* s, const G::Font& f, G::Brush* br,
                            G::REAL x, G::REAL y, G::REAL spacing) {
+    s = tr(s);
     G::REAL cx = x;
     for (const WCHAR* p = s; *p; ++p) {
         WCHAR ch[2] = { *p, 0 };
@@ -6639,11 +7144,66 @@ static std::wstring fitEllipsis(G::Graphics& g, const WCHAR* s, const G::Font& f
     return t + L"\x2026";
 }
 
+// ROTULO DE UNA LINEA con su kerning normal (DrawString). Si no cabe en su caja
+// baja el cuerpo medio punto a medio punto hasta ptMin y, si ni asi cabe, corta
+// por la cola con puntos suspensivos. Existe porque DrawString a secas RECORTA
+// el texto contra la caja: asi se leia "MARAUDER 80" en la lista de amplis.
+static void drawTextFit(G::Graphics& g, const WCHAR* s, G::FontStyle style, G::Color c,
+                        G::REAL x, G::REAL y, G::REAL w, G::REAL h,
+                        G::REAL pt, G::REAL ptMin, const WCHAR* fam = kFontUI,
+                        bool center = false, bool vcenter = false) {
+    s = tr(s);
+    if (!s || !s[0]) return;
+    G::StringFormat sf;
+    sf.SetFormatFlags(G::StringFormatFlagsNoWrap | G::StringFormatFlagsNoClip);
+    if (center)  sf.SetAlignment(G::StringAlignmentCenter);     // eje horizontal
+    if (vcenter) sf.SetLineAlignment(G::StringAlignmentCenter); // eje vertical
+    const G::RectF box(0, 0, 4000, h);
+    G::RectF b;
+    G::REAL size = pt;
+    for (;;) {
+        G::Font f(fam, size, style);
+        g.MeasureString(s, -1, &f, box, &sf, &b);
+        if (b.Width <= w || size <= ptMin) break;
+        size -= 0.5f;
+        if (size < ptMin) size = ptMin;
+    }
+    G::Font f(fam, size, style);
+    g.MeasureString(s, -1, &f, box, &sf, &b);
+    // Con la interfaz ESCALADA, GridFit redondea el avance de cada glifo a
+    // pixeles enteros de dispositivo: MeasureString mide el avance ideal y la
+    // linea sale 2-5px mas ancha, asi que se comia la ultima letra ("MARAUDER 8").
+    // Para este rotulo se pinta sin GridFit cuando hay escala (medida y pintado
+    // vuelven a coincidir) y se deja el hint como estaba. A 1:1 no cambia nada.
+    const G::TextRenderingHint hint0 = (g_uiS != 1.0f) ? G::TextRenderingHintAntiAlias
+                                                      : G::TextRenderingHintAntiAliasGridFit;
+    g.SetTextRenderingHint(hint0);
+    G::SolidBrush br(c);
+    if (b.Width <= w) {
+        g.DrawString(s, -1, &f, G::RectF(x, y, w, h), &sf, &br);
+        g.SetTextRenderingHint(G::TextRenderingHintAntiAliasGridFit);
+        return;
+    }
+    std::wstring t(s);
+    while (t.size() > 1) {
+        t.pop_back();
+        const std::wstring tp = t + L"\x2026";
+        g.MeasureString(tp.c_str(), -1, &f, box, &sf, &b);
+        if (b.Width <= w) {
+            g.DrawString(tp.c_str(), -1, &f, G::RectF(x, y, w, h), &sf, &br);
+            g.SetTextRenderingHint(G::TextRenderingHintAntiAliasGridFit);
+            return;
+        }
+    }
+    g.SetTextRenderingHint(G::TextRenderingHintAntiAliasGridFit);
+}
+
 // drawSpacedFit garantiza que el texto cabe en maxW: encoge hasta ptMin y, si aun
 // asi no cabe, corta con puntos suspensivos. Nunca se sale de su caja.
 static G::REAL drawSpacedFit(G::Graphics& g, const WCHAR* s, G::FontStyle style, G::Color c,
                              G::REAL x, G::REAL y, G::REAL spacing, G::REAL maxW,
                              G::REAL ptBase, G::REAL ptMin, const WCHAR* fam = kFontUI) {
+    s = tr(s);
     G::REAL pt, sp;
     fitSpacedFont(g, s, style, spacing, maxW, ptBase, ptMin, pt, sp, fam);
     G::Font f(fam, pt, style);
@@ -6655,6 +7215,7 @@ static G::REAL drawSpacedFit(G::Graphics& g, const WCHAR* s, G::FontStyle style,
 static void drawSpacedFitC(G::Graphics& g, const WCHAR* s, G::FontStyle style, G::Color c,
                            G::REAL cx, G::REAL y, G::REAL spacing, G::REAL maxW,
                            G::REAL ptBase, G::REAL ptMin, const WCHAR* fam = kFontUI) {
+    s = tr(s);
     G::REAL pt, sp;
     fitSpacedFont(g, s, style, spacing, maxW, ptBase, ptMin, pt, sp, fam);
     G::Font f(fam, pt, style);
@@ -6997,6 +7558,7 @@ static void flatKnob(G::Graphics& g, G::REAL cx, G::REAL cy, G::REAL r, float v0
 // MEDIDOR PLANO: pista de 5px y relleno continuo. Sin marco ni tornillo.
 static void flatMeterTrack(G::Graphics& g, G::Font& fLbl, const WCHAR* label,
                            G::REAL x, G::REAL y, G::REAL w) {
+    label = tr(label);
     flatWell(g, x, y + 11.0f, w, 5.0f, 2.5f);
     // Etiqueta ARRIBA y a la izquierda de la pista: el pie pasa a ser una tira
     // de canales (rotulos en UNA linea, controles debajo) en vez de etiquetas
@@ -7054,6 +7616,7 @@ static void rackUnit(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h)
 static void topBtn(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::REAL h,
                    const WCHAR* label, G::Font& f, bool hov, bool lit, G::Color litCol,
                    bool strong = false) {
+    label = tr(label);
     if (strong && !lit && !hov) {
         // El PRIMARIO descansa un tono por encima del panel: es toda la jerarquia
         // de los tres botones de cabecera (antes los tres eran el mismo cuerpo y
@@ -7612,6 +8175,7 @@ static void drawCabPreview(G::Graphics& g, G::REAL x, G::REAL y, G::REAL w, G::R
 static void drawStepPill(G::Graphics& g, int id,
                          G::REAL x, G::REAL y, G::REAL w, G::REAL h,
                          const WCHAR* label, const WCHAR* value, bool live) {
+    label = tr(label); value = tr(value);
     const bool hov = zoneHit(id);
     const bool rightSide = hov && g_mouseX >= (int)(x + w*0.5f);
     const bool leftSide  = hov && !rightSide;
@@ -7946,14 +8510,29 @@ static void buildStaticScene(int W, int H) {
     {
         // Lockup: marca cuadrada + wordmark + linea de producto. El subtitulo
         // baja y se separa del wordmark (antes le tocaba la linea base).
-        G::SolidBrush mk(kAcc);
-        roundRect(g, 24.0f, 25.0f, 11.0f, 11.0f, 2.0f, nullptr, &mk);
-        G::SolidBrush mkb(kFTxt);
-        drawSpacedB(g, L"GUITAR ONE", fLogo, &mkb, 44, 10, 4.0f);
+        // MARCA: el logotipo metalico (recurso RCDATA). El logo YA lleva la
+        // pua, asi que el cuadro ambar y el wordmark tipografico desaparecen;
+        // si el recurso faltara se pintan los dos como antes.
+        float subY = 47.0f;
+        if (G::Bitmap* lg = brandLogo()) {
+            const G::REAL lh = 46.0f;
+            const G::REAL lw = lh * (G::REAL)lg->GetWidth() / (G::REAL)lg->GetHeight();
+            const G::InterpolationMode im0 = g.GetInterpolationMode();
+            g.SetInterpolationMode(G::InterpolationModeHighQualityBicubic);
+            g.DrawImage(lg, G::RectF(22.0f, 6.0f, lw, lh), 0.0f, 0.0f,
+                        (G::REAL)lg->GetWidth(), (G::REAL)lg->GetHeight(), G::UnitPixel);
+            g.SetInterpolationMode(im0);
+            subY = 53.0f;
+        } else {
+            G::SolidBrush mk(kAcc);
+            roundRect(g, 24.0f, 25.0f, 11.0f, 11.0f, 2.0f, nullptr, &mk);
+            G::SolidBrush mkb(kFTxt);
+            drawSpacedB(g, L"GUITAR ONE", fLogo, &mkb, 44, 10, 4.0f);
+        }
         G::SolidBrush eb(kFTxt3);
         G::Font fEd(kFontTec, kTPico, G::FontStyleBold);
-        g.DrawString(L"SIMULADOR DE AMPLIFICADORES", -1, &fEd,
-                     G::RectF(45.0f, 47.0f, 320.0f, 11.0f), nullptr, &eb);
+        g.DrawString(tr(L"SIMULADOR DE AMPLIFICADORES"), -1, &fEd,
+                     G::RectF(22.0f, subY, 320.0f, 11.0f), nullptr, &eb);
     }
 
     // Base de la caja de preset superior (texto y hover son dinamicos).
@@ -7995,7 +8574,7 @@ static void buildStaticScene(int W, int H) {
             // 7,5 pt en una columna de 320 que se leia "ESPACIO audio <-/->
             // preset ..." sin saber que significaba cada flecha ni en que
             // orden mirarlos. Ahora cada uno nombra lo que hace.
-            drawTxFitC(g, L"\x2190\x2192 presets Â· \x2191\x2193 lista Â· ESPACIO audio Â· ESC salir",
+            drawTxFitC(g, L"\x2190\x2192 presets · \x2191\x2193 lista · ESPACIO audio · ESC salir",
                            G::FontStyleRegular, kFTxt3,
                            (G::REAL)(COL_L_X + COL_L_W/2), (G::REAL)HINT_Y, 0.3f,
                            (G::REAL)(COL_L_W - 24), TxCuerpo);
@@ -8361,7 +8940,7 @@ static void buildStaticScene(int W, int H) {
                     // (las medidas de estas dos lineas salen del tamano de la
                     //  ficha del perfil, no de la escala: van con su familia.)
                     WCHAR nlib[64];
-                    swprintf_s(nlib, L"PULSA CARGAR PERFIL (.NAM) \xB7 %d EN TU LIBRERIA", g_t3kLibCount);
+                    swprintf_s(nlib, tr(L"PULSA CARGAR PERFIL (.NAM) \xB7 %d EN TU LIBRERIA"), g_t3kLibCount);
                     drawSpacedFitC(g, nlib, G::FontStyleRegular,
                                    G::Color(0x96, 0x6e, 0x69, 0x63),
                                    suCx, sy + sh*0.74f, 0.8f, suW*0.94f, fs2, 7.5f, kFontTec);
@@ -8448,7 +9027,7 @@ static void buildStaticScene(int W, int H) {
         {
             G::Font fMixLbl(kFontTec, kTRotulo, G::FontStyleBold);
             G::SolidBrush ltb(kFTxt3);
-            g.DrawString(L"MEZCLA", -1, &fMixLbl,
+            g.DrawString(tr(L"MEZCLA"), -1, &fMixLbl,
                          G::RectF((G::REAL)MIX_SL_X, (G::REAL)MIX_LBL_Y, 160.0f, (G::REAL)MIX_LBL_H),
                          nullptr, &ltb);
             // Los dos extremos: que mezcla esto. Sin ellos "MEZCLA" es un numero
@@ -8456,10 +9035,10 @@ static void buildStaticScene(int W, int H) {
             {
                 G::Font fEnd(kFontTec, kTPico);
                 G::StringFormat sfR; sfR.SetAlignment(G::StringAlignmentFar);
-                g.DrawString(L"DIRECTO", -1, &fEnd,
+                g.DrawString(tr(L"DIRECTO"), -1, &fEnd,
                              G::RectF((G::REAL)MIX_SL_X, (G::REAL)MIX_LEG_Y, 110.0f, 14.0f),
                              nullptr, &ltb);
-                g.DrawString(L"CABINA", -1, &fEnd,
+                g.DrawString(tr(L"CABINA"), -1, &fEnd,
                              G::RectF((G::REAL)(MIX_SL_X + MIX_SL_W - 110), (G::REAL)MIX_LEG_Y,
                                       110.0f, 14.0f), &sfR, &ltb);
             }
@@ -8595,6 +9174,22 @@ static void catLow(WCHAR* dst, const WCHAR* src, size_t cap) {
     dst[n] = 0;
 }
 // Pasa el preset por todos los filtros del navegador.
+// Lo que busca el buscador: lo mismo que ENSENA el navegador (nombre, ampli,
+// caracteres y autor), en minusculas y separado por espacios.
+static void presetHaystack(int idx, WCHAR* out, size_t cap) {
+    if (!out || !cap) return;
+    out[0] = 0;
+    WCHAR nm[128] = L"";
+    presetNameLow(idx, nm, 128);
+    wcsncpy_s(out, cap, nm, _TRUNCATE);
+    const int g = presetGroup(idx);
+    if (g >= 0) catLow(out, tr(kAmpNames[g]), cap);
+    const unsigned int tg = presetTags(idx);
+    for (int c = 0; c < kCharCount; ++c)
+        if (tg & (1u << c)) catLow(out, tr(kCharNames[c]), cap);
+    catLow(out, presetAuthor(idx), cap);
+}
+
 static bool presetMatches(int idx) {
     if (g_brwColor >= 0 && presetFavColor(idx) != g_brwColor) return false;
     // Origen: -1 cualquiera, 0 fabrica, 1 mio, 2 TONE3000
@@ -8610,13 +9205,7 @@ static bool presetMatches(int idx) {
         // El buscador mira lo que el navegador ENSENA: nombre, ampli, caracteres
         // y autor (como el de Guitar Rig, que tambien busca en los metadatos).
         WCHAR hay[320] = L"";
-        presetNameLow(idx, hay, 320);
-        const int g = presetGroup(idx);
-        if (g >= 0) catLow(hay, kAmpNames[g], 320);
-        const unsigned int tg = presetTags(idx);
-        for (int c = 0; c < kCharCount; ++c)
-            if (tg & (1u << c)) catLow(hay, kCharNames[c], 320);
-        catLow(hay, presetAuthor(idx), 320);
+        presetHaystack(idx, hay, 320);
         WCHAR needle[64]; int j = 0;
         for (; j + 1 < 64 && g_brwText[j]; ++j) needle[j] = lowerW(g_brwText[j]);
         needle[j] = 0;
@@ -8661,6 +9250,50 @@ static int browseOrder(int* out) {
     return n;
 }
 
+// Filtra el catalogo por el texto del buscador de la cabecera.
+static void topFilter() {
+    int ord[kMaxListAll];
+    const int tot = presetOrder(ord);
+    WCHAR q[64]; int j = 0;
+    for (; j + 1 < 64 && g_topQuery[j]; ++j) q[j] = lowerW(g_topQuery[j]);
+    q[j] = 0;
+    int n = 0;
+    for (int k = 0; k < tot && n < (int)(sizeof(g_topList)/sizeof(g_topList[0])); ++k) {
+        if (!q[0]) { g_topList[n++] = ord[k]; continue; }
+        WCHAR hay[320];
+        presetHaystack(ord[k], hay, 320);
+        if (wcsstr(hay, q)) g_topList[n++] = ord[k];
+    }
+    g_topCount = n;
+    if (g_topSel >= n) g_topSel = n - 1;
+    if (g_topSel < -1) g_topSel = -1;
+    const int maxS = (n > 8) ? n - 8 : 0;
+    if (g_topScroll > maxS) g_topScroll = maxS;
+    if (g_topScroll < 0) g_topScroll = 0;
+}
+
+static const int kTopRowH = 30, kTopMaxRows = 8, kTopPad = 6;
+
+// Rect del despliegue (bajo la caja del preset).
+static RECT topDropRect() {
+    const int rows = (g_topCount <= 0) ? 1 : (g_topCount > kTopMaxRows ? kTopMaxRows : g_topCount);
+    RECT r = { TOP_BOX_X - 4, TOP_BOX_Y + TOP_BOX_H + 6,
+               TOP_BOX_X + TOP_BOX_W + 4, TOP_BOX_Y + TOP_BOX_H + 6 + kTopPad*2 + rows*kTopRowH };
+    return r;
+}
+
+// Carga el preset elegido en el buscador (mismo camino que el navegador).
+static void topApply(int idx) {
+    if (idx < 0 || idx >= presetTotal()) return;
+    if (!isT3kPreset(idx)) g_presetIdx = idx;
+    presetApplyFromBrowser(idx);
+    g_topOpen = false;
+    g_topQuery[0] = 0;
+    g_topSel = -1;
+    g_topScroll = 0;
+    g_sceneDirty.store(true);
+}
+
 // Las entradas de la lista del panel izquierdo: los 13 amplis, filtrados por el
 // buscador (nombre Y subtitulo) y por el "solo mis favoritos". La rama de PRESETS
 // se retiro con la pestana (paso 19): el catalogo de presets es del navegador.
@@ -8676,7 +9309,7 @@ static void listFilterIdx(int* out, int* pCount) {
         if (g_favOnly && !ampFav(i)) continue;
         if (fi == 0) { out[n++] = i; continue; }
         WCHAR all[96];
-        swprintf_s(all, L"%s %s", kAmpNames[i], kAmpSubs[i]);
+        swprintf_s(all, L"%s %s", tr(kAmpNames[i]), tr(kAmpSubs[i]));
         WCHAR lowAll[96];
         size_t j = 0;
         for (; j + 1 < 96 && all[j]; ++j) lowAll[j] = lowerW(all[j]);
@@ -8729,7 +9362,7 @@ static void presetTagW(int idx, WCHAR* out, int n) {
     const int g  = presetGroup(idx);
     const int ig = presetInGroup(idx);
     if (g < 0 || ig <= 0) { wcsncpy_s(out, (size_t)n, L"SIN AMPLIFICADOR", _TRUNCATE); return; }
-    swprintf_s(out, (size_t)n, L"%s \x00B7 %d", kAmpNames[g], ig);
+    swprintf_s(out, (size_t)n, L"%s \x00B7 %d", tr(kAmpNames[g]), ig);
 }
 // El texto del hueco del buscador. El panel izquierdo lista AMPLIFICADORES (la
 // pestana PRESETS se retiro en el paso 19), asi que el hueco lo dice y no puede
@@ -8912,8 +9545,8 @@ static void t3kApplyGearFilter()
     WCHAR b[160];
     const WCHAR* filtro = (g_t3kGear >= 0) ? kT3kGears[g_t3kGear].label
                          : (g_t3kVerif ? L"VERIFICADOS" : L"TODOS");
-    if (g_t3kIsTrend) swprintf_s(b, L"TENDENCIAS (%s): %d de %d", filtro, n, all);
-    else             swprintf_s(b, L"RESULTADOS (%s en la pagina): %d de %d", filtro, n, all);
+    if (g_t3kIsTrend) swprintf_s(b, tr(L"TENDENCIAS (%s): %d de %d"), filtro, n, all);
+    else             swprintf_s(b, tr(L"RESULTADOS (%s en la pagina): %d de %d"), filtro, n, all);
     t3kStatusW(b);
 }
 static void t3kDoSearch()
@@ -8960,8 +9593,8 @@ static void t3kApplyResult()
                 g_t3kIsTrend = trend;
                 g_t3kSel     = -1;
                 t3kApplyGearFilter();      // chips + verificados, en local
-                t3kStatusW(trend ? L"TENDENCIAS DE TONE3000 (publico, sin clave)"
-                                 : L"RESULTADOS DE LA BUSQUEDA");
+                t3kStatusW(tr(trend ? L"TENDENCIAS DE TONE3000 (publico, sin clave)"
+                                    : L"RESULTADOS DE LA BUSQUEDA"));
                 t3kStartImages();
             } else {
                 t3kStatusW(L"LA RESPUESTA NO SE PUDO LEER");
@@ -8973,15 +9606,15 @@ static void t3kApplyResult()
                 // es que haya caducado o sea de otra cuenta. Antes se culpaba a los
                 // terminos y el usuario no entendia nada.
                 if (kind == "search" && t3kTokenSnap().empty())
-                    m = L"LA BUSQUEDA CON FILTROS NECESITA TU TOKEN: PULSA CONECTAR O USA \"VER TONE3000\"";
+                    m = tr(L"LA BUSQUEDA CON FILTROS NECESITA TU TOKEN: PULSA CONECTAR O USA \"VER TONE3000\"");
                 else
-                    m = L"TU TOKEN DE TONE3000 NO VALE O HA CADUCADO: VUELVE A PEGARLO";
-                if (kind == "search") m = L"TONES/SEARCH ESTA FUERA DE LA CAPA GRATUITA: USA \"VER TONE3000\"";
+                    m = tr(L"TU TOKEN DE TONE3000 NO VALE O HA CADUCADO: VUELVE A PEGARLO");
+                if (kind == "search") m = tr(L"TONES/SEARCH ESTA FUERA DE LA CAPA GRATUITA: USA \"VER TONE3000\"");
                 g_t3kConnected = false;
             } else if (status == 0) {
-                m = L"SIN CONEXION CON TONE3000";
+                m = tr(L"SIN CONEXION CON TONE3000");
             } else {
-                WCHAR b[96]; swprintf_s(b, L"EL SERVIDOR DEVOLVIO %d", status); m = b;
+                WCHAR b[96]; swprintf_s(b, tr(L"EL SERVIDOR DEVOLVIO %d"), status); m = b;
             }
             t3kStatusW(m);
             if (trend) { g_t3kItems.clear(); g_t3kTotal = 0; }
@@ -8989,7 +9622,7 @@ static void t3kApplyResult()
         return;
     }
     if (kind == "preset") {
-        const std::wstring m = body.empty() ? std::wstring(L"PRESET CARGADO") : u8w(body);
+        const std::wstring m = body.empty() ? std::wstring(tr(L"PRESET CARGADO")) : u8w(body);
         t3kStatusW(m);
         toast(m.c_str());
         g_sceneDirty.store(true);   // las celdas y la escena cambian
@@ -9014,10 +9647,10 @@ static void t3kApplyResult()
             // camino comodo (campo vacio = sesion instalada) no llegaria nunca.
             g_t3kKey[0] = 0;
             saveIni();
-            t3kStatusW(L"ESA NO ES UNA CLAVE PUBLICABLE (t3k_pub_...). YA HE VACIADO EL CAMPO:"
-                       L" PULSA CONECTAR OTRA VEZ Y LO HAGO SOLO");
+            t3kStatusW(tr(L"ESA NO ES UNA CLAVE PUBLICABLE (t3k_pub_...). YA HE VACIADO EL CAMPO:"
+                       L" PULSA CONECTAR OTRA VEZ Y LO HAGO SOLO"));
         } else
-            t3kStatusW(L"NO SE PUDO CONECTAR: " + e);
+            t3kStatusW(tr(L"NO SE PUDO CONECTAR: ") + e);
         return;
     }
     if (kind == "token") {
@@ -9072,8 +9705,8 @@ static void t3kApplyResult()
             // publicable, que la app lleva dentro.
             g_t3kKey[0] = 0;        // que no vuelva a atascarse el campo
             saveIni();
-            t3kStatusW(L"ESA CLAVE O TOKEN NO VALE (" + u8w(err) +
-                       L"). YA HE VACIADO EL CAMPO: PULSA CONECTAR OTRA VEZ Y NECESITARE UN CODIGO");
+            t3kStatusW(tr(L"ESA CLAVE O TOKEN NO VALE (") + u8w(err) +
+                       tr(L"). YA HE VACIADO EL CAMPO: PULSA CONECTAR OTRA VEZ Y NECESITARE UN CODIGO"));
         }
         return;
     }
@@ -9097,15 +9730,15 @@ static void t3kApplyResult()
                     rebuildKnobs();
                 }
                 g_sceneDirty.store(true);            // las celdas viven en la escena
-                t3kStatusW(L"EN LA CELDA " + std::to_wstring(idx + 1) + L": " + title);
+                t3kStatusW(tr(L"EN LA CELDA ") + std::to_wstring(idx + 1) + L": " + title);
                 toast(L"CAPTURA PUESTA EN LA CELDA");
             } else {
-                t3kStatusW(L"EL FICHERO NO VALE: " + msg);
+                t3kStatusW(tr(L"EL FICHERO NO VALE: ") + msg);
             }
         } else if (status == 0) {
-            t3kStatusW(L"NO SE PUDO BAJAR: " + u8w(err));
+            t3kStatusW(tr(L"NO SE PUDO BAJAR: ") + u8w(err));
         } else {
-            t3kStatusW(L"NO SE PUDO BAJAR (HTTP " + std::to_wstring(status) + L"): " + u8w(err));
+            t3kStatusW(tr(L"NO SE PUDO BAJAR (HTTP ") + std::to_wstring(status) + L"): " + u8w(err));
         }
         return;
     }
@@ -9169,7 +9802,7 @@ static void t3kDrawSheet(G::Graphics& g)
     if (!code.empty()) {
         G::Font fHint(kFontUI, kTCuerpo, G::FontStyleRegular);
         G::SolidBrush hb(G::Color(0xd2, 0x82, 0x7d, 0x76));
-        g.DrawString(L"Abre la pagina, entra en tu cuenta y confirma este codigo:", -1, &fHint,
+        g.DrawString(tr(L"Abre la pagina, entra en tu cuenta y confirma este codigo:"), -1, &fHint,
                      G::RectF(sx + 24.0f, sy + 50.0f, 700.0f, 20.0f), nullptr, &hb);
         // El hueco se mide COMO EL CODIGO (antes era una caja fija de 360 para nueve
         // caracteres: sobraba medio hueco) y el codigo se centra dentro.
@@ -9194,7 +9827,7 @@ static void t3kDrawSheet(G::Graphics& g)
                            sx + (G::REAL)T3K_SHEET_W*0.5f, sy + 148.0f, 0.4f, 700.0f, TxPico);
         if (g_t3kExpMin > 0) {
             WCHAR wexp[64];
-            swprintf_s(wexp, L"El codigo caduca en %d minutos", g_t3kExpMin);
+            swprintf_s(wexp, tr(L"El codigo caduca en %d minutos"), g_t3kExpMin);
             drawTxFitC(g, wexp, G::FontStyleRegular, G::Color(0x8c, 0x82, 0x7d, 0x76),
                            sx + (G::REAL)T3K_SHEET_W*0.5f, sy + 162.0f, 0.4f, 700.0f, TxPico);
         }
@@ -9204,9 +9837,10 @@ static void t3kDrawSheet(G::Graphics& g)
     } else {
         G::Font fHint(kFontUI, kTCuerpo, G::FontStyleRegular);
         G::SolidBrush hb(G::Color(0xd2, 0x82, 0x7d, 0x76));
-        g.DrawString(L"Pulsa CONECTAR y me busco la vida: uso tu TONE3000 instalado, o te doy un codigo."
-                     L"  Ctrl+V solo si quieres pegar una clave secreta o un token.",
-                     -1, &fHint, G::RectF(sx + 24.0f, sy + 48.0f, 700.0f, 20.0f), nullptr, &hb);
+        g.DrawString(tr(L"Pulsa CONECTAR y me busco la vida: uso tu TONE3000 instalado, o te doy un codigo."),
+                     -1, &fHint, G::RectF(sx + 24.0f, sy + 42.0f, 700.0f, 15.0f), nullptr, &hb);
+        g.DrawString(tr(L"  Ctrl+V solo si quieres pegar una clave secreta o un token."),
+                     -1, &fHint, G::RectF(sx + 24.0f, sy + 57.0f, 700.0f, 15.0f), nullptr, &hb);
         const bool foc = (g_t3kFocus == 2);
         G::SolidBrush fb(G::Color(255, 0x0a, 0x0d, 0x11));
         G::Pen fp(foc ? kAcc : G::Color(0xff, 0x21, 0x1f, 0x21), foc ? 1.6f : 1.2f);
@@ -9222,10 +9856,11 @@ static void t3kDrawSheet(G::Graphics& g)
         G::StringFormat nmf; nmf.SetFormatFlags(G::StringFormatFlagsNoWrap);
         const G::RectF mRect(0, 0, 4000, 50);
         G::RectF mOut;
-        auto txtW = [&](const std::wstring& s) {   // devuelve el ANCHO (la forma con
-            return g.MeasureString(s.c_str(), -1, &fk, mRect, &nmf, &mOut);   // RectF devuelve REAL)
+        auto txtW = [&](const std::wstring& s) -> G::REAL {   // devuelve el ANCHO
+            g.MeasureString(s.c_str(), -1, &fk, mRect, &nmf, &mOut);
+            return mOut.Width;
         };
-        std::wstring show = g_t3kKey[0] ? std::wstring(g_t3kKey) : std::wstring(L"clave o token");
+        std::wstring show = g_t3kKey[0] ? std::wstring(g_t3kKey) : std::wstring(tr(L"clave o token"));
         if (g_t3kKey[0]) {
             const G::REAL fullW = txtW(show);
             if (fullW > fw) {
@@ -9248,9 +9883,9 @@ static void t3kDrawSheet(G::Graphics& g)
         // vale una clave secreta viva o un token.
         G::Font f2(kFontUI, kTCuerpo, G::FontStyleRegular);
         G::SolidBrush b2(G::Color(0x8c, 0x82, 0x7d, 0x76));
-        g.DrawString(L"Vacio: cojo la sesion de tu TONE3000 instalado (y si no, te doy", -1, &f2,
+        g.DrawString(tr(L"Vacio: cojo la sesion de tu TONE3000 instalado (y si no, te doy"), -1, &f2,
                      G::RectF(sx + 24.0f, sy + 126.0f, 700.0f, 18.0f), nullptr, &b2);
-        g.DrawString(L"un codigo). Con clave secreta o token pegados: entra directo.", -1, &f2,
+        g.DrawString(tr(L"un codigo). Con clave secreta o token pegados: entra directo."), -1, &f2,
                      G::RectF(sx + 24.0f, sy + 142.0f, 700.0f, 18.0f), nullptr, &b2);
         const bool hov = t3kHit(g_mouseX, g_mouseY) == T3K_HIT_KEYGO;
         t3kButton(g, sx + t3kBtnGoX(), sy + T3K_BTN_Y, T3K_BTN_GO_W, T3K_BTN_H,
@@ -9303,7 +9938,7 @@ static void t3kDraw(G::Graphics& g)
         G::Font fq(kFontUI, kTCuerpo, g_t3kQuery[0] ? G::FontStyleRegular : G::FontStyleItalic);
         G::SolidBrush qb(g_t3kQuery[0] ? G::Color(255, 0xe8, 0xee, 0xf4) : G::Color(0x96, 0x6e, 0x69, 0x63));
         const WCHAR* ph2 = g_t3kConnected ? L"buscar (fender, jcm800, sd-1...)" : L"conectar para buscar";
-        g.DrawString(g_t3kQuery[0] ? g_t3kQuery : ph2, -1, &fq,
+        g.DrawString(tr(g_t3kQuery[0] ? g_t3kQuery : ph2), -1, &fq,
                      G::RectF(sx + 12.0f, sy + 8.0f, 340.0f, 20.0f), nullptr, &qb);
         if (foc) {
             G::SolidBrush cb2(G::Color(220, 0xe8, 0xee, 0xf4));
@@ -9321,7 +9956,7 @@ static void t3kDraw(G::Graphics& g)
         if (g_t3kConnected) {
             G::Font fu(kFontTec, kTRotulo, G::FontStyleBold);
             G::SolidBrush ub(kFTxt2);
-            std::wstring who = g_t3kUser.empty() ? std::wstring(L"CONECTADO") : (L"\x2713 " + u8w(g_t3kUser));
+            std::wstring who = g_t3kUser.empty() ? std::wstring(tr(L"CONECTADO")) : (L"\x2713 " + u8w(g_t3kUser));
             g.DrawString(who.c_str(), -1, &fu, G::RectF(cx2, sy + 10.0f, 120.0f, 20.0f), nullptr, &ub);
         } else {
             const bool cHov = t3kHit(g_mouseX, g_mouseY) == T3K_HIT_CONN;
@@ -9358,7 +9993,7 @@ static void t3kDraw(G::Graphics& g)
         sfc.SetAlignment(G::StringAlignmentCenter);
         const WCHAR* msg = g_t3kBusy ? L"CONSULTANDO TONE3000..."
                                      : L"sin resultados: prueba una lista o conecta para buscar";
-        g.DrawString(msg, -1, &fn, G::RectF(px + 40.0f, py + T3K_CARDS_Y + 120.0f, pw - 80.0f, 24.0f), &sfc, &nb);
+        g.DrawString(tr(msg), -1, &fn, G::RectF(px + 40.0f, py + T3K_CARDS_Y + 120.0f, pw - 80.0f, 24.0f), &sfc, &nb);
     }
     for (int i = 0; i < nCards; ++i) {
         int cxi, cyi; t3kCardXY(i, cxi, cyi);
@@ -9414,7 +10049,7 @@ static void t3kDraw(G::Graphics& g)
             // la API): dice lo que SI es, cuantos bloques trae y de donde sale.
             if (g_t3kLocalMode) {
                 WCHAR bl[64];
-                swprintf_s(bl, L"%d bloque%s  \xB7  .t3kpreset", it.models, it.models == 1 ? L"" : L"s");
+                swprintf_s(bl, tr(L"%d bloque%s  \xB7  .t3kpreset"), it.models, it.models == 1 ? L"" : L"s");
                 g.DrawString(bl, -1, &fd, G::RectF(tx, cy + 84.0f, 148.0f, 16.0f), nullptr, &db);
                 drawTxFit(g, L"carga las capturas de su cadena", G::FontStyleRegular,
                               G::Color(0xa0, 0x82, 0x7d, 0x76), tx, cy + 103.0f, 0.1f, 148.0f, TxPico);
@@ -9423,7 +10058,7 @@ static void t3kDraw(G::Graphics& g)
                 g.DrawString(dl.c_str(), -1, &fd, G::RectF(tx, cy + 84.0f, 148.0f, 16.0f), nullptr, &db);
                 // modelos que trae (solo tiene sentido para los tonos de la API)
                 WCHAR ml[64];
-                swprintf_s(ml, L"%d modelo%s  A1 %d / A2 %d", it.models, it.models == 1 ? L"" : L"s", it.a1, it.a2);
+                swprintf_s(ml, tr(L"%d modelo%s  A1 %d / A2 %d"), it.models, it.models == 1 ? L"" : L"s", it.a1, it.a2);
                 drawTxFit(g, ml, G::FontStyleRegular, G::Color(0xa0, 0x82, 0x7d, 0x76),
                               tx, cy + 103.0f, 0.1f, 148.0f, TxPico);
             }
@@ -9502,7 +10137,7 @@ static void t3kDraw(G::Graphics& g)
         // hueco entre el boton de verificados y las pestanyas es de 32px y el rotulo
         // se montaba encima del boton.
         WCHAR tot[48]; tot[0] = 0;
-        if (!g_t3kItems.empty()) swprintf_s(tot, L"%d tonos", (int)g_t3kItems.size());
+        if (!g_t3kItems.empty()) swprintf_s(tot, tr(L"%d tonos"), (int)g_t3kItems.size());
         const G::REAL stW = pw - T3K_PAD*2 - T3K_DISC_RESERVE - (tot[0] ? 88.0f : 0.0f);
         drawTxFit(g, status.empty() ? L"LISTO" : status.c_str(), G::FontStyleBold, G::Color(0xd2, 0x82, 0x7d, 0x76),
                       px + T3K_PAD, py + 530.0f, 0.8f, stW, TxRotulo);
@@ -9513,7 +10148,7 @@ static void t3kDraw(G::Graphics& g)
         G::SolidBrush hb(G::Color(0x96, 0x6e, 0x69, 0x63));
         G::StringFormat sfr;
         sfr.SetAlignment(G::StringAlignmentFar);
-        g.DrawString(L"los perfiles son de sus autores: se descargan, no se incluyen", -1, &fh,
+        g.DrawString(tr(L"los perfiles son de sus autores: se descargan, no se incluyen"), -1, &fh,
                      G::RectF(px + pw - T3K_PAD - 420.0f, py + 532.0f, 420.0f, 18.0f), &sfr, &hb);
     }
     if (g_t3kConnOpen) t3kDrawSheet(g);
@@ -9573,7 +10208,7 @@ static const WCHAR* presetCharLabel(int idx) {
         static WCHAR buf[48];
         const t3k::LocalPreset* p = t3kPresetAt(idx);
         const int nb = p ? (int)(p->left.size() + p->right.size()) : 0;
-        swprintf_s(buf, L"%d CAPTURA%s", nb, nb == 1 ? L"" : L"S");
+        swprintf_s(buf, tr(L"%d CAPTURA%s"), nb, nb == 1 ? L"" : L"S");
         return buf;
     }
     const unsigned int t = presetTags(idx);
@@ -9765,7 +10400,7 @@ static void brwPaint(G::Graphics& g) {
     drawTxFit(g, L"PRESETS", G::FontStyleBold, kFTxt, (G::REAL)(BRW_X + 30), (G::REAL)(BRW_Y + 16), 1.4f, 220.0f, TxMarca);
     {
         WCHAR sub[80];
-        swprintf_s(sub, L"NAVEGADOR  \x00b7  %d DE %d", n, presetTotalAll());
+        swprintf_s(sub, tr(L"NAVEGADOR  \x00b7  %d DE %d"), n, presetTotalAll());
         drawTxFit(g, sub, G::FontStyleRegular, kFTxt3, (G::REAL)(BRW_X + 30 + 148), (G::REAL)(BRW_Y + 23), 0.8f, 420.0f, TxRotulo);
     }
     { G::Pen ul(kFLine, 1.0f); g.DrawLine(&ul, (G::REAL)(BRW_X + 30), (G::REAL)(BRW_Y + 56), (G::REAL)(BRW_X + BRW_W - 30), (G::REAL)(BRW_Y + 56)); }
@@ -9849,7 +10484,8 @@ static void brwPaint(G::Graphics& g) {
         drawTxFit(g, nm, G::FontStyleBold, kFTxt, (G::REAL)r.left + 30, (G::REAL)r.top + 5, 0.6f, (G::REAL)(r.right - r.left) - 320.0f, TxNombre);
         WCHAR sub[160];
         const int gp = presetGroup(idx);
-        swprintf_s(sub, L"%s  \x00b7  %s", (gp >= 0) ? kAmpNames[gp] : L"SIN AMPLI", presetCharLabel(idx));
+        swprintf_s(sub, L"%s  \x00b7  %s", (gp >= 0) ? tr(kAmpNames[gp]) : tr(L"SIN AMPLI"),
+                       tr(presetCharLabel(idx)));
         drawTxFit(g, sub, G::FontStyleRegular, kFTxt3, (G::REAL)r.left + 30, (G::REAL)r.top + 25, 0.4f, (G::REAL)(r.right - r.left) - 320.0f, TxRotulo);
         {
             G::REAL y = (G::REAL)r.top + ((G::REAL)BRW_ROW_H - kTx[TxRotulo].pt) * 0.5f;
@@ -9895,8 +10531,8 @@ static void brwPaint(G::Graphics& g) {
             WCHAR sub[160];
             const int gp = presetGroup(idx);
             swprintf_s(sub, L"%s  \x00b7  %s  \x00b7  %s",
-                       (gp >= 0) ? kAmpNames[gp] : L"SIN AMPLI", presetCharLabel(idx),
-                       isT3kPreset(idx) ? L"TONE3000" : (user ? L"PRESET MIO" : L"DE FABRICA"));
+                       (gp >= 0) ? tr(kAmpNames[gp]) : tr(L"SIN AMPLI"), tr(presetCharLabel(idx)),
+                       isT3kPreset(idx) ? L"TONE3000" : (user ? tr(L"PRESET MIO") : tr(L"DE FABRICA")));
             drawTxFit(g, sub, G::FontStyleRegular, kFTxt3, (G::REAL)ir.left, (G::REAL)g_brw.iName.bottom + 4.0f, 0.4f,
                       (G::REAL)(ir.right - ir.left), TxRotulo);
         }
@@ -9973,7 +10609,7 @@ static void brwPaint(G::Graphics& g) {
             WCHAR w1[48], w2[48], line[160];
             brwDateW(presetCreated(idx), w1, 48);
             brwDateW(presetUsed(idx),    w2, 48);
-            swprintf_s(line, L"CREADO %s   \x00b7   USADO %s", w1, w2);
+            swprintf_s(line, tr(L"CREADO %s   \x00b7   USADO %s"), w1, w2);
             drawTxFit(g, line, G::FontStyleRegular, kFTxt3, (G::REAL)ir.left, (G::REAL)g_brw.iWhen.top, 0.4f,
                       (G::REAL)(ir.right - ir.left), TxRotulo);
         }
@@ -10264,6 +10900,30 @@ static void paintWindow(HWND hwnd) {
             roundRect(g, (G::REAL)TOP_BOX_X, (G::REAL)TOP_BOX_Y, (G::REAL)TOP_BOX_W,
                       (G::REAL)TOP_BOX_H, kRPill, &hp, &hb);
         }
+        if (g_topOpen) {
+            // Modo BUSCADOR: la caja es un CAMPO. Se pinta el texto tecleado (o
+            // el marcador de posicion) y el cursor; al cerrar vuelve el preset.
+            const G::REAL fx = (G::REAL)TOP_BOX_X + 18.0f;
+            const G::REAL fw = (G::REAL)TOP_DIV_X - 34.0f;
+            drawTextFit(g, g_topQuery[0] ? g_topQuery : L"Buscar preset...",
+                        G::FontStyleRegular, g_topQuery[0] ? kFTxt : kFTxt3,
+                        fx, (G::REAL)TOP_BOX_Y, fw, (G::REAL)TOP_BOX_H,
+                        kTValor, 9.5f, kFontMono, false, true);
+            if (g_topQuery[0]) {
+                G::Font fq(kFontMono, kTValor);
+                G::RectF mb;
+                g.MeasureString(g_topQuery, -1, &fq, G::RectF(0, 0, 900, 60), nullptr, &mb);
+                const G::REAL cx = fx + mb.Width + 2.0f;
+                if (cx < fx + fw - 2.0f) {
+                    G::SolidBrush cb(kAcc);
+                    g.FillRectangle(&cb, cx, (G::REAL)(TOP_BOX_Y + 16), 1.5f, 20.0f);
+                }
+            }
+            // foco: el mismo canto ambar que el resto de campos
+            G::Pen fp(kAcc, 1.4f);
+            roundRect(g, (G::REAL)TOP_BOX_X, (G::REAL)TOP_BOX_Y, (G::REAL)TOP_BOX_W,
+                      (G::REAL)TOP_BOX_H, kRPill, &fp, nullptr);
+        } else {
         // Linea de arriba: QUE CABEZA suena. Es el sitio que el diseno reserva
         //  al nombre del ampli (la banda de la unidad dice que ESTANTE es, no
         //  que ampli lleva montado). Va ALINEADO con el nombre del preset (que
@@ -10281,7 +10941,7 @@ static void paintWindow(HWND hwnd) {
         G::SolidBrush tb(kFTxt);
         const WCHAR* nm = pname;
         const int inG = presetInGroup(g_presetIdx);
-        if (inG > 0) {
+        if (inG > 0 && !g_topOpen) {
             G::SolidBrush cb(G::Color(160, 0xff, 0xa5, 0x1f));
             G::Pen cp(G::Color(150, kAcc.GetR(), kAcc.GetG(), kAcc.GetB()), 1.0f);
             roundRect(g, (G::REAL)TOP_BOX_X + 14.0f, (G::REAL)(TOP_BOX_Y + 17), 38.0f, 26.0f, kRWell, &cp, &cb);
@@ -10311,6 +10971,7 @@ static void paintWindow(HWND hwnd) {
                 }
             }
         }
+        }   // fin del modo PRESET (el else del buscador sigue hasta aqui)
         icChev(g, (G::REAL)TOP_BOX_X + TOP_ARROW_X + 16.0f,
                (G::REAL)TOP_BOX_Y + TOP_BOX_H*0.5f, 11.0f,
                bhov ? kFTxt : kFTxt2, 0);
@@ -10407,7 +11068,7 @@ static void paintWindow(HWND hwnd) {
             WCHAR wrec[32];
             if (recOn) {
                 const DWORD secs = (GetTickCount() - g_recTickStart) / 1000;
-                swprintf_s(wrec, L"PARAR %lu:%02lu", secs / 60, secs % 60);
+                swprintf_s(wrec, tr(L"PARAR %lu:%02lu"), secs / 60, secs % 60);
             } else {
                 wcscpy_s(wrec, L"GRABAR");
             }
@@ -10464,18 +11125,18 @@ static void paintWindow(HWND hwnd) {
         // quitar un pedal (ENTRADA, PRE, cabezal, cabina, POST, SALIDA). Si una
         // fila esta vacia, su etapa se queda con el rotulo corto y su marca
         // apagada, en vez de desaparecer.
-        wcscpy_s(tmp, L"ENTRADA");            chip[nch].c = kFTxt2; wcscpy_s(chip[nch++].t, tmp);
+        wcscpy_s(tmp, tr(L"ENTRADA"));        chip[nch].c = kFTxt2; wcscpy_s(chip[nch++].t, tmp);
         {
             if (!g_chainPre.empty()) {
-                swprintf_s(tmp, L"PRE \u00D7%d", (int)g_chainPre.size());
+                swprintf_s(tmp, tr(L"PRE \u00D7%d"), (int)g_chainPre.size());
                 chip[nch].c = colFx(g_chainPre[0]);
             } else {
-                wcscpy_s(tmp, L"PRE");
+                wcscpy_s(tmp, tr(L"PRE"));
                 chip[nch].c = kFTxt3;
             }
             wcsncpy_s(chip[nch++].t, tmp, _TRUNCATE);
         }
-        chip[nch].c = kAcc;                    wcsncpy_s(chip[nch++].t, kAmpNames[mm], _TRUNCATE);
+        chip[nch].c = kAcc;                    wcsncpy_s(chip[nch++].t, tr(kAmpNames[mm]), _TRUNCATE);
         {
             const int cmv = g_params.cabModel.load();
             if (cmv >= 0 && cmv < 6) MultiByteToWideChar(CP_ACP, 0, kCabNames[cmv], -1, tmp, 40);
@@ -10484,15 +11145,15 @@ static void paintWindow(HWND hwnd) {
         }
         {
             if (!g_chainPost.empty()) {
-                swprintf_s(tmp, L"POST \u00D7%d", (int)g_chainPost.size());
+                swprintf_s(tmp, tr(L"POST \u00D7%d"), (int)g_chainPost.size());
                 chip[nch].c = colFx(g_chainPost[0]);
             } else {
-                wcscpy_s(tmp, L"POST");
+                wcscpy_s(tmp, tr(L"POST"));
                 chip[nch].c = kFTxt3;
             }
             wcsncpy_s(chip[nch++].t, tmp, _TRUNCATE);
         }
-        wcscpy_s(tmp, L"SALIDA");              chip[nch].c = kFTxt2; wcsncpy_s(chip[nch++].t, tmp, _TRUNCATE);
+        wcscpy_s(tmp, tr(L"SALIDA"));          chip[nch].c = kFTxt2; wcsncpy_s(chip[nch++].t, tmp, _TRUNCATE);
         // anchos: el nombre del amp y el de la cabina son los que mas ocupan
         G::Font fc(kFontTec, kTRotulo, G::FontStyleBold);
         G::REAL cwid[6], sum = 0.0f;
@@ -10583,7 +11244,7 @@ static void paintWindow(HWND hwnd) {
                          (G::REAL)CAB_BTN_W, (G::REAL)CAB_BTN_H, hov, false, kAcc);
             G::SolidBrush bt(hov ? kFTxt : kFTxt2);
             G::Font fB(kFontTec, kTRotulo, G::FontStyleBold);
-            g.DrawString(L"CARGAR IR", -1, &fB,
+            g.DrawString(tr(L"CARGAR IR"), -1, &fB,
                          G::RectF((G::REAL)CAB_BTN_X, (G::REAL)CAB_BTN_Y,
                                   (G::REAL)CAB_BTN_W, (G::REAL)CAB_BTN_H), &sfC, &bt);
         }
@@ -10656,7 +11317,7 @@ static void paintWindow(HWND hwnd) {
             G::SolidBrush tb(on ? kAcc
                                 : G::Color(255, hov ? 235 : 198, hov ? 243 : 208, hov ? 249 : 220));
             G::Font fTb(kFontTec, kTRotulo, G::FontStyleBold);
-            g.DrawString(L"AFINADOR", -1, &fTb,
+            g.DrawString(tr(L"AFINADOR"), -1, &fTb,
                          G::RectF(bx + 24.0f, by, (G::REAL)TUNER_BTN_W - 28.0f,
                                   (G::REAL)TUNER_BTN_H), &sfC, &tb);
         }
@@ -10674,7 +11335,7 @@ static void paintWindow(HWND hwnd) {
             }
             G::Font fSc(kFontTec, kTPico, G::FontStyleBold);
             G::SolidBrush sb(G::Color(255, 0x78, 0x78, 0x7e));
-            g.DrawString(L"SALIDA", -1, &fSc, G::RectF((G::REAL)SCOPE_X, (G::REAL)(SCOPE_Y - 16),
+            g.DrawString(tr(L"SALIDA"), -1, &fSc, G::RectF((G::REAL)SCOPE_X, (G::REAL)(SCOPE_Y - 16),
                                                        (G::REAL)SCOPE_W, 16.0f), &sfC, &sb);
             // Pico real en dB a la derecha de la cabecera: un visualizador sin
             // numero es un adorno, y el pico es lo que dice si hay headroom.
@@ -10745,7 +11406,7 @@ static void paintWindow(HWND hwnd) {
         WCHAR ph[48];
         if (g_ampFilter[0]) wcscpy_s(ph, g_ampFilter);
         else wcscpy_s(ph, searchHint());
-        g.DrawString(ph, -1, &fSrch,
+        g.DrawString(tr(ph), -1, &fSrch,
                      G::RectF((G::REAL)SEARCH_X + 30.0f, (G::REAL)SEARCH_Y,
                               (G::REAL)SEARCH_W - 44.0f, (G::REAL)SEARCH_H), &sfL, &ib);
         if (g_searchFocus) {   // cursor
@@ -10830,14 +11491,14 @@ static void paintWindow(HWND hwnd) {
                 G::Pen mpc(G::Color(46, 0x9c, 0x98, 0x90), 1.0f);
                 roundRect(g, tx, ty, tw, th, 5.0f, &mpc, &mbc);
             }
-            G::SolidBrush nb2(kFTxt);
-            g.DrawString(kAmpNames[a], -1, &fRowN,
-                         G::RectF((G::REAL)(rx + 108), (G::REAL)(ry + 7), (G::REAL)(rw - 144), 20.0f),
-                         nullptr, &nb2);
-            G::SolidBrush sb3(kFTxt2);
-            g.DrawString(kAmpSubs[a], -1, &fRowS,
-                         G::RectF((G::REAL)(rx + 108), (G::REAL)(ry + 29), (G::REAL)(rw - 144), 16.0f),
-                         nullptr, &sb3);
+            // El nombre y el subtitulo CABEN: si no, se bajan medio punto y solo
+            // como ultimo recurso se recortan (antes se leia "MARAUDER 80").
+            drawTextFit(g, kAmpNames[a], G::FontStyleBold, kFTxt,
+                        (G::REAL)(rx + 108), (G::REAL)(ry + 6), (G::REAL)(rw - 140), 22.0f,
+                        kTNombre, 11.0f);
+            drawTextFit(g, kAmpSubs[a], G::FontStyleRegular, kFTxt2,
+                        (G::REAL)(rx + 108), (G::REAL)(ry + 28), (G::REAL)(rw - 140), 16.0f,
+                        kTPico, 7.0f, kFontTec);
             // estrella de favoritos
             {
                 const bool fav = ampFav(a);
@@ -10859,13 +11520,13 @@ static void paintWindow(HWND hwnd) {
             G::Font fEmp(kFontTec, kTRotulo, G::FontStyleRegular);
             G::SolidBrush em(kFTxt2);
             G::StringFormat sfc2; sfc2.SetAlignment(G::StringAlignmentCenter);
-            g.DrawString(L"SIN AMPLIFICADORES CON ESE FILTRO", -1, &fEmp,
+            g.DrawString(tr(L"SIN AMPLIFICADORES CON ESE FILTRO"), -1, &fEmp,
                          G::RectF((G::REAL)(COL_L_X + 8), (G::REAL)(LIST_Y + 44),
                                   (G::REAL)(COL_L_W - 16), 24.0f), &sfc2, &em);
             G::Font fEmp2(kFontUI, kTCuerpo, G::FontStyleRegular);
             G::StringFormat sfc3; sfc3.SetAlignment(G::StringAlignmentCenter);
-            g.DrawString(g_favOnly ? L"la estrella filtra: solo tus amplis marcados"
-                                   : L"borra el filtro de la caja de busqueda", -1, &fEmp2,
+            g.DrawString(tr(g_favOnly ? L"la estrella filtra: solo tus amplis marcados"
+                                   : L"borra el filtro de la caja de busqueda"), -1, &fEmp2,
                          G::RectF((G::REAL)(COL_L_X + 8), (G::REAL)(LIST_Y + 68),
                                   (G::REAL)(COL_L_W - 16), 20.0f), &sfc3, &em);
         }
@@ -10955,7 +11616,7 @@ static void paintWindow(HWND hwnd) {
                 icPlus(g, sx + PED_SLOT_W*0.5f, sy + 32.0f, 11.0f, pc);
                 G::SolidBrush pb(pc);
                 G::Font fAdd(kFontTec, kTRotulo, G::FontStyleBold);
-                g.DrawString(L"A\u00D1ADIR", -1, &fAdd, G::RectF(sx, sy + 58, PED_SLOT_W, 16), &sfC, &pb);
+                g.DrawString(tr(L"A\u00D1ADIR"), -1, &fAdd, G::RectF(sx, sy + 58, PED_SLOT_W, 16), &sfC, &pb);
                 pressVeil(g, sx, sy, (G::REAL)PED_SLOT_W, (G::REAL)PED_SLOT_H, 10.0f);
             }
         }
@@ -10988,7 +11649,12 @@ static void paintWindow(HWND hwnd) {
                 drawKnobDetail(g, kx, ky, PED_KB_R, pedalKnobV01(g_dragPedalType, k), ac, false, false);
             }
         }
-        if (g_dropRow >= 0) {
+        if (g_dropSwap >= 0 && g_dropRow >= 0) {
+            // Intercambio: se marca la PLAZA que va a cambiar, no un hueco.
+            G::Pen ip(kAcc, 2.2f);
+            roundRect(g, pedSlotX(g_dropSwap), PED_ROW_Y[g_dropRow],
+                      PED_SLOT_W, PED_SLOT_H, 10.0f, &ip, nullptr);
+        } else if (g_dropRow >= 0) {
             const G::REAL ix = pedSlotX(g_dropIdx), iy = PED_ROW_Y[g_dropRow];
             G::Pen ip(kAcc, 2.4f);
             g.DrawLine(&ip, ix - 4.0f, iy - 2.0f, ix - 4.0f, iy + PED_SLOT_H + 2.0f);
@@ -11024,7 +11690,7 @@ static void paintWindow(HWND hwnd) {
                           inCh ? G::Color(0xff, 0x6e, 0x69, 0x63) : G::Color(255, 238, 244, 247),
                           tx + 58, ty + 14, 0.4f, PAL_TILE_W - 70.0f, TxNombre);
             G::SolidBrush sb(inCh ? G::Color(0xff, 0x5a, 0x56, 0x51) : kAcc);
-            g.DrawString(inCh ? L"YA EST\xC1 EN LA CADENA" : L"CLIC PARA A\u00D1ADIR", -1, &fSmall,
+            g.DrawString(tr(inCh ? L"YA EN LA CADENA" : L"CLIC PARA A\u00D1ADIR"), -1, &fSmall,
                          G::RectF(tx + 58, ty + 44, PAL_TILE_W - 70.0f, 18), nullptr, &sb);
             if (!inCh) pressVeil(g, tx, ty, (G::REAL)PAL_TILE_W, (G::REAL)PAL_TILE_H, 9.0f);
         }
@@ -11035,7 +11701,7 @@ static void paintWindow(HWND hwnd) {
             G::SolidBrush cb(hov ? G::Color(0xff, 0x48, 0x45, 0x41) : G::Color(0xff, 0x39, 0x36, 0x33));
             roundRect(g, bx, by, 180, 40, 8, nullptr, &cb);
             G::SolidBrush tb(G::Color(255, 255, 255, 255));
-            g.DrawString(L"CANCELAR", -1, &fPreset, G::RectF(bx, by, 180, 40), &sfC, &tb);
+            g.DrawString(tr(L"CANCELAR"), -1, &fPreset, G::RectF(bx, by, 180, 40), &sfC, &tb);
             pressVeil(g, bx, by, 180, 40, 8.0f);
         }
     }
@@ -11179,7 +11845,10 @@ static void paintWindow(HWND hwnd) {
             G::StringFormat sfL;
             sfL.SetLineAlignment(G::StringAlignmentCenter);
             sfL.SetFormatFlags(G::StringFormatFlagsNoWrap | G::StringFormatFlagsNoClip);
-            g.DrawString(pname, -1, &fPreset, G::RectF(38, BOT_BOX_Y, 250, 40), &sfL, &tb);
+            // El nombre se AJUSTA a su caja: un nombre de usuario largo se
+            // cortaba a media palabra ("CLEAN DIAMOND WITH A VER").
+            const std::wstring t = fitEllipsis(g, pname, fPreset, 0.0f, 242.0f);
+            g.DrawString(t.c_str(), -1, &fPreset, G::RectF(38, BOT_BOX_Y, 250, 40), &sfL, &tb);
         }
 
         const G::Color acCol  = zoneHit(71) ? kAcc : G::Color(0xff, 0xb7, 0xb1, 0xa7);
@@ -11232,54 +11901,55 @@ static void paintWindow(HWND hwnd) {
     {
         AudioSettings stx;
         { std::lock_guard<std::mutex> lock(g_settingsMutex); stx = g_appliedSet; }
-        char inN[256] = "", outN[256] = "";
+        // Los nombres de dispositivo ya son std::wstring: se usan TAL CUAL (antes
+        // pasaban a ANSI, se cortaban a 32 caracteres y volvian a ancho).
+        WCHAR inNm[160] = L"", outNm[160] = L"";
         {
             std::lock_guard<std::mutex> lock(g_deviceMutex);
             if (!g_inputDevices.empty() && g_selectedInputIdx >= 0 &&
                 g_selectedInputIdx < (int)g_inputDevices.size())
-                WideCharToMultiByte(CP_ACP, 0, g_inputDevices[g_selectedInputIdx].name.c_str(),
-                                    -1, inN, 256, nullptr, nullptr);
+                wcsncpy_s(inNm, g_inputDevices[g_selectedInputIdx].name.c_str(), _TRUNCATE);
             if (!g_outputDevices.empty() && g_selectedOutputIdx >= 0 &&
                 g_selectedOutputIdx < (int)g_outputDevices.size())
-                WideCharToMultiByte(CP_ACP, 0, g_outputDevices[g_selectedOutputIdx].name.c_str(),
-                                    -1, outN, 256, nullptr, nullptr);
+                wcsncpy_s(outNm, g_outputDevices[g_selectedOutputIdx].name.c_str(), _TRUNCATE);
         }
         int rate = kRates[stx.rateIdx], bsz = kBuffers[stx.bufIdx];
         const bool en = g_audioEnabled.load();
         const bool sessOn = g_params.audioActive.load();
-        const char* audioWord = !en ? "SILENCIO" : (sessOn ? "ONLINE" : "OFFLINE");
-        const char* recWord = g_recActive.load() ? " + REC" : "";
+        const WCHAR* audioWord = !en ? tr(L"SILENCIO") : (sessOn ? L"ONLINE" : L"OFFLINE");
+        const WCHAR* recWord = g_recActive.load() ? L" + REC" : L"";
         WCHAR wpname[96];
         presetNameW(g_presetIdx, wpname, 96);   // incluye presets de usuario (sin leer fuera de g_presets)
-        char pnameA[128] = "";
-        WideCharToMultiByte(CP_ACP, 0, wpname, -1, pnameA, 128, nullptr, nullptr);
         // El estado de audio NO es un campo mas: es el unico dato de la linea que
         // no es un par rotulo+valor y el que el usuario tiene que encontrar de un
         // vistazo cuando no suena nada. Va en PASTILLA (cuerpo propio), con el
         // ambar vivo si la sesion esta en linea, ambar tenue si esta apagado (el
         // aviso con el que arranca la app) y el rojo de alerta si el motor no
         // pudo abrir el dispositivo. El piloto solo se enciende si hay sesion.
-        char stateA[64];
-        sprintf_s(stateA, "%s%s", audioWord, recWord);
         WCHAR wstate[64];
-        MultiByteToWideChar(CP_ACP, 0, stateA, -1, wstate, 64);
+        swprintf_s(wstate, L"%s%s", audioWord, recWord);
         // hairline sobre la linea de estado: la separa del pie sin recuadros
         hairSep(g, 24.0f, (G::REAL)(BOT_STAT_Y - 7), (G::REAL)(WIN_W - 48), 24);
         {
-            char tIn[64], tOut[64], tPre[64];
-            sprintf_s(tIn, "%.32s", inN);
-            sprintf_s(tOut, "%.32s", outN);
-            sprintf_s(tPre, "%.30s", pnameA);
-            const bool eIn  = (inN[0]  == 0);      // sin dispositivo elegido
-            const bool eOut = (outN[0] == 0);
+            const bool eIn  = (inNm[0]  == 0);     // sin dispositivo elegido
+            const bool eOut = (outNm[0] == 0);
+            // Con el motor EN MARCHA se ensena lo que corre de verdad: en
+            // compartido el dispositivo fija su periodo (el ajuste de BUFFER solo
+            // puede subirlo) y el modo exclusivo puede haber caido a compartido.
+            // Parado, se ensena lo que se ha pedido en AJUSTES.
+            const bool sessOn2 = g_params.audioActive.load();
+            const int  sRate = sessOn2 ? g_sessRate.load() : 0;
+            const int  sBuf  = sessOn2 ? g_sessBufFrames.load() : 0;
+            const bool sExcl = sessOn2 ? (g_sessExclusive.load() != 0) : (stx.system == 1);
+            if (sRate > 0) rate = sRate;
+            if (sBuf  > 0) bsz  = sBuf;
             WCHAR weng[64], winN[160], woutN[160], wrate[64], wbuf[96], wpres[160];
-            MultiByteToWideChar(CP_ACP, 0, stx.system == 1 ? "WASAPI EXCLUSIVO"
-                                                           : "WASAPI COMPARTIDO", -1, weng, 64);
-            MultiByteToWideChar(CP_ACP, 0, tIn, -1, winN, 160);
-            MultiByteToWideChar(CP_ACP, 0, tOut, -1, woutN, 160);
+            wcscpy_s(weng, tr(sExcl ? L"WASAPI EXCLUSIVO" : L"WASAPI COMPARTIDO"));
+            wcscpy_s(winN, inNm);
+            wcscpy_s(woutN, outNm);
             swprintf_s(wrate, L"%d Hz", rate);
-            swprintf_s(wbuf, L"%d muestras (%.1f ms)", bsz, bsz*1000.0/rate);
-            MultiByteToWideChar(CP_ACP, 0, tPre, -1, wpres, 160);
+            swprintf_s(wbuf, tr(L"%d muestras (%.1f ms)"), bsz, bsz*1000.0/rate);
+            wcscpy_s(wpres, wpname);
 
             const G::REAL py = (G::REAL)BOT_STAT_Y;
             G::REAL px = 24.0f;
@@ -11301,7 +11971,7 @@ static void paintWindow(HWND hwnd) {
             // valor al mismo tono) con una raya larga en el valor: antes decia "-"
             // con el mismo peso que un dato, asi que "sin dispositivo elegido"
             // parecia un dato mas.
-            const WCHAR* fl[6] = { L"MOTOR", L"IN", L"OUT", L"FREC", L"BUFFER", L"PRESET" };
+            const WCHAR* fl[6] = { tr(L"MOTOR"), L"IN", L"OUT", tr(L"FREC"), tr(L"BUFFER"), L"PRESET" };
             const WCHAR* fv[6] = { weng, winN, woutN, wrate, wbuf, wpres };
             const bool   vc[6] = { false, eIn, eOut, false, false, false };
             for (int i = 0; i < 6; ++i) {
@@ -11312,9 +11982,66 @@ static void paintWindow(HWND hwnd) {
                 g.DrawString(fl[i], -1, &fSmall, G::RectF(px, py, 260.0f, 22), nullptr, &bLbl);
                 g.MeasureString(fl[i], -1, &fSmall, G::RectF(0, 0, 900, 24), nullptr, &mb);
                 px += mb.Width + 5.0f;
-                g.DrawString(v, -1, &fSmall, G::RectF(px, py, 620.0f, 22), nullptr, &bl);
-                g.MeasureString(v, -1, &fSmall, G::RectF(0, 0, 900, 24), nullptr, &mb);
+                // Lo que no cabe en el ancho que queda se corta con puntos
+                // suspensivos: un nombre largo de dispositivo o de preset no
+                // puede empujar la linea fuera de la ventana.
+                const std::wstring vs = fitEllipsis(g, v, fSmall, 0.0f,
+                    std::max((G::REAL)40.0f, (G::REAL)WIN_W - 24.0f - px));
+                g.DrawString(vs.c_str(), -1, &fSmall, G::RectF(px, py, 620.0f, 22), nullptr, &bl);
+                g.MeasureString(vs.c_str(), -1, &fSmall, G::RectF(0, 0, 900, 24), nullptr, &mb);
                 px += mb.Width;
+            }
+        }
+    }
+
+    profMark("Buscador de presets (despliegue) ---");   //PFMARK
+    // --- Despliegue del buscador de la cabecera ---
+    if (g_topOpen) {
+        const RECT dr = topDropRect();
+        const G::REAL dx = (G::REAL)dr.left, dy = (G::REAL)dr.top;
+        const G::REAL dw = (G::REAL)(dr.right - dr.left), dh = (G::REAL)(dr.bottom - dr.top);
+        softShadow(g, dx, dy, dw, dh, 12.0f, 80);
+        glassPanel(g, dx, dy, dw, dh, 12.0f, true);
+        if (g_topCount <= 0) {
+            drawTxFitC(g, L"sin resultados", G::FontStyleRegular, kFTxt3,
+                       dx + dw*0.5f, dy + kTopPad + 7.0f, 0.4f, dw - 24.0f, TxCuerpo);
+        } else {
+            const int vis = (g_topCount - g_topScroll > kTopMaxRows)
+                              ? kTopMaxRows : (g_topCount - g_topScroll);
+            G::Font fNom(kFontUI, kTCuerpo);
+            G::Font fAmp(kFontTec, kTPico, G::FontStyleRegular);
+            G::StringFormat sfR;
+            sfR.SetAlignment(G::StringAlignmentFar);
+            sfR.SetLineAlignment(G::StringAlignmentCenter);
+            sfR.SetTrimming(G::StringTrimmingEllipsisCharacter);
+            sfR.SetFormatFlags(G::StringFormatFlagsNoWrap);
+            for (int k = 0; k < vis; ++k) {
+                const int li  = g_topScroll + k;
+                const int idx = g_topList[li];
+                const G::REAL ry = dy + kTopPad + k*kTopRowH;
+                G::RectF rr(dx + 4.0f, ry, dw - 8.0f, (G::REAL)kTopRowH);
+                const bool sel = (li == g_topSel);
+                const bool hov = mouseIn((int)rr.X, (int)rr.Y, (int)(rr.X + rr.Width), (int)(rr.Y + rr.Height));
+                if (sel || hov) {
+                    G::SolidBrush rb(sel ? kFSurf3 : kFSurf2);
+                    roundRect(g, rr.X, rr.Y, rr.Width, rr.Height, 6.0f, nullptr, &rb);
+                }
+                const bool live = (idx == g_presetIdx);
+                if (live) {   // el que suena: la misma marca que la fila del navegador
+                    G::SolidBrush ab(kAcc);
+                    roundRect(g, rr.X + 2.0f, rr.Y + 7.0f, 3.0f, rr.Height - 14.0f, 1.5f, nullptr, &ab);
+                }
+                WCHAR nm[128];
+                presetNameW(idx, nm, 128);
+                drawTextFit(g, nm, G::FontStyleBold, live ? kAcc : (sel || hov ? kFTxt : kFTxt2),
+                            rr.X + 12.0f, rr.Y, rr.Width - 142.0f, rr.Height,
+                            kTCuerpo, 8.5f, kFontUI, false, true);
+                const int gp = presetGroup(idx);
+                const WCHAR* sub = (gp >= 0) ? tr(kAmpNames[gp]) : tr(L"SIN AMPLI");
+                G::SolidBrush sb(live ? kFTxt3 : G::Color(0xc0, 0x8b, 0x87, 0x81));
+                g.DrawString(sub, -1, &fAmp,
+                             G::RectF(rr.X + rr.Width - 128.0f, rr.Y, 116.0f, rr.Height),
+                             &sfR, &sb);
             }
         }
     }
@@ -11327,129 +12054,107 @@ static void paintWindow(HWND hwnd) {
         // Dialogo centrado y compacto: antes era un panel casi a pantalla completa con mucho vacio
         const G::REAL px = (WIN_W - kSetPanelW) / 2, py = (WIN_H - kSetPanelH) / 2 - 10;
         const G::REAL pw = kSetPanelW, ph = kSetPanelH;
-        const G::REAL valL = px + 230, valR = px + pw - 140;
+        // Ejes de la rejilla (kSet*): todo lo que va dentro comparte x0/x1; la
+        // pastilla del valor empieza en pillL y termina en x1.
+        const G::REAL x0 = px + kSetX0, x1 = px + kSetX1;
+        const G::REAL pillL = px + kSetPillL, pillR = x1, pillW = pillR - pillL;
         glassPanel(g, px, py, pw, ph, kRModal, true);
         // El titulo va en marfil, no en ambar: el ambar marca lo que suena o
         // esta pulsado, y una cabecera no es ninguna de las dos cosas.
         drawTxFit(g, L"AJUSTES DE AUDIO", G::FontStyleBold, kFTxt,
-                      px + 30, py + 14, 2.0f, pw - 80.0f, TxMarca);
-        // filete de 1px bajo el titulo (antes, subrayado de acento)
+                      x0, py + 18.0f, 2.0f, pw - 2.0f*kSetX0, TxMarca);
+        // Filete a TODO el ancho del contenido: antes era un subrayado de 190px
+        // que en espanol casi tocaba el final del titulo y en ingles lo dejaba a
+        // medio camino (se leia como un error de maquetacion).
         {
             G::Pen ul(kFLine, 1.0f);
-            g.DrawLine(&ul, px + 30, py + 51, px + 220, py + 51);
+            g.DrawLine(&ul, x0, py + 54.0f, x1, py + 54.0f);
         }
 
         AudioSettings st;
         { std::lock_guard<std::mutex> lock(g_settingsMutex); st = g_settings; }
-        char vEng[96], vIn[160], vOut[160], vRate[64], vBuf[96];
-        sprintf_s(vEng, "%s", st.system == 1 ? "WASAPI EXCLUSIVO" : "WASAPI COMPARTIDO");
+        // Los valores ya nacen ANCHOS: el nombre del dispositivo es std::wstring
+        // (antes se pasaba a ANSI y de vuelta) y los textos fijos se traducen.
+        WCHAR wvEng[96] = L"", wvIn[160] = L"", wvOut[160] = L"", wvRate[64] = L"", wvBuf[96] = L"";
+        wcscpy_s(wvEng, tr(st.system == 1 ? L"WASAPI EXCLUSIVO" : L"WASAPI COMPARTIDO"));
+        // Si se pide exclusivo y el endpoint no lo acepta, el motor ya ha caido a
+        // compartido: se dice aqui (y el detalle real esta en la linea de estado).
+        if (st.system == 1 && g_params.audioActive.load() && g_sessExclusive.load() == 0)
+            wcscat_s(wvEng, tr(L" (no disponible)"));
         {
             std::lock_guard<std::mutex> lock(g_deviceMutex);
-            char tmp[160];
             if (!g_inputDevices.empty() && g_setInIdx >= 0 && g_setInIdx < (int)g_inputDevices.size())
-                WideCharToMultiByte(CP_ACP, 0, g_inputDevices[g_setInIdx].name.c_str(),
-                                    -1, tmp, sizeof(tmp), nullptr, nullptr);
+                wcsncpy_s(wvIn, g_inputDevices[g_setInIdx].name.c_str(), _TRUNCATE);
             else
-                sprintf_s(tmp, "(sin dispositivos)");
-            sprintf_s(vIn, "%.60s", tmp);
+                wcscpy_s(wvIn, tr(L"(sin dispositivos)"));
             if (!g_outputDevices.empty() && g_setOutIdx >= 0 && g_setOutIdx < (int)g_outputDevices.size())
-                WideCharToMultiByte(CP_ACP, 0, g_outputDevices[g_setOutIdx].name.c_str(),
-                                    -1, tmp, sizeof(tmp), nullptr, nullptr);
+                wcsncpy_s(wvOut, g_outputDevices[g_setOutIdx].name.c_str(), _TRUNCATE);
             else
-                sprintf_s(tmp, "(sin dispositivos)");
-            sprintf_s(vOut, "%.60s", tmp);
+                wcscpy_s(wvOut, tr(L"(sin dispositivos)"));
         }
-        sprintf_s(vRate, "%d Hz", kRates[st.rateIdx]);
+        swprintf_s(wvRate, L"%d Hz", kRates[st.rateIdx]);
         int bsz = kBuffers[st.bufIdx];
-        sprintf_s(vBuf, "%d muestras (%.1f ms)", bsz, bsz*1000.0/kRates[st.rateIdx]);
+        swprintf_s(wvBuf, tr(L"%d muestras (%.1f ms)"), bsz, bsz*1000.0/kRates[st.rateIdx]);
 
-        const char* labels[5] = { "MOTOR DE AUDIO", "ENTRADA", "SALIDA",
-                                  "FRECUENCIA", "BUFFER" };
-        const char* values[5] = { vEng, vIn, vOut, vRate, vBuf };
-        G::Font fVal(kFontMono, kTValor);
-        G::Font fLbl(kFontTec, kTRotulo, G::FontStyleBold);
-        for (int i = 0; i < 5; ++i) {
-            G::REAL ry = py + 58 + i*34;
-            g_panelRows[i] = { (int)(px + 30), (int)ry, (int)(px + pw - 30), (int)(ry + 30) };
+        const WCHAR* labels[6] = { tr(L"MOTOR DE AUDIO"), tr(L"ENTRADA"), tr(L"SALIDA"),
+                                   tr(L"FRECUENCIA"), tr(L"BUFFER"), tr(L"IDIOMA") };
+        const WCHAR* values[6] = { wvEng, wvIn, wvOut, wvRate, wvBuf,
+                                   g_lang ? L"ENGLISH" : L"ESPAÑOL" };
+        const G::REAL cyR = kSetPillH * 0.5f;    // centro vertical de una fila
+        for (int i = 0; i < 6; ++i) {
+            const G::REAL ry = py + kSetRowY0 + i*kSetRowPitch;
+            g_panelRows[i] = { (int)x0, (int)ry, (int)x1, (int)(ry + kSetPillH) };
             const bool hovR = mouseIn(g_panelRows[i].left, g_panelRows[i].top,
                                       g_panelRows[i].right, g_panelRows[i].bottom);
-            // banding suave en filas impares (en vez de separadores duros)
-            if (i & 1) {
-                G::SolidBrush band(G::Color(9, 255, 255, 255));
-                roundRect(g, px + 32, ry - 1, pw - 64, 32, 6, nullptr, &band);
-            }
-            if (hovR) {
-                G::SolidBrush rh(kBtnBgH);
-                roundRect(g, px + 32, ry + 1, pw - 64, 28, 6, nullptr, &rh);
-                pressVeil(g, (G::REAL)g_panelRows[i].left, (G::REAL)g_panelRows[i].top,
-                          (G::REAL)(g_panelRows[i].right - g_panelRows[i].left),
-                          (G::REAL)(g_panelRows[i].bottom - g_panelRows[i].top), 6.0f);
-            }
-            WCHAR wl[80], wv[180];
-            MultiByteToWideChar(CP_ACP, 0, labels[i], -1, wl, 80);
-            MultiByteToWideChar(CP_ACP, 0, values[i], -1, wv, 180);
-            // pildora del valor: el valor parece un control, no texto suelto
+            // UNA caja por fila: rotulo | pastilla (con las flechas DENTRO).
+            // Antes habia rotulo + circulo + pastilla + circulo, cada uno a su x.
             {
-                G::SolidBrush vb(kFSurf2);
-                G::Pen vp(hovR ? kFSurf3 : kFLine, 1.0f);
-                roundRect(g, valL - 6, ry + 3, (valR + 6) - (valL - 6), 24, 6, &vp, &vb);
-            }
-            G::SolidBrush tb(kFTxt3);
-            g.DrawString(wl, -1, &fLbl, G::RectF(px + 44, ry, 180, 30), nullptr, &tb);
-            G::SolidBrush vtb(kFTxt);
-            g.DrawString(wv, -1, &fVal, G::RectF(valL, ry, valR - valL, 30), &sfC, &vtb);
-            // flechas en circulos; los rects de click siguen valL-42..valL-6 / valR+6..valR+42
-            bool hl = mouseIn((int)(valL - 42), (int)ry, (int)(valL - 6), (int)(ry + 30));
-            bool hr = mouseIn((int)(valR + 6), (int)ry, (int)(valR + 42), (int)(ry + 30));
-            {
-                G::SolidBrush cb1(hl ? kFSurf3 : kFSurf2);
-                G::Pen cp1(hl ? kFSurf3 : kFLine, 1.0f);
-                roundRect(g, valL - 37, ry + 2, 26, 26, 13, &cp1, &cb1);
-                G::SolidBrush cb2(hr ? kFSurf3 : kFSurf2);
-                G::Pen cp2(hr ? kFSurf3 : kFLine, 1.0f);
-                roundRect(g, valR + 11, ry + 2, 26, 26, 13, &cp2, &cb2);
-            }
-            icChev(g, (G::REAL)valL - 24.0f, ry + 15.0f, 12.0f, hl ? kFTxt : kFTxt2, 1);
-            icChev(g, (G::REAL)valR + 24.0f, ry + 15.0f, 12.0f, hr ? kFTxt : kFTxt2, 2);
-            pressVeil(g, (G::REAL)(valL - 42), (G::REAL)ry, 36, 30, 6.0f);
-            pressVeil(g, (G::REAL)(valR + 6), (G::REAL)ry, 36, 30, 6.0f);
-        }
-        // Fila 6: RECARGAR DISPOSITIVOS. Una sola accion, asi que la fila entera
-        // es el boton (sin flechas) y lleva la cuenta de lo que hay ahora mismo.
-        {
-            const G::REAL ry = py + 58 + 5*34;
-            g_panelRows[5] = { (int)(px + 30), (int)ry, (int)(px + pw - 30), (int)(ry + 30) };
-            const bool hovR = mouseIn(g_panelRows[5].left, g_panelRows[5].top,
-                                      g_panelRows[5].right, g_panelRows[5].bottom);
-            if (5 & 1) {
-                G::SolidBrush band(G::Color(9, 255, 255, 255));
-                roundRect(g, px + 32, ry - 1, pw - 64, 32, 6, nullptr, &band);
-            }
-            if (hovR) {          // mismo realce de fila que las otras cinco
-                G::SolidBrush rh(kBtnBgH);
-                roundRect(g, px + 32, ry + 1, pw - 64, 28, 6, nullptr, &rh);
-                pressVeil(g, (G::REAL)g_panelRows[5].left, (G::REAL)g_panelRows[5].top,
-                          (G::REAL)(g_panelRows[5].right - g_panelRows[5].left),
-                          (G::REAL)(g_panelRows[5].bottom - g_panelRows[5].top), 6.0f);
-            }
-            {
-                // La pastilla entera del valor, con el mismo lenguaje que las otras
                 G::SolidBrush vb(hovR ? kFSurf3 : kFSurf2);
                 G::Pen vp(hovR ? kAcc : kFLine, 1.0f);
-                roundRect(g, valL - 6, ry + 3, (valR + 6) - (valL - 6), 24, 6, &vp, &vb);
+                roundRect(g, pillL, ry, pillW, kSetPillH, 7.0f, &vp, &vb);
             }
-            {
-                G::SolidBrush tb(hovR ? kFTxt : kFTxt3);
-                g.DrawString(L"DISPOSITIVOS", -1, &fLbl, G::RectF(px + 44, ry, 180, 30), nullptr, &tb);
+            // Rotulo y valor comparten el MISMO centro vertical (antes el rotulo
+            // iba pegado arriba y el valor centrado en la pastilla: media fila
+            // de desfase).
+            drawTextFit(g, labels[i], G::FontStyleBold, hovR ? kFTxt : kFTxt3,
+                        x0, ry, kSetLabelW, kSetPillH, kTRotulo, 8.5f, kFontTec, false, true);
+            drawTextFit(g, values[i], G::FontStyleRegular, kFTxt,
+                        pillL + 44.0f, ry, pillW - 88.0f, kSetPillH,
+                        kTValor, 9.5f, kFontMono, true, true);
+            // Flechas: la zona de clic es el extremo de la pastilla (40px) y
+            // solo se resalta la que esta bajo el raton.
+            const bool hl = mouseIn((int)pillL, (int)ry, (int)(pillL + 40.0f), (int)(ry + kSetPillH));
+            const bool hr = mouseIn((int)(pillR - 40.0f), (int)ry, (int)pillR, (int)(ry + kSetPillH));
+            if (hl || hr) {
+                G::SolidBrush cb(kFSurf3);
+                roundRect(g, hl ? pillL + 3.0f : pillR - 31.0f, ry + 3.0f, 28.0f,
+                          kSetPillH - 6.0f, 14.0f, nullptr, &cb);
             }
-            // Icono + rotulo de la accion
-            icRefresh(g, valL + 10.0f, ry + 15.0f, 6.5f, hovR ? kAcc : kFTxt2);
+            icChev(g, pillL + 22.0f, ry + cyR, 12.0f, hl ? kFTxt : kFTxt2, 1);
+            icChev(g, pillR - 22.0f, ry + cyR, 12.0f, hr ? kFTxt : kFTxt2, 2);
+            if (hl) pressVeil(g, pillL + 3.0f, ry + 3.0f, 28.0f, kSetPillH - 6.0f, 14.0f);
+            if (hr) pressVeil(g, pillR - 31.0f, ry + 3.0f, 28.0f, kSetPillH - 6.0f, 14.0f);
+        }
+        // Fila 7: RECARGAR DISPOSITIVOS. Una sola accion, asi que la fila entera
+        // es el boton (sin flechas) y lleva la cuenta de lo que hay ahora mismo.
+        {
+            const G::REAL ry = py + kSetRowY0 + 6*kSetRowPitch;
+            g_panelRows[6] = { (int)x0, (int)ry, (int)x1, (int)(ry + kSetPillH) };
+            const bool hovR = mouseIn(g_panelRows[6].left, g_panelRows[6].top,
+                                      g_panelRows[6].right, g_panelRows[6].bottom);
             {
-                G::SolidBrush ab(hovR ? kFTxt : kFTxt2);
-                g.DrawString(L"RECARGAR", -1, &fVal, G::RectF(valL + 24, ry, 200, 30), nullptr, &ab);
+                G::SolidBrush vb(hovR ? kFSurf3 : kFSurf2);
+                G::Pen vp(hovR ? kAcc : kFLine, 1.0f);
+                roundRect(g, pillL, ry, pillW, kSetPillH, 7.0f, &vp, &vb);
             }
-            // A la derecha, lo que ha encontrado (y si acaba de recargar, el aviso)
+            drawTextFit(g, L"DISPOSITIVOS", G::FontStyleBold, hovR ? kFTxt : kFTxt3,
+                        x0, ry, kSetLabelW, kSetPillH, kTRotulo, 8.5f, kFontTec, false, true);
+            // Icono + rotulo de la accion, centrados en la MISMA fila que el resto.
+            icRefresh(g, pillL + 18.0f, ry + cyR, 6.5f, hovR ? kAcc : kFTxt2);
+            drawTextFit(g, L"RECARGAR", G::FontStyleBold, hovR ? kFTxt : kFTxt2,
+                        pillL + 32.0f, ry, 130.0f, kSetPillH, kTValor, 9.5f, kFontMono, false, true);
             {
+                // A la derecha, lo que ha encontrado (o el aviso de la recarga).
                 std::wstring sub;
                 if (!g_devMsg.empty() && (GetTickCount() - g_devMsgAt) < 6000) {
                     sub = g_devMsg;
@@ -11457,22 +12162,30 @@ static void paintWindow(HWND hwnd) {
                     sub = std::to_wstring(g_inputDevices.size()) + L" IN \xB7 " +
                           std::to_wstring(g_outputDevices.size()) + L" OUT";
                 }
+                const G::REAL rx0 = pillR - 14.0f - 420.0f;
+                const std::wstring sfit = fitEllipsis(g, sub.c_str(), fSmall, 0.0f, 420.0f);
                 G::SolidBrush sb((GetTickCount() - g_devMsgAt) < 6000 ? kAcc : kFTxt2);
                 G::StringFormat sfr;
                 sfr.SetAlignment(G::StringAlignmentFar);
                 sfr.SetLineAlignment(G::StringAlignmentCenter);
-                G::RectF rf(valL + 150, ry, (valR + 4) - (valL + 150), 30);
-                g.DrawString(sub.c_str(), -1, &fSmall, rf, &sfr, &sb);
+                sfr.SetFormatFlags(G::StringFormatFlagsNoWrap);
+                g.DrawString(sfit.c_str(), -1, &fSmall,
+                             G::RectF(rx0, ry, 420.0f, kSetPillH), &sfr, &sb);
             }
         }
         {
-            char clat[140];
-            sprintf_s(clat, "Latencia estimada (captura + salida): ~%.1f ms",
-                      bsz*1000.0/kRates[st.rateIdx]*2.0);
             WCHAR wlat[160];
-            MultiByteToWideChar(CP_ACP, 0, clat, -1, wlat, 160);
+            // Con el motor en marcha, la cuenta usa el buffer y la frecuencia
+            // REALES: en compartido el dispositivo impone su periodo, asi que el
+            // numero del ajuste (1024) no es el que corre (1056).
+            const int latBuf  = (g_params.audioActive.load() && g_sessBufFrames.load() > 0)
+                                  ? g_sessBufFrames.load() : bsz;
+            const int latRate = (g_params.audioActive.load() && g_sessRate.load() > 0)
+                                  ? g_sessRate.load() : kRates[st.rateIdx];
+            swprintf_s(wlat, tr(L"Latencia estimada (captura + salida): ~%.1f ms"),
+                       latBuf*1000.0/latRate*2.0);
             G::SolidBrush lb(kFTxt2);
-            g.DrawString(wlat, -1, &fSmall, G::RectF(px + 44, py + 58 + 6*34 + 8, pw - 88, 24), nullptr, &lb);
+            g.DrawString(wlat, -1, &fSmall, G::RectF(x0, py + 332.0f, x1 - x0, 16.0f), nullptr, &lb);
         }
         // Salud del motor: si el anillo captura->reproduccion se queda corto se
         // ve aqui. Es el dato que separa "crujido del motor" de "crujido del
@@ -11481,24 +12194,24 @@ static void paintWindow(HWND hwnd) {
             const long long xrS = g_xrunUnderrun.load(std::memory_order_relaxed);
             const long long xrM = g_xrunShortMax.load(std::memory_order_relaxed);
             const long long xrL = g_xrunLate.load(std::memory_order_relaxed);
-            char ch[200];
-            sprintf_s(ch, "Anillo corto: %lld bloque(s), peor hueco %lld muestras | tardios: %lld | colchon: %d",
-                      xrS, xrM, xrL, g_bridgeCushion);
             WCHAR wh[240];
-            MultiByteToWideChar(CP_ACP, 0, ch, -1, wh, 240);
+            swprintf_s(wh, tr(L"Anillo corto: %lld bloque(s), peor hueco %lld muestras | tardios: %lld | colchon: %d"),
+                       xrS, xrM, xrL, g_bridgeCushion);
             G::SolidBrush hb(xrS > 0 ? kFTxt2 : kFTxt3);
-            g.DrawString(wh, -1, &fSmall, G::RectF(px + 44, py + 58 + 6*34 + 32, pw - 88, 24), nullptr, &hb);
+            g.DrawString(wh, -1, &fSmall, G::RectF(x0, py + 350.0f, x1 - x0, 16.0f), nullptr, &hb);
         }
         // separador tenue sobre los botones
         {
             G::Pen sep(G::Color(40, 0x24, 0x24, 0x28), 1.0f);
-            g.DrawLine(&sep, px + 32, py + ph - 84.0f, px + pw - 32, py + ph - 84.0f);
+            g.DrawLine(&sep, x0, py + ph - 84.0f, x1, py + ph - 84.0f);
         }
         {
-            g_panelApply  = { (int)(px + pw/2 - 190), (int)(py + ph - 64),
-                              (int)(px + pw/2 - 10),  (int)(py + ph - 24) };
-            g_panelCancel = { (int)(px + pw/2 + 10),  (int)(py + ph - 64),
-                              (int)(px + pw/2 + 190), (int)(py + ph - 24) };
+            // Botones alineados al borde derecho del contenido (antes centrados
+            // en la ventana, sin relacion con la rejilla de las filas).
+            g_panelApply  = { (int)(x1 - 380.0f), (int)(py + ph - 64),
+                              (int)(x1 - 200.0f), (int)(py + ph - 24) };
+            g_panelCancel = { (int)(x1 - 180.0f), (int)(py + ph - 64),
+                              (int)x1,            (int)(py + ph - 24) };
             bool ah = mouseIn(g_panelApply.left, g_panelApply.top, g_panelApply.right, g_panelApply.bottom);
             bool ch = mouseIn(g_panelCancel.left, g_panelCancel.top, g_panelCancel.right, g_panelCancel.bottom);
             {
@@ -11510,10 +12223,10 @@ static void paintWindow(HWND hwnd) {
                 roundRect(g, (G::REAL)g_panelCancel.left, (G::REAL)g_panelCancel.top, 180, 40, 8, &cbp, &cbr);
             }
             G::SolidBrush tb(G::Color(255, 255, 255, 255));
-            g.DrawString(L"APLICAR", -1, &fPreset,
+            g.DrawString(tr(L"APLICAR"), -1, &fPreset,
                          G::RectF((G::REAL)g_panelApply.left, (G::REAL)g_panelApply.top, 180, 40), &sfC, &tb);
             G::SolidBrush tb2(kFTxt);
-            g.DrawString(L"CANCELAR", -1, &fPreset,
+            g.DrawString(tr(L"CANCELAR"), -1, &fPreset,
                          G::RectF((G::REAL)g_panelCancel.left, (G::REAL)g_panelCancel.top, 180, 40), &sfC, &tb2);
             pressVeil(g, (G::REAL)g_panelApply.left, (G::REAL)g_panelApply.top, 180, 40, 8.0f);
             pressVeil(g, (G::REAL)g_panelCancel.left, (G::REAL)g_panelCancel.top, 180, 40, 8.0f);
@@ -11559,7 +12272,7 @@ static void paintWindow(HWND hwnd) {
             G::SolidBrush ib(G::Color(255, 0x78, 0x78, 0x7e));
             g.DrawString(L"--", -1, &fIdle, G::RectF(px, py + 88, pw, 60), &sfC, &ib);
             G::Font fHint(kFontTec, kTRotulo, G::FontStyleRegular);
-            g.DrawString(L"TOCA UNA CUERDA PARA AFINAR", -1, &fHint, G::RectF(px, py + 160, pw, 24),
+            g.DrawString(tr(L"TOCA UNA CUERDA PARA AFINAR"), -1, &fHint, G::RectF(px, py + 160, pw, 24),
                          &sfC, &ib);
         }
         // Barra de centavos: zona verde +-5, aguja
@@ -11583,7 +12296,7 @@ static void paintWindow(HWND hwnd) {
                 G::Pen np(nc, 3.0f);
                 g.DrawLine(&np, nx, by - 7.0f, nx, by + bh + 7.0f);
                 WCHAR wcen[40];
-                swprintf_s(wcen, L"%+.0f centavos", (double)cen);
+                swprintf_s(wcen, tr(L"%+.0f centavos"), (double)cen);
                 G::Font fCen(kFontTec, kTRotulo, G::FontStyleBold);
                 G::SolidBrush cb2(nc);
                 g.DrawString(wcen, -1, &fCen, G::RectF(px, py + 292, pw, 22), &sfC, &cb2);
@@ -11601,7 +12314,7 @@ static void paintWindow(HWND hwnd) {
                       8, &bp, &bb);
             G::SolidBrush bt(G::Color(0xff, 0xb7, 0xb1, 0xa7));
             G::Font fBtn(kFontTec, kTRotulo, G::FontStyleBold);
-            g.DrawString(L"CERRAR", -1, &fBtn, G::RectF((G::REAL)TUN_CLOSE_X, (G::REAL)TUN_CLOSE_Y,
+            g.DrawString(tr(L"CERRAR"), -1, &fBtn, G::RectF((G::REAL)TUN_CLOSE_X, (G::REAL)TUN_CLOSE_Y,
                                                          (G::REAL)TUN_CLOSE_W, 36.0f), &sfC, &bt);
             pressVeil(g, (G::REAL)TUN_CLOSE_X, (G::REAL)TUN_CLOSE_Y, (G::REAL)TUN_CLOSE_W, 36.0f, 8.0f);
         }
@@ -11622,12 +12335,23 @@ static void paintWindow(HWND hwnd) {
             G::Font fRen(kFontUI, kTNombre);
             G::SolidBrush tb2(kFTxt);
             const G::REAL tx = (G::REAL)(REN_F_X + 12), ty = (G::REAL)REN_F_Y;
-            g.DrawString(g_renameBuf, -1, &fRen,
-                         G::RectF(tx, ty, (G::REAL)(REN_F_W - 24), (G::REAL)REN_F_H), nullptr, &tb2);
+            const G::REAL fw = (G::REAL)(REN_F_W - 24);
+            const G::RectF mbox(0, 0, 900.0f, 60.0f);
             G::RectF mb2;
-            g.MeasureString(g_renameBuf, -1, &fRen, G::RectF(0, 0, 900.0f, 60.0f), nullptr, &mb2);
+            auto nameW = [&](const WCHAR* t) {
+                g.MeasureString(t, -1, &fRen, mbox, nullptr, &mb2);
+                return mb2.Width;
+            };
+            // El campo muestra la COLA que cabe: un nombre admite 63 letras y el
+            // hueco es mas corto, asi que el texto se cortaba y el cursor se iba
+            // FUERA de la caja. Con el nombre corto no se mueve nada.
+            std::wstring shown(g_renameBuf);
+            if (nameW(shown.c_str()) > fw) {
+                while (shown.size() > 1 && nameW(shown.c_str()) > fw) shown.erase(shown.begin());
+            }
+            g.DrawString(shown.c_str(), -1, &fRen, G::RectF(tx, ty, fw, (G::REAL)REN_F_H), nullptr, &tb2);
             G::Pen cur(kAcc, 1.2f);
-            const G::REAL cxr = tx + mb2.Width + 2.0f;
+            const G::REAL cxr = tx + nameW(shown.c_str()) + 2.0f;
             g.DrawLine(&cur, cxr, ty + 10.0f, cxr, ty + (G::REAL)REN_F_H - 10.0f);
         }
         {
@@ -11657,7 +12381,7 @@ static void paintWindow(HWND hwnd) {
         G::Pen tpen(kAcc, 1.0f);
         roundRect(g, txx, tyy, tw, th, 8.0f, &tpen, &tbg);
         G::SolidBrush ttx(kFTxt);
-        g.DrawString(g_toast, -1, &fTo, G::RectF(txx, tyy, tw, th), &sfC, &ttx);
+        g.DrawString(tr(g_toast), -1, &fTo, G::RectF(txx, tyy, tw, th), &sfC, &ttx);
     }
 
     // Volcar al cliente: un solo BitBlt sobre el buffer cacheado
@@ -11677,22 +12401,33 @@ static void paintWindow(HWND hwnd) {
     EndPaint(hwnd, &ps);
 }
 
-// Objetivo de insercion al arrastrar un pedal: fila + indice
+// Objetivo del arrastre de un pedal: fila + indice.
+//  - Sobre una TARJETA (misma fila) => se INTERCAMBIAN las dos plazas. Es lo
+//    que el usuario espera al "cambiar dos pedales": antes se insertaba antes
+//    del destino y arrastrar el de la izquierda sobre el de la derecha no
+//    movia NADA (el indice de insercion coincidia con el de origen).
+//  - Entre tarjetas (o al final) => insercion en el hueco mas cercano.
 static void updateDropTarget() {
-    g_dropRow = -1; g_dropIdx = -1;
+    g_dropRow = -1; g_dropIdx = -1; g_dropSwap = -1;
     for (int row = 0; row < 2; ++row) {
         const int y0 = PED_ROW_Y[row] - 8, y1 = PED_ROW_Y[row] + PED_SLOT_H + 8;
-        if (g_mouseY >= y0 && g_mouseY < y1) {
-            const int cnt = (int)((row == 0) ? g_chainPre.size() : g_chainPost.size());
-            // El indice sale del MISMO origen que las plazas (PED_X0). Con un -24
-            // fijo el destino caia ~3 casillas a la derecha del raton: el indicador
-            // y el hueco de insercion se pintaban donde el pedal NO caia.
-            int idx = (int)((g_mouseX - PED_X0 + PED_PITCH/2) / PED_PITCH);
-            if (idx < 0) idx = 0;
-            if (idx > cnt) idx = cnt;
-            g_dropRow = row; g_dropIdx = idx;
-            return;
+        if (g_mouseY < y0 || g_mouseY >= y1) continue;
+        const int cnt = (int)((row == 0) ? g_chainPre.size() : g_chainPost.size());
+        for (int i = 0; i < cnt; ++i) {
+            const int sx = (int)pedSlotX(i);
+            if (g_mouseX >= sx && g_mouseX < sx + PED_SLOT_W) {
+                g_dropRow = row; g_dropIdx = i;
+                if (row == g_dragPedalRow && i != g_dragPedalIdx) g_dropSwap = i;
+                return;
+            }
         }
+        // El indice sale del MISMO origen que las plazas (PED_X0). Con un -24
+        // fijo el destino caia ~3 casillas a la derecha del raton.
+        int idx = (int)((g_mouseX - PED_X0 + PED_PITCH/2) / PED_PITCH);
+        if (idx < 0) idx = 0;
+        if (idx > cnt) idx = cnt;
+        g_dropRow = row; g_dropIdx = idx;
+        return;
     }
 }
 
@@ -11740,6 +12475,16 @@ static void buildZones() {
 // ---------------------------------------------------------------------------
 static int hoverKey() {
     POINT pt = { g_mouseX, g_mouseY };
+    // El despliegue del buscador es un popup: su fila bajo el raton es la unica
+    // clave de hover (600+fila) para que el realce se repinte al cambiar de fila.
+    if (g_topOpen) {
+        const RECT dr = topDropRect();
+        if (PtInRect(&dr, pt)) {
+            const int row = (pt.y - (dr.top + kTopPad)) / kTopRowH;
+            if (row >= 0 && row < kTopMaxRows) return 600 + row;
+        }
+        return 599;
+    }
     if (g_brwOpen) {
         // El navegador manda su propio hit-test: una clave por elemento bajo el
         // raton, para que el hover se repinte al cambiar de fila o de filtro.
@@ -11766,9 +12511,9 @@ static int hoverKey() {
     if (g_settingsOpen) {
         if (PtInRect(&g_panelApply, pt)) return 1;
         if (PtInRect(&g_panelCancel, pt)) return 2;
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 6; ++i)
             if (PtInRect(&g_panelRows[i], pt)) return 10 + i;
-        if (PtInRect(&g_panelRows[5], pt)) return 15;   // RECARGAR DISPOSITIVOS
+        if (PtInRect(&g_panelRows[6], pt)) return 16;   // RECARGAR DISPOSITIVOS
         return 3;   // dentro del panel modal
     }
     if (g_addOpen) {
@@ -12090,6 +12835,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int x = uiX(GET_X_LPARAM(lp)), y = uiY(GET_Y_LPARAM(lp));
         POINT pt = { x, y };
 
+        // --- Despliegue del buscador de la cabecera: popup, se come el clic ---
+        if (g_topOpen) {
+            const RECT dr = topDropRect();
+            RECT box = { TOP_BOX_X, TOP_BOX_Y, TOP_BOX_X + TOP_BOX_W, TOP_BOX_Y + TOP_BOX_H };
+            if (PtInRect(&dr, pt)) {
+                const int row = (y - (dr.top + kTopPad)) / kTopRowH;
+                const int li  = g_topScroll + row;
+                if (row >= 0 && row < kTopMaxRows && li >= 0 && li < g_topCount)
+                    topApply(g_topList[li]);
+            } else if (PtInRect(&box, pt)) {
+                g_topOpen = false;      // la misma caja lo cierra
+            } else {
+                g_topOpen = false;      // fuera: se cierra y no pulsa nada debajo
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
         // --- Modal NAVEGADOR de presets (paso 18): manda su propio hit-test ---
         if (g_brwOpen) {
             brwClick(x, y);
@@ -12218,7 +12981,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         g_t3kConnOpen = true;
                         t3kStatusW(L"PARA BAJAR UN PERFIL HAY QUE CONECTAR CON TONE3000");
                     } else {
-                        t3kStatusW(L"BAJANDO LA CAPTURA DE " + g_t3kItems[i].title + L"...");
+                        t3kStatusW(tr(L"BAJANDO LA CAPTURA DE ") + g_t3kItems[i].title + L"...");
                         std::thread(t3kWorkGrab, g_t3kItems[i].id, g_t3kItems[i].title, t3kTokenSnap()).detach();
                     }
                 }
@@ -12258,12 +13021,25 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // Panel de ajustes modal
         if (g_settingsOpen) {
-            const G::REAL px = (WIN_W - kSetPanelW) / 2, py = (WIN_H - kSetPanelH) / 2 - 10, pw = kSetPanelW;
-            const G::REAL valL = px + 230, valR = px + pw - 140;
+            const G::REAL px = (WIN_W - kSetPanelW) / 2, py = (WIN_H - kSetPanelH) / 2 - 10;
+            // Mismas zonas que pinta el panel (kSet*): la pastilla empieza en
+            // pillL y acaba en x1, y cada flecha es su extremo de 40px.
+            const G::REAL pillL = px + kSetPillL, pillR = px + kSetX1;
             if (PtInRect(&g_panelApply, pt)) {
+                int oldRateIdx = 0;
                 {
                     std::lock_guard<std::mutex> lock(g_settingsMutex);
+                    oldRateIdx = g_appliedSet.rateIdx;
                     g_appliedSet = g_settings;
+                }
+                // Si cambia la FRECUENCIA, el IR de usuario se rehace a la nueva:
+                // convolucionarlo con la tasa vieja desplazaba todo el gabinete
+                // (48/44,1 = 8,8%, el corte de 5 kHz caia en 4,6 kHz).
+                if (oldRateIdx != g_appliedSet.rateIdx && !g_cabIRPath.empty() &&
+                    g_params.cabModel.load() == 6 &&
+                    g_irBuiltRate.load() != kRates[g_appliedSet.rateIdx]) {
+                    (void)loadIRFromWav(g_cabIRPath.c_str());
+                    g_sceneDirty.store(true);
                 }
                 SelectInputDevice(g_setInIdx);
                 SelectOutputDevice(g_setOutIdx);
@@ -12283,17 +13059,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
-            for (int i = 0; i < 5; ++i) {
+            for (int i = 0; i < 6; ++i) {
                 if (!PtInRect(&g_panelRows[i], pt)) continue;
-                G::REAL ry = py + 58 + i*34;
-                RECT la = { (int)(valL - 42), (int)ry, (int)(valL - 6), (int)(ry + 30) };
-                RECT ra = { (int)(valR + 6), (int)ry, (int)(valR + 42), (int)(ry + 30) };
+                const G::REAL ry = py + kSetRowY0 + i*kSetRowPitch;
+                RECT la = { (int)pillL, (int)ry, (int)(pillL + 40.0f), (int)(ry + kSetPillH) };
+                RECT ra = { (int)(pillR - 40.0f), (int)ry, (int)pillR, (int)(ry + kSetPillH) };
                 bool L = PtInRect(&la, pt), R = PtInRect(&ra, pt);
                 // Toda la fila (y su pildora de valor) se pinta pulsable: el clic
                 // no puede caer en hueco y el panel no se traga la mitad de un
                 // control visible. Se avanza hacia el lado en el que se pulsa,
                 // igual que las flechas de 36x30 (que eran lo unico que respondia).
-                const int d = R ? 1 : (L ? -1 : (pt.x >= (int)((valL + valR)*0.5f) ? 1 : -1));
+                const int d = R ? 1 : (L ? -1 : (pt.x >= (int)((pillL + pillR)*0.5f) ? 1 : -1));
                 {
                     switch (i) {
                     case 0: {
@@ -12313,6 +13089,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         g_settings.bufIdx = cycleIdx(g_settings.bufIdx, d, kNumBufs);
                         break;
                     }
+                    case 5:
+                        // El idioma no es un ajuste de audio: se aplica y se guarda
+                        // al instante, sin pasar por APLICAR/CANCELAR.
+                        g_lang ^= 1;
+                        g_scene.valid = false;
+                        saveIni();
+                        break;
                     }
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
@@ -12320,7 +13103,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             // RECARGAR DISPOSITIVOS: fila entera = boton. Reenumera y conserva la
             // seleccion por ID; no cambia lo que suena hasta APLICAR.
-            if (PtInRect(&g_panelRows[5], pt)) {
+            if (PtInRect(&g_panelRows[6], pt)) {
                 RefreshDeviceLists();
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
@@ -12343,15 +13126,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             wchar_t file[MAX_PATH] = L"";
             OPENFILENAMEW ofn = { sizeof(ofn) };
             ofn.hwndOwner   = hwnd;
-            ofn.lpstrFilter = L"Respuestas de impulso (WAV)\0*.wav\0Todos los archivos\0*.*\0";
+            ofn.lpstrFilter = g_lang ? L"Impulse responses (WAV)\0*.wav\0All files\0*.*\0"
+                                : L"Respuestas de impulso (WAV)\0*.wav\0Todos los archivos\0*.*\0";
             ofn.lpstrFile   = file;
             ofn.nMaxFile    = MAX_PATH;
-            ofn.lpstrTitle  = L"Cargar IR de cabina (WAV)";
+            ofn.lpstrTitle  = tr(L"Cargar IR de cabina (WAV)");
             ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
             if (GetOpenFileNameW(&ofn)) {
                 if (!loadIRFromWav(file)) {
-                    MessageBoxW(hwnd, L"No se pudo cargar el WAV como respuesta de impulso.\n"
-                                      L"Formatos admitidos: PCM 8/16/24/32 bits o float 32/64.",
+                    MessageBoxW(hwnd, tr(L"No se pudo cargar el WAV como respuesta de impulso.\n"
+                                       L"Formatos admitidos: PCM 8/16/24/32 bits o float 32/64."),
                                 L"GUITAR ONE", MB_OK | MB_ICONWARNING);
                 }
             }
@@ -12671,6 +13455,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 g_dragPedalRow = row;
                 g_dragPedalIdx  = (int)i;
                 g_dragPedalType = t;
+                g_dropSwap = -1;
                 SetCapture(hwnd);
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
@@ -12695,11 +13480,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
         }
 
-        // Caja de preset superior -> siguiente preset
+        // Caja de preset superior -> BUSCADOR: despliega la lista y se escribe.
         RECT pbox = zoneRect(6);      // preset superior
         if (PtInRect(&pbox, pt)) {
-            g_presetIdx = (g_presetIdx + 1) % presetTotal();
-            applyPreset(g_presetIdx);
+            g_topOpen = true;
+            g_topQuery[0] = 0;
+            g_topScroll = 0;
+            topFilter();
+            // La fila resaltada de salida: el preset que suena (si esta).
+            g_topSel = -1;
+            for (int i = 0; i < g_topCount; ++i)
+                if (g_topList[i] == g_presetIdx) { g_topSel = i; break; }
+            if (g_topSel >= kTopMaxRows) g_topScroll = g_topSel - kTopMaxRows + 1;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -12842,7 +13634,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             g_dragPedalType >= 0 || g_dragIdx >= 0 || g_mixDrag);
         if (stuck) {
             g_dragPedalRow = g_dragPedalIdx = g_dragPedalType = -1;
-            g_dropRow = g_dropIdx = -1;
+            g_dropRow = g_dropIdx = g_dropSwap = -1;
             g_dragIdx = -1;
             g_mixDrag = false;
             g_lbtn = false;
@@ -12855,25 +13647,44 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONUP:
         if (g_lbtn) { g_lbtn = false; InvalidateRect(hwnd, nullptr, FALSE); }
         if (g_dragPedalRow >= 0) {
+            // ReleaseCapture() manda WM_CAPTURECHANGED, y ese handler LIMPIA
+            // g_dropRow/g_dragPedal* (esta pensado para capturas robadas). Antes
+            // se soltaba la captura primero y el propio ReleaseCapture anulaba
+            // el destino: el pedal nunca se movia. Se copian los valores, se
+            // limpia el estado y despues se suelta.
+            const int dragRow = g_dragPedalRow, dragIdx = g_dragPedalIdx;
+            const int dropRow = g_dropRow,    dropIdx = g_dropIdx, dropSwap = g_dropSwap;
+            g_dragPedalRow = g_dragPedalIdx = g_dragPedalType = -1;
+            g_dropRow = g_dropIdx = g_dropSwap = -1;
             ReleaseCapture();
-            if (g_dropRow >= 0) {
-                std::vector<int>& src = (g_dragPedalRow == 0) ? g_chainPre : g_chainPost;
-                std::vector<int>& dst = (g_dropRow == 0) ? g_chainPre : g_chainPost;
-                if (g_dragPedalIdx >= 0 && g_dragPedalIdx < (int)src.size()) {
-                    const int type = src[g_dragPedalIdx];
-                    src.erase(src.begin() + g_dragPedalIdx);
-                    int ins = g_dropIdx;
-                    if (g_dropRow == g_dragPedalRow && g_dragPedalIdx < ins) --ins;
+            if (dropSwap >= 0 && dropRow == dragRow) {
+                // Soltar sobre otra tarjeta de la MISMA fila = cambiar las dos.
+                std::vector<int>& ch = (dragRow == 0) ? g_chainPre : g_chainPost;
+                if (dragIdx >= 0 && dragIdx < (int)ch.size() &&
+                    dropSwap >= 0 && dropSwap < (int)ch.size()) {
+                    std::swap(ch[dragIdx], ch[dropSwap]);
+                    publishChain(g_chainPre, g_chainPost);
+                    rebuildKnobs();
+                    saveIni();
+                    g_sceneDirty.store(true);
+                }
+            } else if (dropRow >= 0) {
+                std::vector<int>& src = (dragRow == 0) ? g_chainPre : g_chainPost;
+                std::vector<int>& dst = (dropRow == 0) ? g_chainPre : g_chainPost;
+                if (dragIdx >= 0 && dragIdx < (int)src.size()) {
+                    const int type = src[dragIdx];
+                    src.erase(src.begin() + dragIdx);
+                    int ins = dropIdx;
+                    if (dropRow == dragRow && dragIdx < ins) --ins;
                     if (ins < 0) ins = 0;
                     if (ins > (int)dst.size()) ins = (int)dst.size();
                     dst.insert(dst.begin() + ins, type);
                     publishChain(g_chainPre, g_chainPost);
                     rebuildKnobs();
+                    saveIni();                  // el orden nuevo sobrevive al cierre
                     g_sceneDirty.store(true);   // las bahias se pintan en la escena
                 }
             }
-            g_dragPedalRow = g_dragPedalIdx = g_dragPedalType = -1;
-            g_dropRow = g_dropIdx = -1;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -12890,6 +13701,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_MOUSEWHEEL: {
+        if (g_topOpen) {   // rueda sobre el despliegue: mueve la lista
+            const int wd = GET_WHEEL_DELTA_WPARAM(wp) / 120;
+            if (wd != 0) {
+                const int maxS = (g_topCount > kTopMaxRows) ? g_topCount - kTopMaxRows : 0;
+                g_topScroll -= wd;
+                if (g_topScroll < 0) g_topScroll = 0;
+                if (g_topScroll > maxS) g_topScroll = maxS;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
         if (g_brwOpen) {   // el navegador consume la rueda (su lista se desplaza)
             const int wd = GET_WHEEL_DELTA_WPARAM(wp) / 120;
             if (wd != 0) brwWheel(wd);
@@ -12957,6 +13779,29 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_KEYDOWN: {
+        // BUSCADOR de la cabecera abierto: manda el (flechas, Enter, ESC) y el
+        // resto de atajos no se tocan mientras se escribe.
+        if (g_topOpen) {
+            if (wp == VK_ESCAPE) {
+                g_topOpen = false;
+            } else if (wp == VK_UP || wp == VK_DOWN) {
+                if (g_topCount > 0) {
+                    int sel = (g_topSel < 0)
+                                ? (wp == VK_DOWN ? 0 : g_topCount - 1)
+                                : g_topSel + (wp == VK_DOWN ? 1 : -1);
+                    if (sel < 0) sel = g_topCount - 1;
+                    if (sel >= g_topCount) sel = 0;
+                    g_topSel = sel;
+                    if (sel < g_topScroll) g_topScroll = sel;
+                    if (sel >= g_topScroll + kTopMaxRows) g_topScroll = sel - kTopMaxRows + 1;
+                }
+            } else if (wp == VK_RETURN) {
+                if (g_topSel >= 0 && g_topSel < g_topCount) topApply(g_topList[g_topSel]);
+                else if (g_topCount > 0)                    topApply(g_topList[0]);
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         // Atajos: ESPACIO = silencio, flechas = cambiar preset, ESC = cerrar modal
         if (wp == VK_ESCAPE) {
             // ESC tambien suelta un arrastre en curso (pedal, perilla, mezcla):
@@ -12965,7 +13810,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_dragPedalRow >= 0 || g_dragPedalIdx >= 0 || g_dragPedalType >= 0 ||
                 g_dragIdx >= 0 || g_mixDrag) {
                 g_dragPedalRow = g_dragPedalIdx = g_dragPedalType = -1;
-                g_dropRow = g_dropIdx = -1;
+                g_dropRow = g_dropIdx = g_dropSwap = -1;
                 g_dragIdx = -1;
                 g_mixDrag = false;
                 g_lbtn = false;
@@ -13082,6 +13927,25 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_CHAR: {
+        // Buscador de la cabecera: se escribe en el y la lista se filtra.
+        if (g_topOpen) {
+            const size_t n = wcslen(g_topQuery);
+            if (wp == L'\b') {
+                if (n) g_topQuery[n - 1] = 0;
+            } else if (wp == L'\r' || wp == L'\n') {
+                return 0;                      // Enter lo resuelve WM_KEYDOWN
+            } else if (wp >= 32 && wp != 127 && n < 39) {
+                g_topQuery[n]     = (WCHAR)wp;
+                g_topQuery[n + 1] = 0;
+            } else {
+                return 0;
+            }
+            topFilter();
+            g_topSel = g_topCount ? 0 : -1;
+            g_topScroll = 0;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         // Escritura en el modal de nombre (tiene prioridad sobre todo lo demas)
         if (g_renameOpen) {
             const size_t n = wcslen(g_renameBuf);
@@ -13280,6 +14144,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     SendMessageA(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hAppIcon);
     SendMessageA(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hAppIcon);
 
+    // Idioma de la primera vez: el del sistema. Un Windows en espanol abre en
+    // espanol; cualquier otro, en ingles. El .ini lo puede cambiar despues.
+    g_lang = (PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_SPANISH) ? 0 : 1;
     EnumerateDevices();
     initDspDefaults();    // bancos de 12 amps + fx + cadena por defecto
     g_params.meterIn.store(0.0f);
@@ -15811,6 +16678,11 @@ static int hRender(const char* outPath, const char* state, int winW, int winH) {
     initDspDefaults();
     applyPreset(0);
     loadIni();
+    // GA_LANG=en retrata la interfaz en ingles (solo el banco de medida). El
+    // idioma real lo decide el .ini o el del sistema.
+    { const char* lg = getenv("GA_LANG");
+      if (lg && lg[0] == 'e' && lg[1] == 'n') g_lang = 1;
+      else if (lg && lg[0] == 'e' && lg[1] == 's') g_lang = 0; }
     loadAmpArt();
     rebuildKnobs();
 
@@ -15826,6 +16698,20 @@ static int hRender(const char* outPath, const char* state, int winW, int winH) {
 
     if (state) {   // los modales tambien se retratan
         if      (strcmp(state, "add") == 0)      { g_addOpen = true; g_addRow = 0; }
+        else if (strcmp(state, "t3k") == 0)      { g_t3kOpen = true; }   // explorador TONE3000
+        else if (strcmp(state, "t3kconn") == 0)  { g_t3kOpen = true; g_t3kConnOpen = true; }
+        else if (strcmp(state, "longname") == 0) {   // nombre de preset largo (linea de estado)
+            UserPreset u = {};
+            wcsncpy_s(u.name, L"CLEAN DIAMOND WITH A VERY LONG USER PRESET NAME (LIVE ROOM)", _TRUNCATE);
+            u.model = 0;
+            g_userPresets.push_back(u);
+            g_presetIdx = kNumPresets + (int)g_userPresets.size() - 1;
+        }
+        else if (strcmp(state, "t3kkey") == 0) {   // campo con un token largo (recorte)
+            g_t3kOpen = true; g_t3kConnOpen = true; g_t3kFocus = 2;
+            for (int i = 0; i < 180; ++i) g_t3kKey[i] = (WCHAR)(L'a' + (i % 26));
+            g_t3kKey[180] = 0;
+        }
         else if (strcmp(state, "tuner") == 0)    g_tunerOpen.store(true);
         else if (strcmp(state, "settings") == 0) g_settingsOpen = true;
         else if (strcmp(state, "audioon") == 0) g_audioEnabled.store(true);   // boton AUDIO ON
@@ -15878,6 +16764,19 @@ static int hRender(const char* outPath, const char* state, int winW, int winH) {
             // 19), asi que este estado vigila el unico sitio donde queda.
             const int mm = g_params.model.load();
             g_params.amp[mm][0].store(g_params.amp[mm][0].load() + 6.0f);
+        }
+        else if (strcmp(state, "topsearch") == 0) {      // buscador de la cabecera abierto
+            g_topOpen = true; g_topQuery[0] = 0; topFilter(); g_topSel = g_topCount ? 0 : -1;
+        }
+        else if (strcmp(state, "topsearch_q") == 0) {    // con texto tecleado
+            g_topOpen = true; wcscpy_s(g_topQuery, L"crunch"); topFilter(); g_topSel = 0;
+        }
+        else if (strcmp(state, "rename") == 0) {         // modal de nombre (GUARDAR COMO)
+            openNameModal(-1, true, L"CLEAN DIAMOND WITH A VERY LONG USER PRESET NAME (LIVE ROOM)");
+        }
+        else if (strcmp(state, "emptylist") == 0) {      // lista vacia: el texto guia
+            g_favMask = 0;
+            g_favOnly = true;
         }
         else if (strcmp(state, "favonly") == 0) {        // la estrella: solo mis amplis
             g_favMask = (1u << 0) | (1u << 4) | (1u << 10);

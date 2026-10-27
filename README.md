@@ -91,7 +91,12 @@ ventana fuera de pantalla.)*
 - **Afinador cromático** modal, **grabación a WAV**, visualizador y medidores.
 - **Ajustes de audio**: WASAPI compartido o exclusivo, 44,1–192 kHz, buffer
   128–4096, selección de dispositivos y botón para **recargar los recién
-  conectados** sin reiniciar.
+  conectados** sin reiniciar. En **exclusivo** el dispositivo tiene que aceptar
+  la frecuencia elegida; si no, la app pasa a compartido (y lo dice en la línea
+  de estado). En **compartido** el periodo lo fija Windows: el buffer real se
+  lee en la línea de estado y el ajuste solo puede subirlo.
+- **Interfaz en español e inglés**: el idioma se cambia en **AJUSTES → IDIOMA**
+  y se guarda en el `.ini`; la primera vez se elige según el idioma de Windows.
 - Interfaz redimensionable, con escala según DPI, y paleta de teclado.
 
 ## Requisitos
@@ -134,7 +139,7 @@ cd guitar-one
 (`dist\GuitarAmp-<ver>-win64\` + ZIP, con el `.exe` y los 26 PNG que carga):
 
 ```powershell
-.\_mkdist.ps1 -Version 1.0.0
+.\_mkdist.ps1 -Version 1.0.1
 ```
 
 ## Uso rápido
@@ -152,4 +157,5 @@ cd guitar-one
 | Doble clic en un mando | Vuelve al valor con el que se cargó |
 | ESPACIO | Enciende o apaga el audio |
 | ESC | Cierra el modal abierto |
+| **AJUSTES → IDIOMA** | Cambia entre español e inglés al instante |
 

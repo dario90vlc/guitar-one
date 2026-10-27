@@ -8,7 +8,7 @@
 #  VC++ Redistributable. Comprobarlo con:
 #     dumpbin /nologo /dependents GuitarAmp.exe
 # ============================================================================
-param([string]$Version = '1.0.0')
+param([string]$Version = '1.0.1')
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $native = Join-Path $root 'native'
