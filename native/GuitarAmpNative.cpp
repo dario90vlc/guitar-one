@@ -17087,6 +17087,43 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Banco del coste de la cadena NAM (base para optimizar: sin esto solo se
+    // mide el motor de valvulas y el SIMD no tendria contra que compararse).
+    if (strcmp(mode, "namperf") == 0) {
+        const char* path = (argc > 2) ? argv[2] : "perfiles/wavenet_a1_standard.nam";
+        auto pm = std::make_shared<nam::Model>();
+        // Rutas relativas a native/ (el harness ancla el CWD al EXE arriba).
+        if (!pm->load(path)) {
+            printf("NAMPERF: no se pudo cargar %s (%s)\n", path, pm->err.c_str());
+            return 1;
+        }
+        auto sl = std::make_shared<NamSlot>();
+        sl->model = pm;
+        namComputeTrims(*pm, *sl);
+        { std::lock_guard<std::mutex> lk(g_namMutex);
+          g_namUi.clear(); g_namUi.push_back(sl); g_namSel = 0; }
+        namPublish();
+        hPrepare(fs, 12, 0, 1, 1);
+        g_amp.namBlk = g_namAudio.load(std::memory_order_acquire);
+        g_amp.namConfigure();
+        const size_t n = (size_t)fs*10;
+        std::vector<float> in(n, 0.0f);
+        for (size_t i = 0; i < n; ++i) in[i] = (float)(0.05*std::sin(2.0*3.14159265358979*220.0*(double)i/(double)fs));
+        LARGE_INTEGER fq, t0, t1;
+        QueryPerformanceFrequency(&fq); QueryPerformanceCounter(&t0);
+        const std::vector<int> noSel;
+        volatile float sink = 0.0f;
+        for (size_t i = 0; i < n; ++i) sink += g_amp.process(in[i], noSel, noSel);
+        QueryPerformanceCounter(&t1);
+        const double cpu = (double)(t1.QuadPart - t0.QuadPart)/(double)fq.QuadPart;
+        const double audio = (double)n/(double)fs;
+        printf("\n== coste NAM (%s) ==\n  AVX2+FMA: %d\n  %.3f s de CPU para %.1f s de audio -> %.2f%% de un nucleo (x%.1f tiempo real)\n",
+               path, nam::namCpuAvx2Fma() ? 1 : 0, cpu, audio, 100.0*cpu/audio, audio/cpu);
+        (void)sink;
+        namChainClear();
+        printf("\nHARNESS_DONE\n");
+        return 0;
+    }
     if (strcmp(mode, "perf") == 0 || all) {
         const size_t n = (size_t)fs*10;
         std::vector<float> in(n, 0.0f);

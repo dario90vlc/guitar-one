@@ -199,11 +199,40 @@ struct Act
     float mins = 0.01f, maxs = 0.01f;
 };
 
+// Tangente hiperbolica por tabla (lineal, 65536 celdas en [-8, 8]): ~8 ops
+// escalares sin ramas caras, frente a std::tanh. Error de interpolacion
+// < 1e-8 por evaluacion: nam2 sigue en verde con margen (el umbral es 1e-5
+// relativo y el error se acumula capa a capa). El static local se inicializa
+// una sola vez (con el cerrojo del propio compilador); la carga templa la
+// tabla para que el audio no pague el primer uso.
+inline float tanhTab(float x)
+{
+    static const float* tab = [] {
+        static float t[65537];
+        for (int i = 0; i <= 65536; i++)
+            t[i] = std::tanh(-8.0f + 16.0f*(float)i/65536.0f);
+        return t;
+    }();
+    // La fraccion se calcula desde x (no desde u): x0 es representable exacto
+    // e (x-x0) es exacto por Sterbenz en el caso comun, asi que no hay perdida
+    // (la version con u en float cuantizaba la fraccion a ~1/256 y 20 capas
+    // lo convertian en 6e-06; la version en double era exacta pero pagaba
+    // conversiones). Se vigila con nam2 como todo lo demas.
+    float u = (x + 8.0f) * 4096.0f;
+    if (u <= 0.0f) return -1.0f;
+    if (u >= 65536.0f) return 1.0f;
+    int i0 = (int)u;
+    float x0 = -8.0f + (float)i0 * (1.0f/4096.0f);
+    float f = (x - x0) * 4096.0f;
+    if (f < 0.0f) f = 0.0f; else if (f > 1.0f) f = 1.0f;
+    return tab[i0] + (tab[i0 + 1] - tab[i0]) * f;
+}
+
 inline float actApply(const Act& a, float x)
 {
     switch (a.kind)
     {
-        case ACT_TANH:   return std::tanh(x);
+        case ACT_TANH:   return tanhTab(x);
         case ACT_LEAKY:  return x > 0.0f ? x : a.slope * x;
         case ACT_RELU:   return x > 0.0f ? x : 0.0f;
         case ACT_SIGMOID:return 1.0f / (1.0f + std::exp(-x));
@@ -341,7 +370,7 @@ public:
     // estuviera ahi. Este camino va por _wfopen y si la ve.
     bool loadW(const std::wstring& path);
 #endif
-    bool loadText(const std::string& text) { if (!_parse(text)) return false; ok = true; return true; }
+    bool loadText(const std::string& text) { if (!_parse(text)) return false; tanhTab(0.0f); ok = true; return true; }
     void reset();
     inline float tick(float x);
     // Salida multicanal de la ultima muestra (la usa la condicion A2 y, en el
@@ -475,12 +504,67 @@ private:
     inline float _waveNetTick(float x);
     inline float _lstmTick(float x);
     inline float _convNetTick(float x);
+    // Nucleo de la convolucion dilatada (ver definiciones tras la clase).
+    static void convDilScalar(const WnLayer& L, const float* wc, float* z);
+#if defined(_MSC_VER)
+    static void convDilAvx2(const WnLayer& L, const float* wc, float* z);
+#endif
 };
 
 // Producto punto con 4 acumuladores: sin esto el compilador no puede
 // vectorizar (la suma tiene dependencia serial) y el lazo se queda escalar.
+// Con AVX2+FMA hay camino ancho (8 floats por iteracion); la eleccion se hace
+// UNA vez por arranque (CPUID + XCR0) y el reiterado solo ve una rama
+// predecible. Sin AVX2 se usa el escalar de siempre: el binario corre igual
+// en CPUs viejas, solo mas despacio con capturas grandes.
+#if defined(_MSC_VER)
+#include <immintrin.h>
+#endif
+inline bool namCpuAvx2Fma()
+{
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+    static int cached = -1;
+    if (cached >= 0) return cached != 0;
+    int i1[4] = { 0, 0, 0, 0 };
+    __cpuidex(i1, 1, 0);
+    const bool osxsave = (i1[2] & (1 << 27)) != 0;
+    const bool avxHw   = (i1[2] & (1 << 28)) != 0;
+    const bool fmaHw   = (i1[2] & (1 << 12)) != 0;
+    bool ok = false;
+    if (osxsave && avxHw && fmaHw && (_xgetbv(0) & 0x6) == 0x6) {
+        int i7[4] = { 0, 0, 0, 0 };
+        __cpuidex(i7, 7, 0);
+        ok = (i7[1] & (1 << 5)) != 0;   // AVX2
+    }
+    cached = ok ? 1 : 0;
+    return ok;
+#else
+    return false;
+#endif
+}
+#if defined(_MSC_VER)
+inline float dotAvx2(const float* a, const float* b, int n)
+{
+    __m256 acc = _mm256_setzero_ps();
+    int i = 0;
+    const int n8 = n & ~7;
+    for (; i < n8; i += 8)
+        acc = _mm256_fmadd_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i), acc);
+    // Reduccion sin hadd (lento: 2 shuffles por llamada): add + movehl +
+    // shuffle, ~mitad de latencia. El orden de suma cambia en 1 ulp: nam2
+    // lo vigila (umbral 1e-5).
+    __m128 s = _mm_add_ps(_mm256_castps256_ps128(acc), _mm256_extractf128_ps(acc, 1));
+    s = _mm_add_ps(s, _mm_movehl_ps(s, s));
+    float out = _mm_cvtss_f32(s) + _mm_cvtss_f32(_mm_shuffle_ps(s, s, 1));
+    for (; i < n; i++) out += a[i]*b[i];
+    return out;
+}
+#endif
 inline float dot4(const float* a, const float* b, int n)
 {
+#if defined(_MSC_VER)
+    if (namCpuAvx2Fma()) return dotAvx2(a, b, n);
+#endif
     float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
     int i = 0;
     for (; i + 4 <= n; i += 4)
@@ -493,6 +577,7 @@ inline float dot4(const float* a, const float* b, int n)
 }
 
 
+
 // --- convolucion 1x1: y[i] = sum_c w[i*cin + c] * x[c] -----------------------
 inline void conv1x1(const float* w, int cin, int cout, const float* x, float* y)
 {
@@ -501,6 +586,85 @@ inline void conv1x1(const float* w, int cin, int cout, const float* x, float* y)
         y[i] = dot4(w + (size_t)i * cin, x, cin);
     }
 }
+
+// Convolucion dilatada de una capa WaveNet:
+//   z[o] = bias[o] + sum_kk dot(w[o][kk], x[kk])
+// Camino escalar (CPUs sin AVX2 y referencia de redondeo).
+inline void Model::convDilScalar(const WnLayer& L, const float* wc, float* z)
+{
+    const float* bias = wc + (size_t)L.k * L.cout * L.cin / L.groupsIn;
+    const int outPer = L.cout / L.groupsIn, inPer = L.cin / L.groupsIn;
+    // Caso comun (sin grupos): g siempre es 0 y oi es o; fuera divisiones.
+    if (L.groupsIn == 1) {
+        for (int o = 0; o < L.cout; o++) {
+            float acc = bias[o];
+            for (int kk = 0; kk < L.k; kk++)
+                acc += dot4(&L.wp[(((size_t)kk*L.cout) + o)*inPer],
+                            L.ring.at(L.d * (L.k - 1 - kk)), inPer);
+            z[o] = acc;
+        }
+        return;
+    }
+    for (int o = 0; o < L.cout; o++)
+    {
+        const int g = o / outPer, oi = o % outPer;
+        float acc = bias[o];
+        for (int kk = 0; kk < L.k; kk++)
+        {
+            const float* wkk = &L.wp[(((size_t)kk*L.groupsIn + g)*outPer + oi)*inPer];
+            const float* xkk = L.ring.at(L.d * (L.k - 1 - kk)) + (size_t)g*inPer;
+            acc += dot4(wkk, xkk, inPer);
+        }
+        z[o] = acc;
+    }
+}
+#if defined(_MSC_VER)
+// Camino ancho: se acumula en 8 floats y se reduce UNA vez por salida en vez
+// de una por (salida, tap). La reduccion horizontal es latencia pura (hadd),
+// no caudal: con k=3 son 3x menos y es lo que dominaba el perfil.
+inline void Model::convDilAvx2(const WnLayer& L, const float* wc, float* z)
+{
+    const float* bias = wc + (size_t)L.k * L.cout * L.cin / L.groupsIn;
+    const int outPer = L.cout / L.groupsIn, inPer = L.cin / L.groupsIn;
+    const int n8 = inPer & ~7;
+    if (L.groupsIn == 1 && L.k <= 64) {
+        for (int o = 0; o < L.cout; o++)
+        {
+            __m256 acc = _mm256_setzero_ps();
+            float tail = 0.0f;
+            for (int kk = 0; kk < L.k; kk++)
+            {
+                const float* wkk = &L.wp[(((size_t)kk*L.cout) + o)*inPer];
+                const float* xkk = L.ring.at(L.d * (L.k - 1 - kk));
+                for (int c = 0; c < n8; c += 8)
+                    acc = _mm256_fmadd_ps(_mm256_loadu_ps(wkk + c), _mm256_loadu_ps(xkk + c), acc);
+                for (int c = n8; c < inPer; c++) tail += wkk[c]*xkk[c];
+            }
+            __m128 s = _mm_add_ps(_mm256_castps256_ps128(acc), _mm256_extractf128_ps(acc, 1));
+            s = _mm_add_ps(s, _mm_movehl_ps(s, s));
+            z[o] = bias[o] + _mm_cvtss_f32(s) + _mm_cvtss_f32(_mm_shuffle_ps(s, s, 1)) + tail;
+        }
+        return;
+    }
+    for (int o = 0; o < L.cout; o++)
+    {
+        const int g = o / outPer, oi = o % outPer;
+        __m256 acc = _mm256_setzero_ps();
+        float tail = 0.0f;
+        for (int kk = 0; kk < L.k; kk++)
+        {
+            const float* wkk = &L.wp[(((size_t)kk*L.groupsIn + g)*outPer + oi)*inPer];
+            const float* xkk = L.ring.at(L.d * (L.k - 1 - kk)) + (size_t)g*inPer;
+            for (int c = 0; c < n8; c += 8)
+                acc = _mm256_fmadd_ps(_mm256_loadu_ps(wkk + c), _mm256_loadu_ps(xkk + c), acc);
+            for (int c = n8; c < inPer; c++) tail += wkk[c]*xkk[c];
+        }
+        __m128 s = _mm_add_ps(_mm256_castps256_ps128(acc), _mm256_extractf128_ps(acc, 1));
+        s = _mm_add_ps(s, _mm_movehl_ps(s, s));
+        z[o] = bias[o] + _mm_cvtss_f32(s) + _mm_cvtss_f32(_mm_shuffle_ps(s, s, 1)) + tail;
+    }
+}
+#endif
 
 // ---------------------------------------------------------------------------
 //  Carga
@@ -1312,20 +1476,11 @@ inline float Model::_waveNetTick(float x)
             }
             L.ring.push(convIn);
             const float* wc = &_w[L.oConv];
-            const float* bias = wc + (size_t)L.k * L.cout * L.cin / L.groupsIn;
-            const int outPer = L.cout / L.groupsIn, inPer = L.cin / L.groupsIn;
-            for (int o = 0; o < L.cout; o++)
-            {
-                const int g = o / outPer, oi = o % outPer;
-                float acc = bias[o];
-                for (int kk = 0; kk < L.k; kk++)
-                {
-                    const float* wkk = &L.wp[(((size_t)kk*L.groupsIn + g)*outPer + oi)*inPer];
-                    const float* xkk = L.ring.at(L.d * (L.k - 1 - kk)) + (size_t)g*inPer;
-                    acc += dot4(wkk, xkk, inPer);
-                }
-                L.z[o] = acc;
-            }
+#if defined(_MSC_VER)
+            if (namCpuAvx2Fma()) convDilAvx2(L, wc, L.z.data());
+            else
+#endif
+                convDilScalar(L, wc, L.z.data());
             if (L.fConvPost.active)
                 filmApply(L.fConvPost, &_w[L.fConvPost.oW], L.z.data(), cond, L.fConvPost.ss.data(), L.z.data());
 
@@ -1339,14 +1494,20 @@ inline float Model::_waveNetTick(float x)
             const float* wm = &_w[L.oMix];
             const int moutPer = L.cout / L.groupsMix, minPer = L.mixIn / L.groupsMix;
             float* mixOut = L.tmpC.data();
-            for (int o = 0; o < L.cout; o++)
+            // Sin grupos (el caso comun): g siempre es 0 y oi es o; la mezcla
+            // de un condicionante escalar ni siquiera llama al punto.
+            if (L.groupsMix == 1) {
+                for (int o = 0; o < L.cout; o++)
+                    mixOut[o] = (minPer == 1) ? wm[o]*mixIn[0]
+                                              : dot4(wm + (size_t)o*minPer, mixIn, minPer);
+            } else for (int o = 0; o < L.cout; o++)
             {
                 const int g = o / moutPer, oi = o % moutPer;
                 const float* wi = wm + ((size_t)g*moutPer + oi)*minPer;
                 const float* cd = mixIn + (size_t)g*minPer;
-                float acc = 0.0f;
-                for (int c = 0; c < minPer; c++) acc += wi[c]*cd[c];
-                mixOut[o] = acc;
+                // Condicion de un solo valor (el caso comun sin A2): producto
+                // directo, sin llamada ni reduccion por un escalar.
+                mixOut[o] = (minPer == 1) ? wi[0]*cd[0] : dot4(wi, cd, minPer);
             }
             if (L.fMixPost.active)
                 filmApply(L.fMixPost, &_w[L.fMixPost.oW], mixOut, cond, L.fMixPost.ss.data(), mixOut);
@@ -1363,14 +1524,15 @@ inline float Model::_waveNetTick(float x)
                 const float* w1 = &_w[L.oL1];
                 const float* b1 = w1 + (size_t)a.bnl * a.ch / L.l1groups;
                 const int loutPer = a.ch / L.l1groups, linPer = a.bnl / L.l1groups;
-                for (int o = 0; o < a.ch; o++)
+                if (L.l1groups == 1) {
+                    for (int o = 0; o < a.ch; o++)
+                        L.y[o] = b1[o] + dot4(w1 + (size_t)o*linPer, L.z.data(), linPer);
+                } else for (int o = 0; o < a.ch; o++)
                 {
                     const int g = o / loutPer, oi = o % loutPer;
                     const float* wi = w1 + ((size_t)g*loutPer + oi)*linPer;
                     const float* zd = L.z.data() + (size_t)g*linPer;
-                    float acc = b1[o];
-                    for (int c = 0; c < linPer; c++) acc += wi[c]*zd[c];
-                    L.y[o] = acc;
+                    L.y[o] = b1[o] + dot4(wi, zd, linPer);
                 }
                 if (L.fL1Post.active)
                     filmApply(L.fL1Post, &_w[L.fL1Post.oW], L.y.data(), cond, L.fL1Post.ss.data(), L.y.data());
@@ -1382,14 +1544,15 @@ inline float Model::_waveNetTick(float x)
                 const float* w1 = &_w[L.oH1];
                 const float* b1 = w1 + (size_t)L.h1out * a.bnl / L.h1groups;
                 const int houtPer = L.h1out / L.h1groups, hinPer = a.bnl / L.h1groups;
-                for (int o = 0; o < L.h1out; o++)
+                if (L.h1groups == 1) {
+                    for (int o = 0; o < L.h1out; o++)
+                        L.headOut[o] = b1[o] + dot4(w1 + (size_t)o*hinPer, L.z.data(), hinPer);
+                } else for (int o = 0; o < L.h1out; o++)
                 {
                     const int g = o / houtPer, oi = o % houtPer;
                     const float* wi = w1 + ((size_t)g*houtPer + oi)*hinPer;
                     const float* zd = L.z.data() + (size_t)g*hinPer;
-                    float acc = b1[o];
-                    for (int c = 0; c < hinPer; c++) acc += wi[c]*zd[c];
-                    L.headOut[o] = acc;
+                    L.headOut[o] = b1[o] + dot4(wi, zd, hinPer);
                 }
                 if (L.fH1Post.active)
                     filmApply(L.fH1Post, &_w[L.fH1Post.oW], L.headOut.data(), cond, L.fH1Post.ss.data(), L.headOut.data());

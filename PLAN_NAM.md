@@ -146,21 +146,21 @@ tocar nada del cargador de arte**:
 | 1. Parser + forward pass | **Hecho** | `native/nam.h` (WaveNet/LSTM/ConvNet). Comparado muestra a muestra contra el core oficial compilado: A1 estandar (13.802 pesos) dif/pico = **3e-6**; LSTM 2.8e-6; ConvNet 1e-7. Escalera de 20 modelos minimos: todos OK. |
 | 2. Ampli 13 en el motor | **Hecho** | `kVoices[12]`, `g_params.amp[12]`, arte del frontal, cadena con la captura, normalizacion por niveles del fichero, `.ini`. |
 | 3. UI | **Hecho** | Pantalla con nombre/material/frecuencia del modelo (dato, no aviso: el motor convierte), boton CARGAR PERFIL (dialogo), 5 mandos con accion real. |
-| 4. Optimizacion | **Parcial** | Anillo por muestras + pesos reempaquetados contiguos + producto punto con 4 acumuladores: 65,8 % -> **44,4 %** de un nucleo (x2,3). Falta SIMD explicito (AVX2/FMA). |
+| 4. Optimizacion | **Hecho** | Dot AVX2/FMA con dispatch por CPUID (sin AVX2 corre igual, escalar) + conv dilatada con 1 reduccion/salida y sin divisiones + mixin escalar + tanh por tabla exacta: A1 estandar **43,1 % -> 24,6 %** de un nucleo (x4,1). Exactitud intacta o mejor (2,1-3,2e-06 vs core, umbral 1e-05). Modo `namperf [fichero]` en el harness para repetir la medida. |
 | 5. Presets | **Hecho** | Banco regenerado: 78 presets (13 x 6) con lote propio del PERFIL. |
 
-### Coste medido en el motor (harness `_dsp_test.exe nam [fichero]`)
+### Coste medido en el motor (harness `_dsp_test.exe namperf [fichero]`)
 
 | Perfil | Coste de un nucleo | Margen |
 |---|---|---|
 | LSTM (ejemplo del core) | **2,2 %** | x45 |
-| WaveNet A1 estandar (13,8k pesos, 20 capas) | **44,4 %** | x2,3 |
+| WaveNet A1 estandar (13,8k pesos, 20 capas) | **24,6 %** | x4,1 |
+| A2 Plexi de TONE3000 (caso real) | **24,7 %** | x4,0 |
 | Motor de valvulas (referencia) | ~4-8 % | x12-25 |
 
 ### Lo que falta
 
-- **SIMD explicito** en el lazo de convolucion (AVX2/FMA): el A1 estandar
-  deberia caer a la horquilla del 10-15 %.
+- **SIMD explicito** en el lazo de convolucion (AVX2/FMA): **hecho**. El A1 estandar bajo de 43,1 % a **24,6 %** (x4,1) con exactitud intacta (2,1-3,2e-06, umbral 1e-05). No llega a la horquilla del 10-15 %: lo que queda es sobrecarga por muestra y capa (1600 reducciones + 320 tanh + ramas), no caudal MAC; bajar mas pide reescribir el tick por bloques de tiempo, que se deja fuera por riesgo.
 - **A2 con `condition_dsp`**: **hecho y verificado** (3,0e-07 contra el core
   oficial, con el oraculo de `native/_nmaref/`). Lo que sigue fuera, y se
   rechaza con mensaje claro: `gating`, `SlimmableContainer` y `Sequential`.
