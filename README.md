@@ -1,8 +1,8 @@
 # GUITAR ONE
 
 **Simulador de amplificadores de guitarra para Windows.** Aplicación **nativa**
-(Win32 + GDI+): un solo `.exe`, sin frameworks, sin instalador y sin ninguna
-dependencia que instalar. Trece cabezales —doce voces modeladas y un cabezal que
+(Win32 + GDI+): un solo `.exe`, sin frameworks y sin ninguna dependencia que
+instalar (y con instalador, si prefieres instalarlo como cualquier programa). Trece cabezales —doce voces modeladas y un cabezal que
 carga **capturas neuronales `.nam`**—, pedalboard de 18 tipos, cabina con
 respuesta de impulso, afinador y grabación a WAV.
 
@@ -110,15 +110,25 @@ ventana fuera de pantalla.)*
   instalar nada.
 - Tarjeta de sonido con WASAPI (cualquier interfaz USB sirve). No hay ASIO.
 
-## Descargar y ejecutar
+## Descargar e instalar
 
-1. Descarga el [ZIP de la última release](https://github.com/dario90vlc/guitar-one/releases/latest)
-   y descomprímelo donde quieras.
-2. Doble clic en **`GuitarAmp.exe`**.
-3. Pulsa **AUDIO ON** en la cabecera: la app arranca en silencio a propósito.
+En la [última release](https://github.com/dario90vlc/guitar-one/releases/latest) hay
+dos formas de tenerlo, con el mismo programa dentro:
 
-La carpeta `amps_frontales\` tiene que ir al lado del `.exe` (son los frontales).
-Si falta, la app funciona igual pero con caras dibujadas por código.
+| Fichero | Qué hace |
+|---|---|
+| **`GuitarAmp-Setup-1.0.1.exe`** | Instalador normal: se instala en tu perfil (`%LOCALAPPDATA%\Programs\GUITAR ONE`), crea los accesos del menú Inicio y del escritorio, se desinstala desde **Aplicaciones instaladas** y **no pide permisos de administrador**. |
+| **`GuitarAmp-1.0.1-portable.exe`** | Un solo `.exe`: se copia donde quieras y se ejecuta. Sin instalar, sin carpeta al lado, sin dejar rastro más allá de su `.ini`. |
+
+Después, pulsa **AUDIO ON** en la cabecera: la app arranca en silencio a propósito.
+
+El arte (frontales y filmstrips) va **dentro del `.exe`**, así que no hace falta la
+carpeta `amps_frontales\`. Si quieres retocarlo sin recompilar, deja esa carpeta al
+lado del `.exe`: el fichero manda sobre el arte incrustado.
+
+Los ajustes (`GuitarAmp.ini`), los presets de usuario y las grabaciones se guardan
+**junto al `.exe`**; el instalador usa una carpeta escribible por tu usuario por eso
+mismo.
 
 **Los perfiles son de sus autores.** Las capturas `.nam` y los presets de
 TONE3000 **no se incluyen**: se descargan de su web desde el explorador integrado
@@ -137,8 +147,10 @@ cd guitar-one
 .\native\_build_dsp.ps1      # banco de medida del DSP (sin UI ni audio)
 ```
 
-`_build.ps1` deja `native\GuitarAmp.exe`. Para generar el paquete de release
-(`dist\GuitarAmp-<ver>-win64\` + ZIP, con el `.exe` y los 26 PNG que carga):
+`_build.ps1` deja `native\GuitarAmp.exe` con los 26 PNG del arte dentro (como
+recursos `RCDATA`), de modo que el binario funciona solo. Para empaquetar la
+release — `dist\GuitarAmp-<ver>-portable.exe` y `dist\GuitarAmp-Setup-<ver>.exe` —
+hace falta además **Inno Setup 6**:
 
 ```powershell
 .\_mkdist.ps1 -Version 1.0.1

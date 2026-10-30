@@ -25,8 +25,30 @@ $rc = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\rc.exe' -E
 if (-not $rc) { Write-Output 'BUILD_FAILED no se encuentra rc.exe (Windows SDK)'; exit 1 }
 # rc.exe no trae las rutas del SDK: windows.h sale de <Kits>\10\Include\<ver>\um y shared.
 $sdkInc = Join-Path 'C:\Program Files (x86)\Windows Kits\10\Include' (Split-Path (Split-Path (Split-Path $rc -Parent) -Parent) -Leaf)
-& $rc /nologo /I "$sdkInc\um" /I "$sdkInc\shared" /fo GuitarAmp.res GuitarAmp.rc
+# --- Arte incrustado (version PORTABLE) ------------------------------------
+# Los 26 PNG que carga la app viajan como RCDATA para que el .exe funcione solo,
+# sin la carpeta amps_frontales al lado. El .rc se genera aqui (en TEMP) con los
+# que existan: un clon sin los PNG (son derivados del SVG) compila igual y la app
+# se queda con las caras dibujadas por codigo. La lista sale de art_embed_data.h,
+# que es la misma que usa el cargador: un solo sitio que mantener.
+$artHdr  = Get-Content (Join-Path $root 'art_embed_data.h') -Raw
+$artRels = [regex]::Matches($artHdr, '\{\s*L"((?:fondos|filmstrips)\\\\[^"]+)",\s*(\d+)\s*\}')
+$artLines = @('#include "' + ((Join-Path $root 'GuitarAmp.rc') -replace '\\', '/') + '"')
+$nArt = 0
+foreach ($m in $artRels) {
+    $rel  = $m.Groups[1].Value -replace '\\\\', '\'
+    $id   = $m.Groups[2].Value
+    $file = Join-Path $root (Join-Path 'amps_frontales' $rel)
+    if (-not (Test-Path $file)) { continue }
+    $artLines += ($id + ' RCDATA "' + ($file -replace '\\', '/') + '"')
+    $nArt++
+}
+$resRc = Join-Path $env:TEMP 'guitarone_build.rc'
+Set-Content -Path $resRc -Value $artLines -Encoding ASCII
+& $rc /nologo /I "$sdkInc\um" /I "$sdkInc\shared" /fo GuitarAmp.res $resRc
 if ($LASTEXITCODE -ne 0) { Write-Output ('BUILD_FAILED rc ' + $LASTEXITCODE); exit 1 }
+if ($nArt -gt 0) { Write-Output ("ARTE EMBEBIDO: $nArt PNG (el .exe funciona sin la carpeta)") }
+else             { Write-Output 'ARTE EMBEBIDO: 0 PNG (sin arte al lado: caras por codigo)' }
 
 # /utf-8: la fuente esta en UTF-8. Sin esta bandera MSVC la lee con la pagina de
 # codigos local y cualquier literal ancho con tilde sale corrupto.

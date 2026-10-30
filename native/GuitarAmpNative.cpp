@@ -1481,12 +1481,12 @@ static void artBaseDir() {
 // Logotipo de la cabecera: va incrustado en el .exe como RCDATA (2) y se
 // decodifica UNA vez desde memoria. Si el recurso faltara (un .res viejo), la
 // cabecera cae al wordmark de texto de siempre.
-static G::Bitmap* g_brandLogo  = nullptr;
-static bool       g_brandTried = false;
-static G::Bitmap* brandLogo() {
-    if (g_brandTried) return g_brandLogo;
-    g_brandTried = true;
-    HRSRC hr = FindResourceA(nullptr, MAKEINTRESOURCEA(2), RT_RCDATA);
+// Un RCDATA del propio .exe como bitmap independiente del stream: GDI+
+// decodifica de forma perezosa, asi que se copia a una superficie propia antes
+// de soltar el stream. Mismo camino para el logo de la cabecera y para el arte
+// incrustado de la version PORTABLE.
+static G::Bitmap* loadResBitmap(int id) {
+    HRSRC hr = FindResourceA(nullptr, MAKEINTRESOURCEA(id), RT_RCDATA);
     if (!hr) return nullptr;
     const DWORD n = SizeofResource(nullptr, hr);
     HGLOBAL hg = LoadResource(nullptr, hr);
@@ -1502,22 +1502,39 @@ static G::Bitmap* brandLogo() {
     if (FAILED(CreateStreamOnHGlobal(mem, TRUE, &st)) || !st) { GlobalFree(mem); return nullptr; }
     G::Bitmap* bm = G::Bitmap::FromStream(st, FALSE);
     st->Release();
+    G::Bitmap* copy = nullptr;
     if (bm && bm->GetLastStatus() == G::Ok) {
-        // Copia propia, ya desacoplada del stream (que se libera al salir).
-        G::Bitmap* copy = new G::Bitmap(bm->GetWidth(), bm->GetHeight(), PixelFormat32bppPARGB);
+        copy = new G::Bitmap(bm->GetWidth(), bm->GetHeight(), PixelFormat32bppPARGB);
         if (copy && copy->GetLastStatus() == G::Ok) {
             G::Graphics gg(copy);
             gg.SetCompositingMode(G::CompositingModeSourceCopy);
-            gg.DrawImage(bm, 0, 0, bm->GetWidth(), bm->GetHeight());
-            g_brandLogo = copy;
+            gg.DrawImage(bm, 0, 0, (INT)bm->GetWidth(), (INT)bm->GetHeight());
         } else {
             delete copy;
+            copy = nullptr;
         }
-        delete bm;
-    } else {
-        delete bm;
     }
+    delete bm;
+    return copy;
+}
+
+static G::Bitmap* g_brandLogo  = nullptr;
+static bool       g_brandTried = false;
+static G::Bitmap* brandLogo() {
+    if (g_brandTried) return g_brandLogo;
+    g_brandTried = true;
+    g_brandLogo = loadResBitmap(2);   // brand_logo.png, incrustado en el .rc
     return g_brandLogo;
+}
+
+// Arte incrustado: la version PORTABLE es un solo fichero, sin carpeta al lado.
+#include "art_embed_data.h"
+static G::Image* artLoadRes(const WCHAR* rel) {
+    for (int i = 0; i < kArtResN; ++i) {
+        if (wcscmp(rel, kArtRes[i].rel) != 0) continue;
+        return loadResBitmap(kArtRes[i].id);
+    }
+    return nullptr;
 }
 
 static G::Image* artLoad(const WCHAR* rel) {
@@ -1525,8 +1542,12 @@ static G::Image* artLoad(const WCHAR* rel) {
     WCHAR p[MAX_PATH];
     swprintf_s(p, L"%s\\%s", g_artDir, rel);
     G::Image* im = G::Image::FromFile(p, false);
-    if (!im || im->GetLastStatus() != G::Ok) { delete im; return nullptr; }
-    return im;
+    if (im && im->GetLastStatus() == G::Ok) return im;
+    delete im;
+    // Sin amps_frontales al lado (version PORTABLE de un solo .exe) el PNG
+    // viaja como RCDATA. Si la carpeta esta, manda el fichero: el arte se puede
+    // retocar sin recompilar.
+    return artLoadRes(rel);
 }
 static void loadAmpArt() {   // fondos de los 12 (hero + carrusel)
     for (int i = 0; i < 13; ++i) {
