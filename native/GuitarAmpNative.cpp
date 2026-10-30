@@ -23,6 +23,7 @@
 #include <endpointvolume.h>   // solo para LEER el volumen del endpoint (nunca escribirlo)
 #include <audioclient.h>
 #include <avrt.h>             // MMCSS: la prioridad de tiempo real del hilo de audio
+#include <dbt.h>              // WM_DEVICECHANGE: alta/baja de dispositivos de audio
 #include <mmreg.h>
 #include <propsys.h>
 #include <propidl.h>
@@ -1723,11 +1724,13 @@ static void SelectOutputDevice(int idx) {
 static IMMDevice* OpenDevice(IMMDeviceEnumerator* enumerator,
                              const std::wstring& id, EDataFlow flow) {
     IMMDevice* dev = nullptr;
-    if (id.empty()) {
-        enumerator->GetDefaultAudioEndpoint(flow, eConsole, &dev);
-    } else {
-        enumerator->GetDevice(id.c_str(), &dev);
-    }
+    if (!id.empty()) enumerator->GetDevice(id.c_str(), &dev);
+    // El endpoint guardado puede haber desaparecido (interfaz USB desenchufada,
+    // Bluetooth apagado, jack fuera). Si su ID ya no existe se abre el
+    // PREDETERMINADO de Windows. Antes se devolvia null y el motor se quedaba
+    // reintentando el ID muerto cada 500 ms: la app muda para siempre hasta
+    // pulsar APLICAR, que es justo lo que no puede pasar tocando en directo.
+    if (!dev) enumerator->GetDefaultAudioEndpoint(flow, eConsole, &dev);
     return dev;
 }
 
@@ -2116,6 +2119,9 @@ static RECT g_panelApply = {}, g_panelCancel = {};
 // Estado del boton RECARGAR DISPOSITIVOS: lo que se encontro y cuando.
 static std::wstring g_devMsg;
 static DWORD        g_devMsgAt = 0;
+// WM_DEVICECHANGE ha llegado: el tick de 16 ms lo resuelve (una sola pasada para
+// toda la rafaga de avisos).
+static bool         g_devScanPending = false;
 
 static int cycleIdx(int idx, int delta, int count) {
     if (count <= 0) return 0;
@@ -2173,6 +2179,43 @@ static void RefreshDeviceLists(bool quiet = false)
          std::to_wstring(g_outputDevices.size()) + tr(L" SALIDA(S)");
     g_devMsg = m;
     g_devMsgAt = GetTickCount();
+}
+
+// Busca un endpoint por ID dentro de una lista ya enumerada.
+static bool deviceListHas(const std::vector<AudioDeviceInfo>& list, const std::wstring& id)
+{
+    if (id.empty()) return false;
+    for (size_t i = 0; i < list.size(); ++i)
+        if (list[i].id == id) return true;
+    return false;
+}
+
+// Ha aparecido o desaparecido un endpoint de audio (USB, Bluetooth, jack). Se
+// reenumera en silencio y, si el que estaba usando el motor ya no existe, se
+// recoloca la seleccion y se le pide que reabra la sesion: asi pasa al
+// predeterminado de ahora en vez de insistir con un ID muerto. Lo llama el
+// aviso WM_DEVICECHANGE, agrupado en el tick de 16 ms (Windows manda la rafaga
+// entera al enchufar un hub o una interfaz).
+static void devicesChanged()
+{
+    std::wstring inId, outId;
+    {
+        std::lock_guard<std::mutex> lk(g_deviceMutex);
+        inId  = g_currentInputId;
+        outId = g_currentOutputId;
+    }
+    RefreshDeviceLists(true);      // true: sin mensaje, la lista se recoloca igual
+    const bool inGone  = !inId.empty()  && !deviceListHas(g_inputDevices,  inId);
+    const bool outGone = !outId.empty() && !deviceListHas(g_outputDevices, outId);
+    if (!inGone && !outGone) return;   // solo se ha SUMADO algo: no se toca lo que suena
+    // SelectXDevice deja el ID nuevo en g_currentXId y marca g_deviceChanged, que
+    // es lo que hace que el hilo de audio cierre la sesion y la reabra.
+    if (inGone)  SelectInputDevice(g_selectedInputIdx);
+    if (outGone) SelectOutputDevice(g_selectedOutputIdx);
+    // Que el usuario se entere sin abrir AJUSTES: el aviso efimero de arriba.
+    g_devMsg   = tr(L"SE HA DESCONECTADO ALGO");
+    g_devMsgAt = GetTickCount();
+    toast(g_devMsg.c_str());
 }
 
 // ============================================================================
@@ -12800,7 +12843,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
 
+    // Alta o baja de dispositivos. Los endpoints de audio no avisan por su
+    // cuenta y sin esto el motor seguia pidiendo el que ya no estaba. No se
+    // reenumera aqui: se marca y lo hace el tick, que agrupa la rafaga.
+    case WM_DEVICECHANGE:
+        if (wp == DBT_DEVNODES_CHANGED || wp == DBT_DEVICEARRIVAL ||
+            wp == DBT_DEVICEREMOVECOMPLETE || wp == DBT_DEVICEREMOVEPENDING) {
+            g_devScanPending = true;
+            return 0;
+        }
+        break;
+
     case WM_TIMER: {
+        if (g_devScanPending) { g_devScanPending = false; devicesChanged(); }
         // la animacion sigue viva tambien mientras se mueve la ventana:
         // congelarla era justo lo que se percibia como caida de fps
         // retencion de pico de los medidores (cae lento)
@@ -16530,6 +16585,85 @@ static void hDevRefresh() {
                   (int)nin, (int)nout, (int)inOk, (int)outOk, (int)keep);
         hCheck(inOk && outOk && keep,
                "W9 recargar no cambia el dispositivo con el que suena el motor", d);
+        if (SUCCEEDED(hrCo)) CoUninitialize();
+    }
+
+    // W13: un ID que ya no existe (interfaz desenchufada) tiene que caer al
+    // PREDETERMINADO. Devolver null era el bucle de reintentos cada 500 ms con
+    // la app muda hasta pulsar APLICAR, que es el fallo que arregla OpenDevice.
+    {
+        const HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        IMMDeviceEnumerator* en = nullptr;
+        bool hadDef = false, gotDev = false, sameDef = false;
+        if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                       __uuidof(IMMDeviceEnumerator), (void**)&en)) && en) {
+            IMMDevice* muerto = OpenDevice(en, L"{00000000-0000-0000-0000-000000000000}", eRender);
+            IMMDevice* def = nullptr;
+            en->GetDefaultAudioEndpoint(eRender, eConsole, &def);
+            hadDef = (def != nullptr);
+            gotDev = (muerto != nullptr);
+            if (muerto && def) {
+                LPWSTR a = nullptr, b = nullptr;
+                muerto->GetId(&a); def->GetId(&b);
+                sameDef = (a && b && wcscmp(a, b) == 0);
+                if (a) CoTaskMemFree(a);
+                if (b) CoTaskMemFree(b);
+            }
+            if (muerto) muerto->Release();
+            if (def) def->Release();
+            en->Release();
+        }
+        if (!hadDef) {
+            printf("    (sin endpoint de salida: no se puede probar el fallback)\n");
+        } else {
+            sprintf_s(d, "ID inexistente -> %s | es el predeterminado=%d",
+                      gotDev ? "dispositivo" : "null", (int)sameDef);
+            hCheck(gotDev && sameDef,
+                   "W13 un ID desaparecido cae al dispositivo predeterminado", d);
+        }
+        if (SUCCEEDED(hrCo)) CoUninitialize();
+    }
+
+    // W14: la decision de devicesChanged. Si el endpoint del motor ya no esta,
+    // recoloca la seleccion y pide reabrir; si sigue estando, no toca nada
+    // (reabrir por un altavoz recien enchufado seria un corte inutil).
+    {
+        const HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        EnumerateDevices(true);
+        if (g_outputDevices.empty()) {
+            printf("    (sin endpoint de salida: no se puede probar devicesChanged)\n");
+        } else {
+            const int  bakSi  = g_selectedInputIdx, bakSo = g_selectedOutputIdx;
+            const bool bakDev = g_deviceChanged.load();
+            std::wstring bakIn, bakOut;
+            {
+                std::lock_guard<std::mutex> lk(g_deviceMutex);
+                bakIn = g_currentInputId; bakOut = g_currentOutputId;
+                g_currentOutputId = L"{00000000-0000-0000-0000-000000000000}";   // el que sonaba se fue
+            }
+            g_deviceChanged.store(false);
+            devicesChanged();
+            const bool reopenGone = g_deviceChanged.load();
+            bool selOk = false;
+            {
+                std::lock_guard<std::mutex> lk(g_deviceMutex);
+                selOk = deviceListHas(g_outputDevices, g_currentOutputId);
+            }
+            g_deviceChanged.store(false);
+            devicesChanged();                            // su ID existe: no debe pedir nada
+            const bool reopenAlive = g_deviceChanged.load();
+            sprintf_s(d, "desaparecido: reabre=%d, seleccion valida=%d | vivo: reabre=%d",
+                      (int)reopenGone, (int)selOk, (int)reopenAlive);
+            hCheck(reopenGone && selOk && !reopenAlive,
+                   "W14 el endpoint perdido reabre con uno vivo; el vivo no se toca", d);
+            {
+                std::lock_guard<std::mutex> lk(g_deviceMutex);
+                g_currentInputId = bakIn; g_currentOutputId = bakOut;
+            }
+            g_selectedInputIdx  = bakSi;
+            g_selectedOutputIdx = bakSo;
+            g_deviceChanged.store(bakDev);
+        }
         if (SUCCEEDED(hrCo)) CoUninitialize();
     }
 }

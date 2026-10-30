@@ -97,8 +97,6 @@ Thumbs.db
 *.user
 *.suo
 amp_frontales_v2.zip
-.freebuff/
-.claude/
 
 # --- Plugin JUCE archivado (attic/) -------------------------------------------
 # El prototipo JUCE vive en attic/ y no se compila: no necesita reglas propias.

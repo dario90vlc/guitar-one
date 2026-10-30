@@ -91,7 +91,9 @@ ventana fuera de pantalla.)*
 - **Afinador cromático** modal, **grabación a WAV**, visualizador y medidores.
 - **Ajustes de audio**: WASAPI compartido o exclusivo, 44,1–192 kHz, buffer
   128–4096, selección de dispositivos y botón para **recargar los recién
-  conectados** sin reiniciar. En **exclusivo** el dispositivo tiene que aceptar
+  conectados** sin reiniciar. Si el dispositivo que está sonando desaparece
+  (interfaz desenchufada, Bluetooth apagado), el motor pasa al predeterminado de
+  Windows y lo avisa en pantalla, sin quedarse mudo. En **exclusivo** el dispositivo tiene que aceptar
   la frecuencia elegida; si no, la app pasa a compartido (y lo dice en la línea
   de estado). En **compartido** el periodo lo fija Windows: el buffer real se
   lee en la línea de estado y el ajuste solo puede subirlo.
